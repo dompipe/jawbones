@@ -1,151 +1,190 @@
 {
-  "schema": "cngn-coinbase-paper-strategy-spec",
-  "version": 1,
+  "schema": "cngn-coinbase-paper-console-build-plan",
+  "version": 2,
   "updated_at": "2026-07-28",
   "source_file": "E:\\coinbase\\index.php",
-  "maintenance_policy": {
-    "status": "living_specification",
-    "rule": "For every strategy-related question, update the matching JSON rule. If the user changes one behavior, change only that behavior. If the user adds a behavior, append it without deleting unrelated rules. Ignore unrelated questions.",
-    "preserve_history": true,
-    "update_code_and_spec_together": true
-  },
-  "status": {
+  "purpose": "Recreate the exact CNGN Coinbase paper-trading dashboard and its dynamic hourly regime behavior.",
+  "non_negotiable_boundaries": {
     "execution_mode": "paper_only",
     "live_coinbase_orders": false,
-    "primary_truth_source": "saved resolved table rows",
-    "historical_rows_must_not_be_rewritten_by_flips": true,
-    "asset_scope": "all tracked assets",
+    "asset_scope": "all tracked stocks and crypto assets",
+    "historical_truth": "saved resolved table rows",
+    "historical_rows_are_immutable": true,
     "page_independent_processing": true,
-    "background_requirement": "The page is only a display surface; scheduled/background processing must continue evaluating every tracked asset when the page is closed.",
-    "dashboard_refresh": "Patch fast price metrics every 30 seconds, then reload the complete PHP-rendered dashboard at least every 60 seconds and at each five-minute boundary so all innerText, tracked-asset cards, tables, phase state, and status labels share one asset snapshot."
+    "timezone": "America/New_York",
+    "minimum_trade_amount": 2.0,
+    "minimum_sell_edge_percent": 0.50
   },
-  "core_intent": "Use timestamp-locked BUY/SELL table signals to identify directional phases, trade once at a phase entry, protect the paper wallet from low-edge sales, and measure trust from resolved candle outcomes.",
-  "buy_filter": {
-    "focus": "downward asset movement",
-    "calendar_scope": "same calendar quarter",
-    "regime_definition": "primary RLE family plus secondary internal-agreement state",
-    "requirements": ["strict DOWN candle", "at least 3 matching resolved quarter/regime samples", "matching historical win rate at least 50%"],
-    "behavior_when_blocked": "HOLD and do not execute BUY",
-    "inversion_detection": "A matching quarter/regime bucket below 45% with at least 3 samples is INVERTED; block both BUY and SELL execution for that regime until the evidence recovers instead of trading through the inversion."
-  },
-  "definitions": {
-    "candle": "One completed five-minute OHLC candle.",
-    "step": "One five-minute forecast interval.",
-    "hour": "Twelve five-minute steps.",
-    "phase": "A consecutive run of the same saved BUY or SELL action.",
-    "sell_phase": "SELL, SELL, SELL...; one sell is allowed at the phase entry/top, then repeated SELL calls are HOLD.",
-    "buy_phase": "BUY, BUY, BUY...; one buy is allowed at the phase entry/bottom, then repeated BUY calls are HOLD.",
-    "unstable_pattern": "Four alternating phase calls such as BUY, SELL, BUY, SELL.",
-    "right": "BUY paired with observed UP (+), or SELL paired with observed DOWN (-).",
-    "wrong": "BUY paired with observed DOWN (-), or SELL paired with observed UP (+).",
-    "sell_edge": "Current price above average cost by at least MIN_SELL_EDGE_PERCENT before a sale is allowed.",
-    "minimum_trade": "Never buy or sell less than MIN_TRADE_AMOUNT; default is $2.00."
-  },
-  "truth_and_percentages": {
-    "resolved_row_fields": ["time", "pair", "predicted", "actual", "right"],
-    "percentage_formula": "right / total * 100",
-    "buy_sell_cards": "Group resolved rows by their saved predicted direction; do not reclassify historical rows through the current flipped map.",
-    "action_resolution": "If a guess has a saved direction, use it for the displayed action, execution action, audit result, and streak count. Apply the active flip map only when a new or unresolved guess has no saved direction.",
-    "internal_agreement": "Use resolved table RIGHT/WRONG results over the last 12 rows and all resolved rows. Do not use raw left===right HTML matching as the trust percentage.",
-    "family_confidence": "Group historical resolved rows by baseline BUY/SELL family and AGREE/DISAGREE branch; use branch right/total to decide whether a branch needs flipping.",
-    "audit_consistency": "For every audit row, derive the displayed BUY/SELL action and RIGHT/WRONG result from the same locked predicted direction. A SELL followed by an observed UP candle is always WRONG, regardless of later flips.",
-    "audit_event": "Every audit row must state what happened: executed BUY/SELL with candle move and P&L, or HELD/NO TRADE with the observed candle move.",
-    "audit_precision": "Audit move and per-unit P&L use eight decimal places plus percentage move so small candle changes do not render as $0.00.",
-    "candle_direction": "Classify strictly by close versus open: greater is UP/green, lower is DOWN/red, equal is FLAT/gray; flat candles are not wins.",
-    "no_lookahead": "A row is scored only after its candle has completed and its actual direction is frozen."
-  },
-  "direction_and_flip_rules": {
-    "pair_map": "The active pair direction map controls new signals only.",
-    "baseline_map": "Branch flips are derived from the stable baseline map to prevent flip cascades.",
-    "branch_flip_threshold_percent": 45.0,
-    "agreement_branch_minimum_samples": 3,
-    "complete_flip_threshold_percent": 45.0,
-    "complete_flip_minimum_samples": 20,
-    "internal_agreement_branch": "Recent resolved table accuracy below 50% is DISAGREE; otherwise AGREE.",
-    "historical_confidence_gate_percent": 85.0,
-    "historical_confidence_gate_minimum_samples": 20,
-    "rule": "If a baseline family/agreement branch is below 45% with enough samples, treat it as an inversion: flip that branch for future signals and execute only that effective inverted direction. A 0% historical branch therefore has 100% effective inverse confidence. Historical rows and their percentages remain unchanged, while the confidence card displays the effective flipped confidence (100% minus historical confidence) and labels both values; compression and entropy remain diagnostic secondary evidence."
-  },
-  "compression": {
-    "primary": {
-      "source": "resolved table directional sequence",
-      "method": "RLE phases over at most 12 resolved parts, combined with first-loop table compression",
-      "outputs": ["phase_count", "phase_changes", "tail_streak", "perfect_compression_min_parts", "perfect_compression_max_parts", "entropy", "compression_score"],
-      "perfect_compression": "Every contiguous same-direction RLE phase is a 100% compressed run; report the shortest and longest run, capped at 12 parts.",
-      "first_loop_weight": 0.50,
-      "resolved_table_weight": 0.50
+  "implementation_plan": [
+    {
+      "step": 1,
+      "name": "Load the page and tracked assets",
+      "requirements": [
+        "Read E:\\coinbase\\index.php first and preserve its named functions and state contracts.",
+        "Load the active ticker plus every tracked stock and crypto asset for background evaluation.",
+        "Keep scheduled processing active when the browser page is closed.",
+        "Keep OAuth credentials and any Coinbase credentials server-side; this page remains paper-only."
+      ]
     },
-    "secondary": {
-      "source": "internal agreement based on resolved table RIGHT/WRONG truth",
-      "classification": "AGREE at 50% or higher; DISAGREE below 50%",
-      "score": "max(recent_internal_percent, 100 - recent_internal_percent)",
-      "weight_in_combined_score": 0.30
+    {
+      "step": 2,
+      "name": "Build the dashboard surface",
+      "requirements": [
+        "Render the market pulse, current price, source, current action, model stance, wallet, phase status, confidence cards, compression card, audit table, trade ledger, chart, tracked-asset carousel, and controls.",
+        "Keep the page horizontally navigable for the portfolio cards and tracked assets.",
+        "Show requested stake, executable stake, shortfall, regime hour count, action, and time remaining in the phase.",
+        "Color each tracked-asset dashboard price green for UP, red for DOWN, and neutral for FLAT or unavailable, using the asset's hourly price direction.",
+        "Show a floating total-paper-portfolio card aggregating tracked-asset net P&L, labeled UP or DOWN with the signed dollar total and tracked-asset count.",
+        "Render tracked assets as a snap-to-card carousel with five cards across on desktop and tablets and one full-width card on mobile phones; arrow controls advance exactly one card.",
+        "Show SOLD or BOUGHT proceeds separately from realized P&L.",
+        "Use precise amounts and do not display an estimated dollar result as realized profit."
+      ]
     },
-    "combined": {
-      "formula": "primary_compression_score * 0.70 + secondary_compression_score * 0.30",
-      "purpose": "Show how directional RLE compression and internal agreement jointly describe the current phase; branch confidence still controls future BUY/SELL mapping."
+    {
+      "step": 3,
+      "name": "Create and freeze the signal ledger",
+      "requirements": [
+        "Store each timestamp-locked guess with time, pair, predicted direction, actual direction, and right/false result.",
+        "Score only completed candles; a close above open is UP/green, below open is DOWN/red, and equal is FLAT/gray.",
+        "BUY is RIGHT only against UP; SELL is RIGHT only against DOWN; FLAT is not a win.",
+        "If a row has a saved direction, that direction controls its audit action, chart action, and historical result.",
+        "Never rewrite old rows through a newer flip map."
+      ]
+    },
+    {
+      "step": 4,
+      "name": "Calculate truth and confidence",
+      "requirements": [
+        "Calculate every percentage as RIGHT / TOTAL * 100.",
+        "Calculate BUY and SELL action cards from saved predicted directions, not the current map.",
+        "Calculate family confidence by baseline BUY/SELL family plus AGREE/DISAGREE branch.",
+        "Calculate internal agreement from resolved table RIGHT/WRONG results over the recent 12 rows and all rows.",
+        "Calculate phase-action confidence from the first resolved candle of each phase.",
+        "Expose raw historical and effective inverted values separately whenever a metric is flipped."
+      ]
+    },
+    {
+      "step": 5,
+      "name": "Apply dynamic inversion",
+      "requirements": [
+        "Use a stable baseline pair map to prevent flip cascades.",
+        "If a branch or displayed BUY/SELL metric has at least 3 samples and is below 45%, mark it INVERTED.",
+        "Effective confidence is 100% minus raw historical confidence; 3.8% becomes 96.2%.",
+        "Flip the branch for future signals, backend execution, cards, phase statistics, internal-agreement display, and live JSON.",
+        "Label affected displays HISTORICAL, EFFECTIVE, and FLIPPED.",
+        "A complete flip requires at least 20 resolved samples and overall confidence below 45%.",
+        "Raw historical values remain available for audit and no-lookahead verification."
+      ]
+    },
+    {
+      "step": 6,
+      "name": "Resolve the live action dynamically",
+      "requirements": [
+        "Do not lock live execution permanently to one historical answer.",
+        "At each current regime boundary, recompute the effective action from the current formula guess, active regime, historical family confidence, internal agreement, inversion state, current candle direction, and phase timing.",
+        "Use the saved direction for historical rows but use the effective inverted direction for new or unresolved execution guesses.",
+        "If trusted or explicitly inverted, select BUY or SELL; if neither is supported, HOLD.",
+        "Do not claim a future trade is guaranteed RIGHT; only completed candles can establish RIGHT or WRONG."
+      ]
+    },
+    {
+      "step": 7,
+      "name": "Detect hourly regimes",
+      "requirements": [
+        "Treat consecutive same-action calls as one directional regime.",
+        "Use twelve five-minute candles as one hour.",
+        "Convert the current forecast span into a regime count from 1 through 12 hours.",
+        "A new regime allocation executes immediately when detected.",
+        "After allocation, wait until the next top-of-hour before another allocation.",
+        "Do not allocate more than once per hour while the regime continues.",
+        "Reset the hourly allowance only when the hour changes or the regime changes.",
+        "Hold after four alternating BUY/SELL phase calls such as BUY, SELL, BUY, SELL."
+      ]
+    },
+    {
+      "step": 8,
+      "name": "Size the regime allocation",
+      "requirements": [
+        "Use requested amount = regime hour count X average hourly commitment X BUY or SELL multiplier.",
+        "When effective historical confidence is at least 85%, enable AGGRESSIVE actions in the selected BUY/SELL direction and scale the commitment by a bounded confidence factor up to 2.0x.",
+        "Use the BUY multiplier for BUY and the SELL multiplier for SELL; never apply the wrong multiplier.",
+        "Apply the phase count once only; do not multiply again through sequence or bell-curve code.",
+        "Use one canonical sizing result containing requested_amount, available_amount, executable_amount, shortfall, multiplier, regime_step_count, and eligible.",
+        "Cap BUY by available cash.",
+        "If SELL request exceeds held asset value, sell all available holdings and report the shortfall.",
+        "Never execute below $2.00."
+      ]
+    },
+    {
+      "step": 9,
+      "name": "Apply wallet safety and recovery",
+      "requirements": [
+        "Require current price to exceed average cost by MIN_SELL_EDGE_PERCENT before selling.",
+        "When asset dust is below threshold after a full sale, mark the wallet drained.",
+        "Set rebuy_pending and buy up to $5,000 at the next boundary when cash is available.",
+        "Keep cash, units, cost basis, proceeds, realized P&L, open P&L, and equity separate.",
+        "Reset paper wallets only through the authenticated reset mechanism."
+      ]
+    },
+    {
+      "step": 10,
+      "name": "Render the chart truthfully",
+      "requirements": [
+        "Render real market candles separately from synthetic guess candles.",
+        "Build guess candles from the user's stored guess direction and stored change; use the active map only for unresolved guesses.",
+        "For completed chart candles, compare the displayed guess direction directly with the displayed actual candle direction.",
+        "Mark completed predictions RIGHT or WRONG on the chart; use MIXED only for an explicitly aggregated mixed result.",
+        "Ensure candle color, BUY/SELL action, and RIGHT/WRONG label use the same locked direction."
+      ]
+    },
+    {
+      "step": 11,
+      "name": "Render compression and diagnostics",
+      "requirements": [
+        "Compute primary RLE compression from resolved directional sequence and first-loop compression at 50/50 weights.",
+        "Use no more than 12 parts when reporting shortest and longest 100% compressed runs.",
+        "Use internal agreement as secondary compression at 30% of the combined score.",
+        "Show entropy, phase count, phase changes, tail streak, perfect-run bounds, secondary state, and combined score.",
+        "Treat compression and entropy as supporting diagnostics; family inversion controls future direction."
+      ]
+    },
+    {
+      "step": 12,
+      "name": "Refresh the complete page",
+      "requirements": [
+        "Patch fast price values every 30 seconds.",
+        "Reload the complete PHP-rendered page at least every 60 seconds.",
+        "Reload at each five-minute boundary so all innerText, cards, tables, audit rows, wallet state, phase state, and tracked-asset prices share one snapshot.",
+        "Provide a visible Refresh button that triggers the same complete page reload immediately when pressed.",
+        "Use no-store/no-cache behavior for live JSON and page refreshes."
+      ]
     }
-  },
-  "execution_rules": {
-    "trade_frequency": "One BUY or SELL decision per hour/phase entry; do not multiply repeated signals into duplicate orders.",
-    "phase_sizing": "When the current forecast contains a contiguous BUY or SELL regime, convert the five-minute span into hourly steps (12 five-minute candles per hour, capped at 12 hours). Execute the first allocation immediately, wait until the next top-of-hour before another allocation, and use X multiplied by the average commitment and the action's BUY/SELL multiplier. Do not allocate more than once per hour within the regime. Respect wallet balance, edge protection, and minimum trade size.",
-    "commitment_sizing": "Regime sizing is X multiplied by the average hourly commitment and the action multiplier. Dashboard and trade events expose requested_amount, available_amount, executable_amount, shortfall, and the regime step count from one canonical sizing result.",
-    "sell_over_request": "If requested SELL exceeds held asset value, sell all available holdings, report the shortfall, mark the wallet drained at the dust threshold, and schedule the next-boundary $5,000 rebuy.",
-    "phase_entry": "A trade is eligible immediately when a new BUY/SELL regime is detected, including within the current boundary; subsequent allocations are eligible only at the next top-of-hour, with repeated refreshes in the same hour remaining HOLD.",
-    "unstable_hold": "After four alternating BUY/SELL phase calls, suppress trading and hold until the sequence becomes directional.",
-    "sell_guard": {
-      "constant": "MIN_SELL_EDGE_PERCENT",
-      "default_percent": 0.50,
-      "behavior": "If current price is below average cost plus the edge buffer, HOLD LONG and do not realize the sale."
-    },
-    "drained_wallet_recovery": {
-      "trigger": "asset_units <= 0 after a full sale",
-      "behavior": "Set rebuy_pending and, at the next boundary, buy up to $5,000 if cash is available.",
-      "same_candle_rebuy": false
-    },
-    "sizing": {
-      "buy_multiplier": "Feeds the current multiplier-driven base trade amount used by BUY sizing.",
-      "sell_multiplier": "Applied to the base trade amount when SELL sizing is calculated.",
-      "persisted_sizing_refresh": "Refresh fixed_trade_amount from the current multiplier-driven amount on each boundary so stale state cannot override settings.",
-      "sneak_fraction": "A phase realization fraction may be displayed as #fraction, for example SNEAK SELL #0.45; it is not a separate trade count."
-    }
-  },
-    "display_contract": {
-    "resolved_trade": "Show SOLD or BOUGHT proceeds separately from P&L, for example SOLD $40.69 · P&L +$0.01.",
-    "time_display": "Render audit, ledger, chart, and Loop 2 clock timestamps from epoch values in America/New_York time; do not rely on the viewer's browser timezone or make UTC appear as future local candles.",
-    "current_trade": "Show the hourly decision and commitment; do not show an optimistic EST dollar result.",
-    "phase_fraction": "Use # before a phase fraction or sequence count.",
-    "percentage_cards": "Show percent plus RIGHT / WRONG / TOTAL.",
-    "compression_card": "Show primary RLE state, phase changes, perfect-run min/max, secondary agreement state, and combined score.",
-    "selloff_tip": "ON when the current SELL signal run is at least two; OFF when the run breaks.",
-    "phase_status": "Show the current BUY/SELL/HOLD phase, its one-trade stake amount, steps already in the phase, and five-minute steps remaining until the next predicted action change; show NO CHANGE IN HORIZON when no change is forecast."
-  },
-  "important_variables": {
-    "resolved_results_by_time": "Frozen table truth used for trust, compression, family confidence, and historical cards.",
-    "active_pair_direction_map": "Current future-signal mapping after branch flips.",
-    "adaptive_base_pair_map": "Stable pre-flip mapping used as the basis for each recalculation.",
-    "internal_agreement": "Resolved table RIGHT/WRONG summary, including recent and all-history counts.",
-    "compression_state": "Primary RLE state persisted in pair rule state.",
-    "phase_action_stats": "BUY/SELL win percentages on the first resolved candle of each phase.",
-    "signal_history": "Recent phase-entry actions used to detect unstable alternation.",
-    "rebuy_pending": "Wallet recovery flag set after a full asset drain.",
-    "fixed_trade_amount": "Persisted base amount refreshed from current sizing inputs.",
-    "MIN_SELL_EDGE_PERCENT": "Minimum price edge required before paper SELL execution."
+  ],
+  "required_json_contract": {
+    "historical_fields": ["time", "pair", "predicted", "actual", "right"],
+    "sizing_fields": ["requested_amount", "available_amount", "executable_amount", "shortfall", "phase_step_multiplier", "regime_step_count", "eligible"],
+    "flip_fields": ["historical_percentage", "effective_percentage", "flipped", "adaptiveCompleteFlip", "branchFlipActive", "executionInversionActive"],
+    "dashboard_fields": ["currentPhaseStatus", "phaseSizing", "phaseStakeAmount", "regimeStepCount", "regimeRequestedAmount", "pairStats", "phaseActionStats", "internalAgreementRecent", "internalAgreementRecentEffective", "currentFamilyConfidence", "chartTimeline"]
   },
   "files_and_state": {
     "main_code": "E:\\coinbase\\index.php",
-    "strategy_state": "ticker-specific local JSON state managed by index.php",
-    "do_not_edit_as_truth": ["old generated HTML", "stale cached live payloads", "historical resolved rows"],
-    "verification": ["php -l E:\\coinbase\\index.php", "inspect live=1 JSON payload", "confirm table percentages match resolved rows"]
+    "specification": "E:\\coinbase\\strategy-spec.json",
+    "state": "E:\\coinbase\\tickers\\<SYMBOL>-*.json",
+    "wallet_reset_backup": "E:\\coinbase\\wallet-reset-backups\\",
+    "do_not_use_as_truth": ["stale generated HTML", "stale live JSON", "current flipped map for historical rows"]
   },
-  "reconstruction_prompt": "Reconstruct the CNGN Coinbase paper console from this specification. Read E:\\coinbase\\index.php first and preserve its named contracts. Use resolved_results_by_time as the immutable historical truth. Keep historical predictions and percentages unchanged when applying future branch flips. Treat consecutive BUY or SELL calls as one phase and execute only once at phase entry. Hold after four alternating BUY/SELL phase entries. Use primary RLE compression over no more than 12 resolved parts, report shortest and longest 100% runs, and use resolved-table internal RIGHT/WRONG as the secondary compression layer. Let branch confidence affect only future BUY/SELL mapping. Require MIN_SELL_EDGE_PERCENT before selling. If an asset position is fully drained, rebuy up to $5,000 at the next boundary. Refresh persisted sizing from current BUY/SELL multipliers. Keep paper-only execution, separate proceeds from P&L, display phase fractions with #, and verify with PHP lint plus live JSON/table consistency.",
-  "anti_regression_checks": [
-    "Never recompute historical card percentages through the current flipped map.",
-    "Never execute every repeated signal in a phase.",
-    "Never execute through a four-call alternating BUY/SELL pattern.",
-    "Never sell below average cost plus the configured edge buffer.",
-    "Never label sale proceeds as profit.",
-    "Never replace resolved table truth with raw HTML sign agreement.",
-    "Never enable live Coinbase orders from this paper strategy specification."
-  ]
+  "verification_plan": [
+    "Run php -l E:\\coinbase\\index.php.",
+    "Validate E:\\coinbase\\strategy-spec.json with JSON parsing.",
+    "Verify a 3.8% BUY card displays 96.2% effective confidence and raw 3.8% history.",
+    "Verify an inverted branch changes future execution but never rewrites resolved rows.",
+    "Verify the chart's displayed candle action and RIGHT/WRONG label agree.",
+    "Verify a new regime executes immediately, then cannot execute again until the next top-of-hour.",
+    "Verify a 12-hour regime uses X12 and never exceeds the 12-hour cap.",
+    "Verify SELL over holdings sells all available value and reports shortfall.",
+    "Verify BUY is cash-capped and never below $2.00.",
+    "Verify four alternating calls HOLD.",
+    "Verify full page refresh updates all dashboard innerText and tracked assets."
+  ],
+  "maintenance_rule": "For every future strategy question, update this plan and the matching implementation together. Preserve immutable historical truth, dynamic future inversion, hourly regime timing, paper-only execution, and the complete dashboard refresh contract."
 }

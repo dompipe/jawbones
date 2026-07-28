@@ -1569,6 +1569,10 @@ function buildTrackedDashboardCards(array $trackedIndexTargets, string $currentM
         } elseif (is_numeric($live['currentPrice'] ?? null)) {
             $price = (float)$live['currentPrice'];
         }
+        $priceDirection = strtoupper(trim((string)($live['hourPriceDirection'] ?? ($live['currentPriceDirection'] ?? 'FLAT'))));
+        $priceClass = $priceDirection === 'UP'
+            ? 'good'
+            : ($priceDirection === 'DOWN' ? 'low' : 'medium');
 
         $equity = is_numeric($wallet['equity_value'] ?? null)
             ? (float)$wallet['equity_value']
@@ -1596,10 +1600,13 @@ function buildTrackedDashboardCards(array $trackedIndexTargets, string $currentM
             'active' => $trackedMarketType === $currentMarketType && $trackedSymbol === strtoupper($currentTicker),
             'aria_current' => $trackedMarketType === $currentMarketType && $trackedSymbol === strtoupper($currentTicker) ? 'page' : null,
             'price_label' => is_numeric($price) ? '$' . number_format((float)$price, 2) : '—',
+            'price_class' => $priceClass,
+            'price_direction' => $priceDirection,
             'equity_label' => is_numeric($equity) ? '$' . number_format((float)$equity, 2) : '—',
             'net_label' => is_numeric($netPnl)
                 ? (($netPnl >= 0 ? '+' : '-') . '$' . number_format(abs((float)$netPnl), 2))
                 : '—',
+            'net_value' => $netPnl,
             'net_class' => is_numeric($netPnl) ? ((float)$netPnl >= 0 ? 'good' : 'low') : 'medium',
             'position_label' => $position,
             'signal_label' => $signal,
@@ -1926,6 +1933,13 @@ $tracked_crypto_links = $tracked_link_groups['crypto'];
 $tracked_stock_links = $tracked_link_groups['stock'];
 $tracked_marquee_links = $tracked_link_groups['marquee'];
 $tracked_dashboard_cards = buildTrackedDashboardCards($tracked_index_targets, $market_type, $ticker, $dir);
+$tracked_portfolio_net_pnl = 0.0;
+$tracked_portfolio_net_count = 0;
+foreach ($tracked_dashboard_cards as $tracked_dashboard_card) {
+    if (!is_numeric($tracked_dashboard_card['net_value'] ?? null)) continue;
+    $tracked_portfolio_net_pnl += (float)$tracked_dashboard_card['net_value'];
+    $tracked_portfolio_net_count++;
+}
 
 $file_path = $dir . $ticker . '.csv';
 $display_path = './tickers/' . $ticker . '.csv';
@@ -7094,8 +7108,12 @@ $internal_agreement_total = (int)($internal_agreement['total'] ?? 0);
 $internal_agreement_recent_right = (int)($internal_agreement['recent_right'] ?? 0);
 $internal_agreement_recent_total = (int)($internal_agreement['recent_total'] ?? 0);
 $internal_agreement_window = (int)($internal_agreement['window'] ?? ONE_HOUR_CANDLE_COUNT);
-$internal_agreement_class = $internal_agreement_recent_percent >= 65.0 ? 'good' : ($internal_agreement_recent_percent >= 50.0 ? 'medium' : 'low');
-$internal_agreement_value_label = ($internal_agreement_recent_total > 0 ? number_format($internal_agreement_recent_percent, 1) : '0.0') . '%';
+$internal_agreement_recent_flipped = $internal_agreement_recent_total >= 3 && $internal_agreement_recent_percent < 45.0;
+$internal_agreement_recent_effective_percent = $internal_agreement_recent_flipped
+    ? round(100.0 - $internal_agreement_recent_percent, 1)
+    : $internal_agreement_recent_percent;
+$internal_agreement_class = $internal_agreement_recent_effective_percent >= 65.0 ? 'good' : ($internal_agreement_recent_effective_percent >= 50.0 ? 'medium' : 'low');
+$internal_agreement_value_label = ($internal_agreement_recent_total > 0 ? number_format($internal_agreement_recent_effective_percent, 1) : '0.0') . '%';
 $secondary_compression_score = $internal_agreement_recent_total > 0
     ? max($internal_agreement_recent_percent, 100.0 - $internal_agreement_recent_percent)
     : 0.0;
@@ -7251,6 +7269,26 @@ $hourly_bell_curve_plan = buildHourlyBellCurvePlan(
     ONE_HOUR_CANDLE_COUNT
 );
 $formula_execution_action = guessStoredAction($trade_guess);
+$execution_branch_stat = $family_agreement_stats[$execution_branch_key] ?? null;
+$execution_confidence = $accuracy;
+if ($execution_inversion_active && is_array($execution_branch_stat)
+    && (int)($execution_branch_stat['total'] ?? 0) >= $agreement_branch_minimum_samples
+) {
+    $execution_confidence = 100.0 - (float)($execution_branch_stat['percentage'] ?? $accuracy);
+} elseif ($adaptive_complete_flip) {
+    $execution_confidence = 100.0 - $accuracy;
+}
+$aggressive_actions_active = ($formula_execution_action === 'BUY' || $formula_execution_action === 'SELL')
+    && $execution_confidence >= 85.0;
+$aggressive_factor = $aggressive_actions_active
+    ? min(2.0, 1.0 + (($execution_confidence - 85.0) / 15.0))
+    : 1.0;
+$attack_trade_amount = $first_trade_amount * $aggressive_factor;
+$attack_profile['active'] = $aggressive_actions_active;
+$attack_profile['factor'] = $aggressive_factor;
+$attack_profile['label'] = $aggressive_actions_active ? 'AGGRESSIVE' : ($attack_profile['label'] ?? 'BASE');
+$attack_profile['score'] = $execution_confidence;
+$attack_profile['reason'] = 'effective historical confidence ' . number_format($execution_confidence, 1) . '%';
 $hourly_bell_curve_plan = compressHourlyPlanToSingleTrade(
     $hourly_bell_curve_plan,
     $hour_audit_execution_winner,
@@ -7265,6 +7303,7 @@ $regime_base_commitment = max(
     0.0,
     ($average_change > 0.0 ? $average_change : $latent_guess_change) * $trade_capture_ratio
 );
+$regime_base_commitment *= $aggressive_factor;
 $regime_multiplier = $formula_execution_action === 'SELL' ? $sell_multiplier : $buy_multiplier;
 $regime_requested_amount = ($formula_execution_action === 'BUY' || $formula_execution_action === 'SELL')
     ? round($regime_base_commitment * $regime_step_count * max(0.10, (float)$regime_multiplier), 8)
@@ -7757,6 +7796,18 @@ $pair_rule_state['family_flips'] = $family_flips;
 $pair_rule_state['agreement_branch_flips'] = $agreement_branch_flips;
 if ($loop_update_allowed) saveLocalJsonArray($pair_rule_state_path, $pair_rule_state);
 $phase_action_stats = buildPhaseActionWinStats($resolved_results_by_time);
+foreach ($phase_action_stats as &$phase_stat) {
+    $phase_stat['historical_percentage'] = (float)($phase_stat['percentage'] ?? 0.0);
+    $phase_stat['flipped'] = (int)($phase_stat['total'] ?? 0) >= 3 && $phase_stat['historical_percentage'] < 45.0;
+    if ($phase_stat['flipped']) {
+        $phase_stat['right'] = max(0, (int)$phase_stat['total'] - (int)$phase_stat['right']);
+        $phase_stat['wrong'] = max(0, (int)$phase_stat['total'] - (int)$phase_stat['right']);
+        $phase_stat['percentage'] = $phase_stat['total'] > 0
+            ? round(((int)$phase_stat['right'] / (int)$phase_stat['total']) * 100.0, 1)
+            : 0.0;
+    }
+}
+unset($phase_stat);
 $action_stats = [
     'BUY' => ['pair' => 'BUY', 'right' => 0, 'total' => 0, 'percentage' => 0.0],
     'SELL' => ['pair' => 'SELL', 'right' => 0, 'total' => 0, 'percentage' => 0.0],
@@ -7782,6 +7833,19 @@ foreach ($action_stats as &$action_stat) {
     $action_stat['percentage'] = $action_stat['total'] > 0
         ? round(($action_stat['right'] / $action_stat['total']) * 100, 1)
         : 0.0;
+}
+unset($action_stat);
+foreach ($action_stats as &$action_stat) {
+    $action_stat['historical_right'] = (int)$action_stat['right'];
+    $action_stat['historical_percentage'] = (float)$action_stat['percentage'];
+    $action_stat['flipped'] = (int)$action_stat['total'] >= 3 && (float)$action_stat['percentage'] < 45.0;
+    if ($action_stat['flipped']) {
+        $action_stat['right'] = max(0, (int)$action_stat['total'] - (int)$action_stat['right']);
+        $action_stat['wrong'] = max(0, (int)$action_stat['total'] - (int)$action_stat['right']);
+        $action_stat['percentage'] = $action_stat['total'] > 0
+            ? round(((int)$action_stat['right'] / (int)$action_stat['total']) * 100.0, 1)
+            : 0.0;
+    }
 }
 unset($action_stat);
 $adaptive_flip_active = $adaptive_complete_flip || !empty($agreement_branch_flips);
@@ -7842,6 +7906,9 @@ if (isset($_GET['live']) && $_GET['live'] === '1') {
         'adaptiveCompleteFlip' => $adaptive_complete_flip,
         'branchFlipActive' => !empty($agreement_branch_flips),
         'executionInversionActive' => $execution_inversion_active,
+        'aggressiveActionsActive' => $aggressive_actions_active,
+        'aggressiveFactor' => $aggressive_factor,
+        'executionConfidence' => $execution_confidence,
         'familyFlips' => $family_flips,
         'agreementBranchFlips' => $agreement_branch_flips,
         'agreementBranchMinimumSamples' => $agreement_branch_minimum_samples,
@@ -7863,6 +7930,8 @@ if (isset($_GET['live']) && $_GET['live'] === '1') {
         'compressionNote' => $compression_note,
         'internalAgreement' => $internal_agreement_percent,
         'internalAgreementRecent' => $internal_agreement_recent_percent,
+        'internalAgreementRecentEffective' => $internal_agreement_recent_effective_percent,
+        'internalAgreementRecentFlipped' => $internal_agreement_recent_flipped,
         'internalAgreementRight' => $internal_agreement_right,
         'internalAgreementTotal' => $internal_agreement_total,
         'internalAgreementRecentRight' => $internal_agreement_recent_right,
@@ -8613,16 +8682,74 @@ if (isset($_GET['live']) && $_GET['live'] === '1') {
             background: rgba(93, 179, 255, .14);
             border-color: rgba(93, 179, 255, .3);
         }
+        .tracked-dashboard-refresh {
+            min-height: 34px;
+            padding: 0 12px;
+            border-radius: 999px;
+            border: 1px solid rgba(140, 240, 191, .28);
+            background: rgba(140, 240, 191, .08);
+            color: #dfffee;
+            font-size: .72rem;
+            font-weight: 800;
+        }
+        .tracked-dashboard-refresh:hover {
+            background: rgba(140, 240, 191, .16);
+            border-color: rgba(140, 240, 191, .55);
+        }
+        .portfolio-total-float {
+            position: fixed;
+            right: 20px;
+            bottom: 20px;
+            z-index: 30;
+            min-width: 190px;
+            padding: 12px 15px;
+            border: 1px solid rgba(140, 240, 191, .38);
+            border-radius: 15px;
+            background: rgba(8, 15, 26, .94);
+            box-shadow: 0 14px 36px rgba(0, 0, 0, .35);
+            backdrop-filter: blur(12px);
+        }
+        .portfolio-total-float .portfolio-total-label {
+            display: block;
+            color: #8fa4bd;
+            font-size: .68rem;
+            font-weight: 800;
+            letter-spacing: .08em;
+            text-transform: uppercase;
+        }
+        .portfolio-total-float .portfolio-total-value {
+            display: block;
+            margin-top: 3px;
+            font-size: 1.25rem;
+            font-weight: 900;
+        }
+        .portfolio-total-float.good .portfolio-total-value { color: var(--accent); }
+        .portfolio-total-float.low .portfolio-total-value { color: var(--danger); }
+        .portfolio-total-float.medium .portfolio-total-value { color: #eef5ff; }
+        .portfolio-total-float .portfolio-total-note {
+            display: block;
+            margin-top: 3px;
+            color: #8fa4bd;
+            font-size: .68rem;
+        }
+        @media (max-width: 720px) {
+            .portfolio-total-float {
+                right: 12px;
+                bottom: 12px;
+            }
+        }
         .tracked-dashboard-window {
             overflow: hidden;
         }
         .tracked-dashboard-grid {
             display: grid;
             grid-auto-flow: column;
-            grid-auto-columns: minmax(260px, 320px);
+            grid-auto-columns: calc((100% - 40px) / 5);
             gap: 10px;
             overflow-x: auto;
             scroll-behavior: smooth;
+            scroll-snap-type: x mandatory;
+            scroll-padding-inline: 2px;
             scrollbar-width: none;
             -ms-overflow-style: none;
             padding-bottom: 4px;
@@ -8641,6 +8768,8 @@ if (isset($_GET['live']) && $_GET['live'] === '1') {
             background: linear-gradient(180deg, rgba(11, 19, 31, .98), rgba(8, 14, 24, .92));
             padding: 12px;
             min-width: 0;
+            scroll-snap-align: start;
+            scroll-snap-stop: always;
         }
         .tracked-dashboard-card.is-active {
             border-color: rgba(140, 240, 191, .76);
@@ -8688,6 +8817,9 @@ if (isset($_GET['live']) && $_GET['live'] === '1') {
             font-weight: 900;
             white-space: nowrap;
         }
+        .tracked-dashboard-price.good { color: var(--accent); }
+        .tracked-dashboard-price.low { color: var(--danger); }
+        .tracked-dashboard-price.medium { color: #eef5ff; }
         .tracked-dashboard-gridline {
             display: grid;
             grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -9571,9 +9703,25 @@ if (isset($_GET['live']) && $_GET['live'] === '1') {
                 height: 340px;
             }
         }
+        @media (max-width: 1100px) {
+            .tracked-dashboard-grid {
+                grid-auto-columns: calc((100% - 40px) / 5);
+            }
+        }
+        @media (max-width: 720px) {
+            .tracked-dashboard-grid {
+                grid-auto-columns: 100%;
+            }
+        }
     </style>
 </head>
 <body class="compact-dashboard">
+<?php $tracked_portfolio_net_class = $tracked_portfolio_net_pnl > 0.00000001 ? 'good' : ($tracked_portfolio_net_pnl < -0.00000001 ? 'low' : 'medium'); ?>
+<aside class="portfolio-total-float <?= htmlspecialchars($tracked_portfolio_net_class) ?>" aria-label="Total tracked portfolio paper result">
+    <span class="portfolio-total-label">Total paper portfolio</span>
+    <strong class="portfolio-total-value"><?= $tracked_portfolio_net_pnl >= 0.0 ? 'UP' : 'DOWN' ?> <?= $tracked_portfolio_net_pnl >= 0.0 ? '+' : '-' ?>$<?= number_format(abs($tracked_portfolio_net_pnl), 2) ?></strong>
+    <span class="portfolio-total-note"><?= (int)$tracked_portfolio_net_count ?> tracked assets • net P&amp;L</span>
+</aside>
 <main class="shell">
     <?php if (!empty($tracked_marquee_links)): ?>
         <section class="symbol-marquee" aria-label="Tracked market symbols">
@@ -9658,6 +9806,7 @@ if (isset($_GET['live']) && $_GET['live'] === '1') {
                     <p class="tracked-dashboard-note">Scheduler-backed price, wallet, signal, trust, and last-trade view for every tracked page.</p>
                 </div>
                 <div class="tracked-dashboard-controls" aria-label="Tracked symbol carousel controls">
+                    <button type="button" class="tracked-dashboard-refresh" data-refresh-dashboard aria-label="Refresh dashboard">Refresh</button>
                     <button type="button" class="tracked-dashboard-arrow" data-dashboard-prev aria-label="Previous tracked symbols">‹</button>
                     <button type="button" class="tracked-dashboard-arrow" data-dashboard-next aria-label="Next tracked symbols">›</button>
                 </div>
@@ -9676,7 +9825,7 @@ if (isset($_GET['live']) && $_GET['live'] === '1') {
                                     <strong class="tracked-dashboard-name"><?= htmlspecialchars($dashboard_card['symbol']) ?></strong>
                                     <span class="tracked-dashboard-meta"><?= htmlspecialchars($dashboard_card['updated_label']) ?></span>
                                 </div>
-                                <div class="tracked-dashboard-price"><?= htmlspecialchars($dashboard_card['price_label']) ?></div>
+                                <div class="tracked-dashboard-price <?= htmlspecialchars($dashboard_card['price_class'] ?? 'medium') ?>" title="<?= htmlspecialchars((string)($dashboard_card['price_direction'] ?? 'FLAT')) ?> asset move"><?= htmlspecialchars($dashboard_card['price_label']) ?></div>
                             </div>
                             <div class="tracked-dashboard-gridline">
                                 <div class="tracked-dashboard-stat">
@@ -9931,7 +10080,7 @@ if (isset($_GET['live']) && $_GET['live'] === '1') {
         <article class="metric pair-card">
             <span class="metric-label">Internal agreement</span>
             <div id="internalAgreementValue" class="metric-value <?= $internal_agreement_class ?>"><?= htmlspecialchars($internal_agreement_value_label) ?></div>
-            <div id="internalAgreementNote" class="metric-note"><?= htmlspecialchars($internal_agreement_note . ' • ' . ((int)$internal_agreement_total - (int)$internal_agreement_right) . ' WRONG / ' . (int)$internal_agreement_total . ' TOTAL') ?></div>
+            <div id="internalAgreementNote" class="metric-note"><?= htmlspecialchars($internal_agreement_note . ' • ' . ((int)$internal_agreement_total - (int)$internal_agreement_right) . ' WRONG / ' . (int)$internal_agreement_total . ' TOTAL' . ($internal_agreement_recent_flipped ? ' • HISTORICAL ' . number_format($internal_agreement_recent_percent, 1) . '% • EFFECTIVE ' . number_format($internal_agreement_recent_effective_percent, 1) . '% • FLIPPED' : '')) ?></div>
         </article>
         <article class="metric pair-card">
             <span class="metric-label">Historical family confidence</span>
@@ -9946,7 +10095,7 @@ if (isset($_GET['live']) && $_GET['live'] === '1') {
         <article class="metric pair-card">
             <span class="metric-label">Phase-change wins</span>
             <div id="phaseChangeValue" class="metric-value medium">BUY <?= number_format((float)($phase_action_stats['BUY']['percentage'] ?? 0.0), 1) ?>% · SELL <?= number_format((float)($phase_action_stats['SELL']['percentage'] ?? 0.0), 1) ?>%</div>
-            <div id="phaseChangeNote" class="metric-note">BUY <?= (int)($phase_action_stats['BUY']['right'] ?? 0) ?> RIGHT / <?= (int)($phase_action_stats['BUY']['total'] ?? 0) ?> TOTAL • SELL <?= (int)($phase_action_stats['SELL']['right'] ?? 0) ?> RIGHT / <?= (int)($phase_action_stats['SELL']['total'] ?? 0) ?> TOTAL</div>
+            <div id="phaseChangeNote" class="metric-note"><?= !empty($phase_action_stats['BUY']['flipped']) ? 'HISTORICAL ' . number_format((float)$phase_action_stats['BUY']['historical_percentage'], 1) . '% → EFFECTIVE ' . number_format((float)$phase_action_stats['BUY']['percentage'], 1) . '% • ' : '' ?>BUY <?= (int)($phase_action_stats['BUY']['right'] ?? 0) ?> RIGHT / <?= (int)($phase_action_stats['BUY']['total'] ?? 0) ?> TOTAL • <?= !empty($phase_action_stats['SELL']['flipped']) ? 'HISTORICAL ' . number_format((float)$phase_action_stats['SELL']['historical_percentage'], 1) . '% → EFFECTIVE ' . number_format((float)$phase_action_stats['SELL']['percentage'], 1) . '% • ' : '' ?>SELL <?= (int)($phase_action_stats['SELL']['right'] ?? 0) ?> RIGHT / <?= (int)($phase_action_stats['SELL']['total'] ?? 0) ?> TOTAL</div>
         </article>
         <?php foreach ($pair_card_ids as $pair_symbol => $pair_card_id): ?>
             <?php $pair_stat = $action_stats[$pair_symbol] ?? ['percentage' => 0.0, 'right' => 0, 'total' => 0]; ?>
@@ -9954,7 +10103,7 @@ if (isset($_GET['live']) && $_GET['live'] === '1') {
             <article id="pairCard<?= htmlspecialchars($pair_card_id) ?>" class="metric pair-card">
                 <span class="metric-label"><?= htmlspecialchars($pair_card_titles[$pair_symbol] ?? $pair_symbol) ?></span>
                 <div class="metric-value <?= $pair_class ?>" data-pair-percentage><?= (int)$pair_stat['total'] > 0 ? number_format((float)$pair_stat['percentage'], 1) . '%' : '—' ?></div>
-                <div class="metric-note" data-pair-count><?= (int)$pair_stat['right'] ?> RIGHT / <?= (int)($pair_stat['wrong'] ?? ((int)$pair_stat['total'] - (int)$pair_stat['right'])) ?> WRONG / <?= (int)$pair_stat['total'] ?> TOTAL</div>
+                <div class="metric-note" data-pair-count><?= !empty($pair_stat['flipped']) ? 'HISTORICAL ' . number_format((float)$pair_stat['historical_percentage'], 1) . '% • EFFECTIVE ' . number_format((float)$pair_stat['percentage'], 1) . '% • FLIPPED • ' : '' ?><?= (int)$pair_stat['right'] ?> RIGHT / <?= (int)($pair_stat['wrong'] ?? ((int)$pair_stat['total'] - (int)$pair_stat['right'])) ?> WRONG / <?= (int)$pair_stat['total'] ?> TOTAL</div>
             </article>
         <?php endforeach; ?>
     </section>
@@ -10598,6 +10747,8 @@ function renderPairStats(stats) {
         const right = Number(stat.right || 0);
         const wrong = Number(stat.wrong ?? Math.max(0, total - right));
         const percentage = Number(stat.percentage || 0);
+        const historicalPercentage = Number(stat.historical_percentage ?? percentage);
+        const flipNote = stat.flipped ? `HISTORICAL ${historicalPercentage.toFixed(1)}% • EFFECTIVE ${percentage.toFixed(1)}% • FLIPPED • ` : '';
         const value = card.querySelector('[data-pair-percentage]');
         const count = card.querySelector('[data-pair-count]');
         if (value) {
@@ -10605,7 +10756,7 @@ function renderPairStats(stats) {
             value.classList.remove('good', 'medium', 'low');
             value.classList.add(percentage >= 65 ? 'good' : (percentage >= 50 ? 'medium' : 'low'));
         }
-        if (count) count.textContent = `${right} RIGHT / ${wrong} WRONG / ${total} TOTAL`;
+        if (count) count.textContent = `${flipNote}${right} RIGHT / ${wrong} WRONG / ${total} TOTAL`;
     });
 }
 
@@ -11233,8 +11384,10 @@ function renderPhaseActionStats(data) {
     const sellTotal = Number(sell.total || 0);
     const buyPct = Number(buy.percentage || 0);
     const sellPct = Number(sell.percentage || 0);
+    const buyFlip = buy.flipped ? `HISTORICAL ${number2(Number(buy.historical_percentage || 0))}% → EFFECTIVE ${number2(buyPct)}% • ` : '';
+    const sellFlip = sell.flipped ? `HISTORICAL ${number2(Number(sell.historical_percentage || 0))}% → EFFECTIVE ${number2(sellPct)}% • ` : '';
     setNodeText('phaseChangeValue', `BUY ${buyPct.toFixed(1)}% · SELL ${sellPct.toFixed(1)}%`);
-    setNodeText('phaseChangeNote', `BUY ${buyRight} RIGHT / ${Math.max(0, buyTotal - buyRight)} WRONG / ${buyTotal} TOTAL • SELL ${sellRight} RIGHT / ${Math.max(0, sellTotal - sellRight)} WRONG / ${sellTotal} TOTAL`);
+    setNodeText('phaseChangeNote', `${buyFlip}BUY ${buyRight} RIGHT / ${Math.max(0, buyTotal - buyRight)} WRONG / ${buyTotal} TOTAL • ${sellFlip}SELL ${sellRight} RIGHT / ${Math.max(0, sellTotal - sellRight)} WRONG / ${sellTotal} TOTAL`);
 }
 
 function renderCurrentPhaseStatus(data) {
@@ -11263,7 +11416,8 @@ function renderCurrentPhaseStatus(data) {
 }
 
 function renderInternalAgreement(data) {
-    const recentPercent = Number(data.internalAgreementRecent || 0);
+    const historicalRecentPercent = Number(data.internalAgreementRecent || 0);
+    const recentPercent = Number(data.internalAgreementRecentEffective ?? historicalRecentPercent);
     const right = Number(data.internalAgreementRight || 0);
     const total = Number(data.internalAgreementTotal || 0);
     const recentRight = Number(data.internalAgreementRecentRight || 0);
@@ -11272,10 +11426,13 @@ function renderInternalAgreement(data) {
     if (valueNode) {
         setToneClass(valueNode, recentPercent >= 65 ? 'good' : (recentPercent >= 50 ? 'medium' : 'low'));
     }
+    const flipNote = data.internalAgreementRecentFlipped
+        ? ` • HISTORICAL ${number2(historicalRecentPercent)}% • EFFECTIVE ${number2(recentPercent)}% • FLIPPED`
+        : '';
     setNodeText(
         'internalAgreementNote',
         recentTotal > 0
-            ? `Last hour ${recentRight} RIGHT / ${Math.max(0, recentTotal - recentRight)} WRONG / ${recentTotal} TOTAL • all ${right} RIGHT / ${Math.max(0, total - right)} WRONG / ${total} TOTAL`
+            ? `Last hour ${recentRight} RIGHT / ${Math.max(0, recentTotal - recentRight)} WRONG / ${recentTotal} TOTAL • all ${right} RIGHT / ${Math.max(0, total - right)} WRONG / ${total} TOTAL${flipNote}`
             : 'Waiting for left/right agreement samples'
     );
 }
@@ -11546,6 +11703,16 @@ function setupTrackedDashboardCarousel() {
     });
 }
 
+function setupDashboardRefreshButton() {
+    document.querySelectorAll('[data-refresh-dashboard]').forEach((button) => {
+        button.addEventListener('click', () => {
+            button.disabled = true;
+            button.textContent = 'Refreshing…';
+            window.location.reload();
+        });
+    });
+}
+
 function setupReferenceCloseButtons() {
     document.querySelectorAll('[data-close-reference]').forEach((button) => {
         button.addEventListener('click', () => {
@@ -11557,6 +11724,7 @@ function setupReferenceCloseButtons() {
 
 setupMarqueeCarousel();
 setupTrackedDashboardCarousel();
+setupDashboardRefreshButton();
 setupReferenceCloseButtons();
 updateRetrieveTimer();
 setInterval(updateRetrieveTimer, 250);

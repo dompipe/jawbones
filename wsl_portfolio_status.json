@@ -1,10 +1,10 @@
 {
-    "ran_at": "2026-07-28T19:10:07Z",
-    "target_count": 5,
-    "target_batch_limit": 5,
+    "ran_at": "2026-07-28T19:46:03Z",
+    "target_count": 6,
+    "target_batch_limit": 6,
     "target_batch_offset": 0,
     "target_batch_next_offset": 0,
-    "target_total_available": 5,
+    "target_total_available": 6,
     "results": [
         {
             "market_type": "crypto",
@@ -16,7 +16,7 @@
             "symbol_probe": null,
             "removed_from_list": false,
             "remove_reason": "",
-            "checked_at": "2026-07-28T19:10:14Z"
+            "checked_at": "2026-07-28T19:46:07Z"
         },
         {
             "market_type": "crypto",
@@ -28,7 +28,7 @@
             "symbol_probe": null,
             "removed_from_list": false,
             "remove_reason": "",
-            "checked_at": "2026-07-28T19:10:17Z"
+            "checked_at": "2026-07-28T19:46:16Z"
         },
         {
             "market_type": "crypto",
@@ -40,7 +40,19 @@
             "symbol_probe": null,
             "removed_from_list": false,
             "remove_reason": "",
-            "checked_at": "2026-07-28T19:10:20Z"
+            "checked_at": "2026-07-28T19:46:21Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "AAPL",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=AAPL&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-28T19:46:26Z"
         },
         {
             "market_type": "stock",
@@ -52,7 +64,7 @@
             "symbol_probe": null,
             "removed_from_list": false,
             "remove_reason": "",
-            "checked_at": "2026-07-28T19:10:22Z"
+            "checked_at": "2026-07-28T19:46:29Z"
         },
         {
             "market_type": "stock",
@@ -64,7 +76,7 @@
             "symbol_probe": null,
             "removed_from_list": false,
             "remove_reason": "",
-            "checked_at": "2026-07-28T19:10:28Z"
+            "checked_at": "2026-07-28T19:46:32Z"
         }
     ]
 }
