@@ -1,0 +1,151 @@
+{
+  "schema": "cngn-coinbase-paper-strategy-spec",
+  "version": 1,
+  "updated_at": "2026-07-28",
+  "source_file": "E:\\coinbase\\index.php",
+  "maintenance_policy": {
+    "status": "living_specification",
+    "rule": "For every strategy-related question, update the matching JSON rule. If the user changes one behavior, change only that behavior. If the user adds a behavior, append it without deleting unrelated rules. Ignore unrelated questions.",
+    "preserve_history": true,
+    "update_code_and_spec_together": true
+  },
+  "status": {
+    "execution_mode": "paper_only",
+    "live_coinbase_orders": false,
+    "primary_truth_source": "saved resolved table rows",
+    "historical_rows_must_not_be_rewritten_by_flips": true,
+    "asset_scope": "all tracked assets",
+    "page_independent_processing": true,
+    "background_requirement": "The page is only a display surface; scheduled/background processing must continue evaluating every tracked asset when the page is closed.",
+    "dashboard_refresh": "Patch fast price metrics every 30 seconds, then reload the complete PHP-rendered dashboard at least every 60 seconds and at each five-minute boundary so all innerText, tracked-asset cards, tables, phase state, and status labels share one asset snapshot."
+  },
+  "core_intent": "Use timestamp-locked BUY/SELL table signals to identify directional phases, trade once at a phase entry, protect the paper wallet from low-edge sales, and measure trust from resolved candle outcomes.",
+  "buy_filter": {
+    "focus": "downward asset movement",
+    "calendar_scope": "same calendar quarter",
+    "regime_definition": "primary RLE family plus secondary internal-agreement state",
+    "requirements": ["strict DOWN candle", "at least 3 matching resolved quarter/regime samples", "matching historical win rate at least 50%"],
+    "behavior_when_blocked": "HOLD and do not execute BUY",
+    "inversion_detection": "A matching quarter/regime bucket below 45% with at least 3 samples is INVERTED; block both BUY and SELL execution for that regime until the evidence recovers instead of trading through the inversion."
+  },
+  "definitions": {
+    "candle": "One completed five-minute OHLC candle.",
+    "step": "One five-minute forecast interval.",
+    "hour": "Twelve five-minute steps.",
+    "phase": "A consecutive run of the same saved BUY or SELL action.",
+    "sell_phase": "SELL, SELL, SELL...; one sell is allowed at the phase entry/top, then repeated SELL calls are HOLD.",
+    "buy_phase": "BUY, BUY, BUY...; one buy is allowed at the phase entry/bottom, then repeated BUY calls are HOLD.",
+    "unstable_pattern": "Four alternating phase calls such as BUY, SELL, BUY, SELL.",
+    "right": "BUY paired with observed UP (+), or SELL paired with observed DOWN (-).",
+    "wrong": "BUY paired with observed DOWN (-), or SELL paired with observed UP (+).",
+    "sell_edge": "Current price above average cost by at least MIN_SELL_EDGE_PERCENT before a sale is allowed.",
+    "minimum_trade": "Never buy or sell less than MIN_TRADE_AMOUNT; default is $2.00."
+  },
+  "truth_and_percentages": {
+    "resolved_row_fields": ["time", "pair", "predicted", "actual", "right"],
+    "percentage_formula": "right / total * 100",
+    "buy_sell_cards": "Group resolved rows by their saved predicted direction; do not reclassify historical rows through the current flipped map.",
+    "action_resolution": "If a guess has a saved direction, use it for the displayed action, execution action, audit result, and streak count. Apply the active flip map only when a new or unresolved guess has no saved direction.",
+    "internal_agreement": "Use resolved table RIGHT/WRONG results over the last 12 rows and all resolved rows. Do not use raw left===right HTML matching as the trust percentage.",
+    "family_confidence": "Group historical resolved rows by baseline BUY/SELL family and AGREE/DISAGREE branch; use branch right/total to decide whether a branch needs flipping.",
+    "audit_consistency": "For every audit row, derive the displayed BUY/SELL action and RIGHT/WRONG result from the same locked predicted direction. A SELL followed by an observed UP candle is always WRONG, regardless of later flips.",
+    "audit_event": "Every audit row must state what happened: executed BUY/SELL with candle move and P&L, or HELD/NO TRADE with the observed candle move.",
+    "audit_precision": "Audit move and per-unit P&L use eight decimal places plus percentage move so small candle changes do not render as $0.00.",
+    "candle_direction": "Classify strictly by close versus open: greater is UP/green, lower is DOWN/red, equal is FLAT/gray; flat candles are not wins.",
+    "no_lookahead": "A row is scored only after its candle has completed and its actual direction is frozen."
+  },
+  "direction_and_flip_rules": {
+    "pair_map": "The active pair direction map controls new signals only.",
+    "baseline_map": "Branch flips are derived from the stable baseline map to prevent flip cascades.",
+    "branch_flip_threshold_percent": 45.0,
+    "agreement_branch_minimum_samples": 3,
+    "complete_flip_threshold_percent": 45.0,
+    "complete_flip_minimum_samples": 20,
+    "internal_agreement_branch": "Recent resolved table accuracy below 50% is DISAGREE; otherwise AGREE.",
+    "historical_confidence_gate_percent": 85.0,
+    "historical_confidence_gate_minimum_samples": 20,
+    "rule": "If a baseline family/agreement branch is below 45% with enough samples, treat it as an inversion: flip that branch for future signals and execute only that effective inverted direction. A 0% historical branch therefore has 100% effective inverse confidence. Historical rows and their percentages remain unchanged, while the confidence card displays the effective flipped confidence (100% minus historical confidence) and labels both values; compression and entropy remain diagnostic secondary evidence."
+  },
+  "compression": {
+    "primary": {
+      "source": "resolved table directional sequence",
+      "method": "RLE phases over at most 12 resolved parts, combined with first-loop table compression",
+      "outputs": ["phase_count", "phase_changes", "tail_streak", "perfect_compression_min_parts", "perfect_compression_max_parts", "entropy", "compression_score"],
+      "perfect_compression": "Every contiguous same-direction RLE phase is a 100% compressed run; report the shortest and longest run, capped at 12 parts.",
+      "first_loop_weight": 0.50,
+      "resolved_table_weight": 0.50
+    },
+    "secondary": {
+      "source": "internal agreement based on resolved table RIGHT/WRONG truth",
+      "classification": "AGREE at 50% or higher; DISAGREE below 50%",
+      "score": "max(recent_internal_percent, 100 - recent_internal_percent)",
+      "weight_in_combined_score": 0.30
+    },
+    "combined": {
+      "formula": "primary_compression_score * 0.70 + secondary_compression_score * 0.30",
+      "purpose": "Show how directional RLE compression and internal agreement jointly describe the current phase; branch confidence still controls future BUY/SELL mapping."
+    }
+  },
+  "execution_rules": {
+    "trade_frequency": "One BUY or SELL decision per hour/phase entry; do not multiply repeated signals into duplicate orders.",
+    "phase_sizing": "When the current forecast contains a contiguous BUY or SELL regime, convert the five-minute span into hourly steps (12 five-minute candles per hour, capped at 12 hours). Execute the first allocation immediately, wait until the next top-of-hour before another allocation, and use X multiplied by the average commitment and the action's BUY/SELL multiplier. Do not allocate more than once per hour within the regime. Respect wallet balance, edge protection, and minimum trade size.",
+    "commitment_sizing": "Regime sizing is X multiplied by the average hourly commitment and the action multiplier. Dashboard and trade events expose requested_amount, available_amount, executable_amount, shortfall, and the regime step count from one canonical sizing result.",
+    "sell_over_request": "If requested SELL exceeds held asset value, sell all available holdings, report the shortfall, mark the wallet drained at the dust threshold, and schedule the next-boundary $5,000 rebuy.",
+    "phase_entry": "A trade is eligible immediately when a new BUY/SELL regime is detected, including within the current boundary; subsequent allocations are eligible only at the next top-of-hour, with repeated refreshes in the same hour remaining HOLD.",
+    "unstable_hold": "After four alternating BUY/SELL phase calls, suppress trading and hold until the sequence becomes directional.",
+    "sell_guard": {
+      "constant": "MIN_SELL_EDGE_PERCENT",
+      "default_percent": 0.50,
+      "behavior": "If current price is below average cost plus the edge buffer, HOLD LONG and do not realize the sale."
+    },
+    "drained_wallet_recovery": {
+      "trigger": "asset_units <= 0 after a full sale",
+      "behavior": "Set rebuy_pending and, at the next boundary, buy up to $5,000 if cash is available.",
+      "same_candle_rebuy": false
+    },
+    "sizing": {
+      "buy_multiplier": "Feeds the current multiplier-driven base trade amount used by BUY sizing.",
+      "sell_multiplier": "Applied to the base trade amount when SELL sizing is calculated.",
+      "persisted_sizing_refresh": "Refresh fixed_trade_amount from the current multiplier-driven amount on each boundary so stale state cannot override settings.",
+      "sneak_fraction": "A phase realization fraction may be displayed as #fraction, for example SNEAK SELL #0.45; it is not a separate trade count."
+    }
+  },
+    "display_contract": {
+    "resolved_trade": "Show SOLD or BOUGHT proceeds separately from P&L, for example SOLD $40.69 · P&L +$0.01.",
+    "time_display": "Render audit, ledger, chart, and Loop 2 clock timestamps from epoch values in America/New_York time; do not rely on the viewer's browser timezone or make UTC appear as future local candles.",
+    "current_trade": "Show the hourly decision and commitment; do not show an optimistic EST dollar result.",
+    "phase_fraction": "Use # before a phase fraction or sequence count.",
+    "percentage_cards": "Show percent plus RIGHT / WRONG / TOTAL.",
+    "compression_card": "Show primary RLE state, phase changes, perfect-run min/max, secondary agreement state, and combined score.",
+    "selloff_tip": "ON when the current SELL signal run is at least two; OFF when the run breaks.",
+    "phase_status": "Show the current BUY/SELL/HOLD phase, its one-trade stake amount, steps already in the phase, and five-minute steps remaining until the next predicted action change; show NO CHANGE IN HORIZON when no change is forecast."
+  },
+  "important_variables": {
+    "resolved_results_by_time": "Frozen table truth used for trust, compression, family confidence, and historical cards.",
+    "active_pair_direction_map": "Current future-signal mapping after branch flips.",
+    "adaptive_base_pair_map": "Stable pre-flip mapping used as the basis for each recalculation.",
+    "internal_agreement": "Resolved table RIGHT/WRONG summary, including recent and all-history counts.",
+    "compression_state": "Primary RLE state persisted in pair rule state.",
+    "phase_action_stats": "BUY/SELL win percentages on the first resolved candle of each phase.",
+    "signal_history": "Recent phase-entry actions used to detect unstable alternation.",
+    "rebuy_pending": "Wallet recovery flag set after a full asset drain.",
+    "fixed_trade_amount": "Persisted base amount refreshed from current sizing inputs.",
+    "MIN_SELL_EDGE_PERCENT": "Minimum price edge required before paper SELL execution."
+  },
+  "files_and_state": {
+    "main_code": "E:\\coinbase\\index.php",
+    "strategy_state": "ticker-specific local JSON state managed by index.php",
+    "do_not_edit_as_truth": ["old generated HTML", "stale cached live payloads", "historical resolved rows"],
+    "verification": ["php -l E:\\coinbase\\index.php", "inspect live=1 JSON payload", "confirm table percentages match resolved rows"]
+  },
+  "reconstruction_prompt": "Reconstruct the CNGN Coinbase paper console from this specification. Read E:\\coinbase\\index.php first and preserve its named contracts. Use resolved_results_by_time as the immutable historical truth. Keep historical predictions and percentages unchanged when applying future branch flips. Treat consecutive BUY or SELL calls as one phase and execute only once at phase entry. Hold after four alternating BUY/SELL phase entries. Use primary RLE compression over no more than 12 resolved parts, report shortest and longest 100% runs, and use resolved-table internal RIGHT/WRONG as the secondary compression layer. Let branch confidence affect only future BUY/SELL mapping. Require MIN_SELL_EDGE_PERCENT before selling. If an asset position is fully drained, rebuy up to $5,000 at the next boundary. Refresh persisted sizing from current BUY/SELL multipliers. Keep paper-only execution, separate proceeds from P&L, display phase fractions with #, and verify with PHP lint plus live JSON/table consistency.",
+  "anti_regression_checks": [
+    "Never recompute historical card percentages through the current flipped map.",
+    "Never execute every repeated signal in a phase.",
+    "Never execute through a four-call alternating BUY/SELL pattern.",
+    "Never sell below average cost plus the configured edge buffer.",
+    "Never label sale proceeds as profit.",
+    "Never replace resolved table truth with raw HTML sign agreement.",
+    "Never enable live Coinbase orders from this paper strategy specification."
+  ]
+}
