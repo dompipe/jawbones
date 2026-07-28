@@ -1,6 +1,6 @@
 {
   "schema": "cngn-coinbase-paper-console-build-plan",
-  "version": 2,
+  "version": 5,
   "updated_at": "2026-07-28",
   "source_file": "E:\\coinbase\\index.php",
   "purpose": "Recreate the exact CNGN Coinbase paper-trading dashboard and its dynamic hourly regime behavior.",
@@ -13,7 +13,22 @@
     "page_independent_processing": true,
     "timezone": "America/New_York",
     "minimum_trade_amount": 2.0,
-    "minimum_sell_edge_percent": 0.50
+    "minimum_sell_edge_percent": 0.50,
+    "cngn_formula": "immutable_and_authoritative",
+    "actual_candle_source": "provider_ohlc_only",
+    "spot_quotes_may_fabricate_ohlc": false
+  },
+  "truth_contract": {
+    "source_model": "The timestamp-locked CNGN pair, direction, and change are immutable source facts.",
+    "actual_market": "Completed provider OHLC rows are the sole source of candle direction. Spot quotes may mark current price but may not create candles.",
+    "effective_execution": "Future-only inversion and safety gates may transform or block the source model action, but must be labeled separately.",
+    "wallet_execution": "Only a persisted paper-wallet event with executed=true may transfer value between cash and asset holdings.",
+    "wallet_reservation": "Model requests, HOLDs, safety blocks, and NOT EXECUTED events reserve zero cash and zero asset units; the complete amount remains in the kitty.",
+    "boundary_idempotency": "A five-minute boundary owns at most one persisted decision and at most one executed trade. Refreshes and changing model views may not overwrite it with an opposite action.",
+    "historical_confidence": "Raw RIGHT, WRONG, TOTAL, and RIGHT/TOTAL percentages remain visible even when an effective inverted percentage is used.",
+    "gaussian_confidence": "Use a sample-aware normal approximation around the 50% chance baseline. The curve may change only future execution orientation and stake strength; it never rewrites historical rows.",
+    "unscored_metrics": "When TOTAL is zero, the percentage is undefined and every card must show an em dash or UNSCORED rather than 0% or 100%.",
+    "ui_reconciliation": "Cards, charts, audit rows, trade ledger, cron summary, and live JSON must use the same source fields and labels."
   },
   "implementation_plan": [
     {
@@ -32,10 +47,12 @@
       "requirements": [
         "Render the market pulse, current price, source, current action, model stance, wallet, phase status, confidence cards, compression card, audit table, trade ledger, chart, tracked-asset carousel, and controls.",
         "Keep the page horizontally navigable for the portfolio cards and tracked assets.",
-        "Show requested stake, executable stake, shortfall, regime hour count, action, and time remaining in the phase.",
+        "Show requested stake, executed stake, zero reserved stake, available kitty amount, shortfall, locked event action, regime hour count, and time remaining in the phase.",
         "Color each tracked-asset dashboard price green for UP, red for DOWN, and neutral for FLAT or unavailable, using the asset's hourly price direction.",
+        "Apply that same reconciled price and hourly direction class to the compact tracked-symbol cards at the top of the page.",
         "Show a floating total-paper-portfolio card aggregating tracked-asset net P&L, labeled UP or DOWN with the signed dollar total and tracked-asset count.",
         "Render tracked assets as a snap-to-card carousel with five cards across on desktop and tablets and one full-width card on mobile phones; arrow controls advance exactly one card.",
+        "Keep horizontal movement inside the tracked-card carousel on mobile; its controls and other page sections must not create document-level horizontal scrolling.",
         "Show SOLD or BOUGHT proceeds separately from realized P&L.",
         "Use precise amounts and do not display an estimated dollar result as realized profit."
       ]
@@ -45,8 +62,12 @@
       "name": "Create and freeze the signal ledger",
       "requirements": [
         "Store each timestamp-locked guess with time, pair, predicted direction, actual direction, and right/false result.",
+        "Never replace an existing settled-result timestamp.",
+        "Read candle open and close from the same provider OHLC row.",
+        "Copy provider OHLC rows exactly into any fallback observation cache; never append a quote-derived flat candle.",
         "Score only completed candles; a close above open is UP/green, below open is DOWN/red, and equal is FLAT/gray.",
         "BUY is RIGHT only against UP; SELL is RIGHT only against DOWN; FLAT is not a win.",
+        "A completed zero-move candle is labeled FLAT and excluded from RIGHT/WRONG totals; it is never labeled UNRESOLVED.",
         "If a row has a saved direction, that direction controls its audit action, chart action, and historical result.",
         "Never rewrite old rows through a newer flip map."
       ]
@@ -56,11 +77,13 @@
       "name": "Calculate truth and confidence",
       "requirements": [
         "Calculate every percentage as RIGHT / TOTAL * 100.",
+        "Calculate a percentage only when TOTAL is greater than zero; otherwise expose scored=false and render an em dash or UNSCORED.",
         "Calculate BUY and SELL action cards from saved predicted directions, not the current map.",
-        "Calculate family confidence by baseline BUY/SELL family plus AGREE/DISAGREE branch.",
+        "Calculate family confidence by saved BUY/SELL direction plus the intrinsic pair shape: same signs are AGREE and mixed signs are DISAGREE.",
         "Calculate internal agreement from resolved table RIGHT/WRONG results over the recent 12 rows and all rows.",
         "Calculate phase-action confidence from the first resolved candle of each phase.",
-        "Expose raw historical and effective inverted values separately whenever a metric is flipped."
+        "Expose raw historical and effective inverted values separately whenever a metric is flipped.",
+        "For every binary confidence family calculate z = (RIGHT/TOTAL - 0.5) / sqrt(0.25/TOTAL), centered bell evidence = (2 * Phi(abs(z)) - 1) * 100, and a 0..1 stake multiplier."
       ]
     },
     {
@@ -68,11 +91,13 @@
       "name": "Apply dynamic inversion",
       "requirements": [
         "Use a stable baseline pair map to prevent flip cascades.",
-        "If a branch or displayed BUY/SELL metric has at least 3 samples and is below 45%, mark it INVERTED.",
-        "Effective confidence is 100% minus raw historical confidence; 3.8% becomes 96.2%.",
-        "Flip the branch for future signals, backend execution, cards, phase statistics, internal-agreement display, and live JSON.",
-        "Label affected displays HISTORICAL, EFFECTIVE, and FLIPPED.",
-        "A complete flip requires at least 20 resolved samples and overall confidence below 45%.",
+        "Require at least 12 samples and at least 50% centered Gaussian evidence before a confidence family may control execution.",
+        "When eligible history is below 50% RIGHT, mark future orientation INVERT; when above 50%, mark KEEP; exactly 50% or insufficient evidence is HOLD.",
+        "Effective confidence is 100% minus raw historical confidence only when the eligible curve applies INVERT; otherwise retain the raw percentage.",
+        "Apply the same Gaussian orientation to future backend execution, cards, phase statistics, internal-agreement display, and live JSON.",
+        "Label affected displays HISTORICAL, EFFECTIVE, BELL evidence, z score, KEEP/INVERT/HOLD, stake multiplier, and FLIPPED when applied.",
+        "Select exactly one execution-evidence source in priority order: same-quarter regime, current family plus agreement shape, then all history.",
+        "Treat overlapping family, quarter, and aggregate evidence as one selected orientation; never flip twice.",
         "Raw historical values remain available for audit and no-lookahead verification."
       ]
     },
@@ -81,9 +106,12 @@
       "name": "Resolve the live action dynamically",
       "requirements": [
         "Do not lock live execution permanently to one historical answer.",
+        "Expose modelAction, selectedExecutionAction, and executionAction separately so a model call, a selected future action, and an actual paper event cannot be conflated.",
         "At each current regime boundary, recompute the effective action from the current formula guess, active regime, historical family confidence, internal agreement, inversion state, current candle direction, and phase timing.",
         "Use the saved direction for historical rows but use the effective inverted direction for new or unresolved execution guesses.",
-        "If trusted or explicitly inverted, select BUY or SELL; if neither is supported, HOLD.",
+        "If the selected Gaussian source is eligible, select KEEP or INVERT; if the sample or evidence floor is not met, HOLD.",
+        "A trusted current family branch with at least 85% effective confidence remains aggressive only when its Gaussian evidence is eligible.",
+        "After inversion, a BUY remains subject to the down-candle and same-quarter gate; a SELL is not blocked merely because its raw quarter branch was inverted.",
         "Do not claim a future trade is guaranteed RIGHT; only completed candles can establish RIGHT or WRONG."
       ]
     },
@@ -98,6 +126,8 @@
         "After allocation, wait until the next top-of-hour before another allocation.",
         "Do not allocate more than once per hour while the regime continues.",
         "Reset the hourly allowance only when the hour changes or the regime changes.",
+        "Consume the phase/hour allowance only after an event executes. A blocked request remains unallocated and may retry on the next five-minute boundary.",
+        "Never execute or overwrite a second BUY/SELL at a boundary that already owns a persisted decision.",
         "Hold after four alternating BUY/SELL phase calls such as BUY, SELL, BUY, SELL."
       ]
     },
@@ -105,13 +135,18 @@
       "step": 8,
       "name": "Size the regime allocation",
       "requirements": [
-        "Use requested amount = regime hour count X average hourly commitment X BUY or SELL multiplier.",
-        "When effective historical confidence is at least 85%, enable AGGRESSIVE actions in the selected BUY/SELL direction and scale the commitment by a bounded confidence factor up to 2.0x.",
+        "Use requested amount = regime hour count X average commitment X BUY or SELL multiplier X selected Gaussian stake multiplier.",
+        "The Gaussian stake multiplier is centered bell evidence / 100 when eligible and zero during HOLD.",
+        "When effective historical confidence is at least 85% and Gaussian evidence is eligible, enable AGGRESSIVE actions in the selected BUY/SELL direction and scale the commitment by a bounded confidence factor up to 2.0x.",
         "Use the BUY multiplier for BUY and the SELL multiplier for SELL; never apply the wrong multiplier.",
         "Apply the phase count once only; do not multiply again through sequence or bell-curve code.",
-        "Use one canonical sizing result containing requested_amount, available_amount, executable_amount, shortfall, multiplier, regime_step_count, and eligible.",
+        "Use one canonical sizing result containing requested_amount, available_amount, executable_amount, executed_amount, reserved_amount, shortfall, multiplier, regime_step_count, eligible, and kitty_unchanged.",
+        "Do not impose a fabricated 90% confidence floor; confidence fields must contain measured values.",
         "Cap BUY by available cash.",
+        "A phase-entry BUY may add the committed amount to an existing long position when cash is available; cost basis and units must update together.",
         "If SELL request exceeds held asset value, sell all available holdings and report the shortfall.",
+        "Every event exposes cash_delta and asset_units_delta. Both deltas are zero unless executed=true.",
+        "A nonexecuted event always exposes amount=0, executed_amount=0, reserved_amount=0, allocation_consumed=false, and kitty_unchanged=true.",
         "Never execute below $2.00."
       ]
     },
@@ -123,6 +158,7 @@
         "When asset dust is below threshold after a full sale, mark the wallet drained.",
         "Set rebuy_pending and buy up to $5,000 at the next boundary when cash is available.",
         "Keep cash, units, cost basis, proceeds, realized P&L, open P&L, and equity separate.",
+        "Expose reserved_cash=0 and reserved_asset_units=0, plus the currently available cash and asset units, in wallet state and live JSON.",
         "Reset paper wallets only through the authenticated reset mechanism."
       ]
     },
@@ -132,6 +168,15 @@
       "requirements": [
         "Render real market candles separately from synthetic guess candles.",
         "Build guess candles from the user's stored guess direction and stored change; use the active map only for unresolved guesses.",
+        "Each hourly prediction stick is a sequential path of exactly twelve five-minute locked directions.",
+        "Elastize each directional mark by the current observed average five-minute move; keep the original stored change separately and never alter the locked direction used for scoring.",
+        "Apply every mark to the prior synthetic close. Opposite marks cancel: +,- returns to the hourly open, and +,-,+ rests at the first positive level.",
+        "Expose the twelve-mark directionPath, directionSequence, per-mark elasticity, total elasticity, net directional steps, turns, persistence percent, and resting level.",
+        "Label chart shorthand in plain language: STEP is the current average five-minute price move and NET is positive marks minus negative marks.",
+        "Give each completed mark RIGHT, WRONG, or FLAT credit against its matching provider five-minute candle, then expose the hourly mark totals with the stick.",
+        "Only give the whole prediction stick RIGHT, WRONG, or FLAT when the hour is completed and both forecast and actual contain exactly 12 marks.",
+        "Treat a completed path with equal positive and negative steps as a locked flat/HOLD prediction; score it against the real hour instead of leaving it UNRESOLVED.",
+        "Keep a forming or mark-count-incomplete hourly candle UNRESOLVED and show GUESS x/12 and ACTUAL y/12 progress. Future sticks remain PENDING and show x/12 LOCKED.",
         "For completed chart candles, compare the displayed guess direction directly with the displayed actual candle direction.",
         "Mark completed predictions RIGHT or WRONG on the chart; use MIXED only for an explicitly aggregated mixed result.",
         "Ensure candle color, BUY/SELL action, and RIGHT/WRONG label use the same locked direction."
@@ -142,6 +187,7 @@
       "name": "Render compression and diagnostics",
       "requirements": [
         "Compute primary RLE compression from resolved directional sequence and first-loop compression at 50/50 weights.",
+        "Count UP and DOWN across the entire selected window; calculate the tail streak separately so entropy is not based only on the final run.",
         "Use no more than 12 parts when reporting shortest and longest 100% compressed runs.",
         "Use internal agreement as secondary compression at 30% of the combined score.",
         "Show entropy, phase count, phase changes, tail streak, perfect-run bounds, secondary state, and combined score.",
@@ -162,16 +208,21 @@
   ],
   "required_json_contract": {
     "historical_fields": ["time", "pair", "predicted", "actual", "right"],
-    "sizing_fields": ["requested_amount", "available_amount", "executable_amount", "shortfall", "phase_step_multiplier", "regime_step_count", "eligible"],
-    "flip_fields": ["historical_percentage", "effective_percentage", "flipped", "adaptiveCompleteFlip", "branchFlipActive", "executionInversionActive"],
-    "dashboard_fields": ["currentPhaseStatus", "phaseSizing", "phaseStakeAmount", "regimeStepCount", "regimeRequestedAmount", "pairStats", "phaseActionStats", "internalAgreementRecent", "internalAgreementRecentEffective", "currentFamilyConfidence", "chartTimeline"]
+    "sizing_fields": ["requested_amount", "available_amount", "executable_amount", "executed_amount", "reserved_amount", "shortfall", "phase_step_multiplier", "regime_step_count", "eligible", "kitty_unchanged"],
+    "event_accounting_fields": ["executed", "amount", "units", "cash_delta", "asset_units_delta", "allocation_consumed", "kitty_unchanged"],
+    "chart_mark_fields": ["expectedMarks", "combinedMarks", "directionPath", "directionSequence", "markStats", "markProgress", "guessCreditLabel", "elasticity", "guessResult", "guessResultReason"],
+    "flip_fields": ["historical_percentage", "effective_percentage", "flipped", "bell_curve", "adaptiveCompleteFlip", "branchFlipActive", "executionInversionActive", "accuracyHistorical", "accuracyEffective", "accuracyFlipped", "accuracyBellCurve"],
+    "gaussian_fields": ["right", "wrong", "total", "raw_percent", "effective_percent", "z_score", "evidence_percent", "candidate_orientation", "orientation", "eligible", "stake_multiplier", "minimum_samples", "minimum_evidence_percent", "reason"],
+    "execution_fields": ["modelAction", "quarterCandidateAction", "executionBellCurveFormulaAction", "selectedExecutionAction", "executionAction", "executionBellCurve", "executionBellCurveSource", "executionBellCurveEligible", "executionBellCurveStrength", "executionBellCurveMultiplier", "executionBellCurveTradeEligible", "executionBellCurveTradeReason"],
+    "dashboard_fields": ["currentPhaseStatus", "phaseSizing", "phaseStakeAmount", "regimeStepCount", "regimeRequestedAmount", "pairStats", "phaseActionStats", "internalAgreementRecent", "internalAgreementRecentEffective", "currentFamilyConfidence", "hourAudit", "chartTimeline"],
+    "scoring_flags": ["accuracyScored", "compressionScored", "internalAgreementScored", "currentFamilyConfidence.scored", "quarterRegime.scored"]
   },
   "files_and_state": {
     "main_code": "E:\\coinbase\\index.php",
     "specification": "E:\\coinbase\\strategy-spec.json",
     "state": "E:\\coinbase\\tickers\\<SYMBOL>-*.json",
     "wallet_reset_backup": "E:\\coinbase\\wallet-reset-backups\\",
-    "do_not_use_as_truth": ["stale generated HTML", "stale live JSON", "current flipped map for historical rows"]
+    "do_not_use_as_truth": ["stale generated HTML", "stale live JSON", "current flipped map for historical rows", "spot quote represented as OHLC", "requested stake represented as executed stake", "model one-unit move represented as wallet P/L"]
   },
   "verification_plan": [
     "Run php -l E:\\coinbase\\index.php.",
@@ -179,11 +230,29 @@
     "Verify a 3.8% BUY card displays 96.2% effective confidence and raw 3.8% history.",
     "Verify an inverted branch changes future execution but never rewrites resolved rows.",
     "Verify the chart's displayed candle action and RIGHT/WRONG label agree.",
+    "Verify completed-candle direction reads both open and close from the same OHLC row.",
+    "Verify hourly prediction candles accumulate locked changes without actual-price drift.",
+    "Verify modelAction, selectedExecutionAction, executionAction, and the current paper event are explicitly distinguishable.",
+    "Verify raw and effective confidence values and counts are shown together after inversion.",
+    "Verify Gaussian evidence is 0% at 50% RIGHT, grows symmetrically toward 100% in either tail, and uses the declared sample count.",
+    "Verify fewer than 12 samples or less than 50% centered bell evidence produces HOLD and a zero stake multiplier.",
+    "Verify an eligible below-50% source applies exactly one future inversion while an eligible above-50% source keeps the source direction.",
+    "Verify execution evidence priority is quarter, then family plus agreement, then all history, with no double flip.",
+    "Verify requested stake equals average commitment X regime count X side multiplier X Gaussian stake multiplier, with aggressive scaling applied only once.",
+    "Verify RLE entropy counts the full 12-part window rather than only the tail.",
+    "Verify a loss-protected SELL records a blocked event and does not mutate wallet balances.",
+    "Verify every nonexecuted event has zero amount, zero reservation, zero cash delta, zero asset-unit delta, kitty_unchanged=true, and allocation_consumed=false.",
+    "Verify a blocked request does not consume phase/hour allocation and can retry at the next five-minute boundary.",
+    "Verify a second opposite call at the same boundary leaves the original event, trade count, cash, units, and cost basis unchanged.",
     "Verify a new regime executes immediately, then cannot execute again until the next top-of-hour.",
     "Verify a 12-hour regime uses X12 and never exceeds the 12-hour cap.",
     "Verify SELL over holdings sells all available value and reports shortfall.",
     "Verify BUY is cash-capped and never below $2.00.",
     "Verify four alternating calls HOLD.",
+    "Verify every scored hourly prediction has exactly 12 guess marks and 12 actual marks.",
+    "Verify every directional mark uses the current average move as its elasticity step while retaining its original stored change.",
+    "Verify +,-,+ closes at the same resting level as its first + mark and that the 12-symbol direction sequence drives the displayed candle.",
+    "Verify a completed zero-net 12-mark path is a flat/HOLD prediction and receives a completed result rather than UNRESOLVED.",
     "Verify full page refresh updates all dashboard innerText and tracked assets."
   ],
   "maintenance_rule": "For every future strategy question, update this plan and the matching implementation together. Preserve immutable historical truth, dynamic future inversion, hourly regime timing, paper-only execution, and the complete dashboard refresh contract."

@@ -1,5 +1,5 @@
 {
-    "ran_at": "2026-07-28T19:46:03Z",
+    "ran_at": "2026-07-28T23:45:07Z",
     "target_count": 6,
     "target_batch_limit": 6,
     "target_batch_offset": 0,
@@ -16,7 +16,7 @@
             "symbol_probe": null,
             "removed_from_list": false,
             "remove_reason": "",
-            "checked_at": "2026-07-28T19:46:07Z"
+            "checked_at": "2026-07-28T23:45:10Z"
         },
         {
             "market_type": "crypto",
@@ -28,55 +28,75 @@
             "symbol_probe": null,
             "removed_from_list": false,
             "remove_reason": "",
-            "checked_at": "2026-07-28T19:46:16Z"
+            "checked_at": "2026-07-28T23:45:14Z"
         },
         {
             "market_type": "crypto",
             "symbol": "LTC-USD",
-            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=LTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
-            "ok": true,
-            "status": 200,
-            "has_price_payload": true,
-            "symbol_probe": null,
+            "requested_url": "http://127.0.0.1:8765/index.php?market_type=crypto&symbol=LTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/LTC-USD?range=1d&interval=5m&includePrePost=false",
+                "ok": true,
+                "status": 200,
+                "looks_real": true
+            },
             "removed_from_list": false,
-            "remove_reason": "",
-            "checked_at": "2026-07-28T19:46:21Z"
+            "remove_reason": "Kept symbol because direct crypto symbol probe still looked valid even though the page returned no usable price CSV/JSON.",
+            "checked_at": "2026-07-28T23:45:14Z"
         },
         {
             "market_type": "stock",
             "symbol": "AAPL",
-            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=AAPL&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
-            "ok": true,
-            "status": 200,
-            "has_price_payload": true,
-            "symbol_probe": null,
+            "requested_url": "http://127.0.0.1:8765/index.php?market_type=stock&symbol=AAPL&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/AAPL?range=1d&interval=5m&includePrePost=false",
+                "ok": true,
+                "status": 200,
+                "looks_real": true
+            },
             "removed_from_list": false,
-            "remove_reason": "",
-            "checked_at": "2026-07-28T19:46:26Z"
+            "remove_reason": "Kept symbol because Yahoo still returned a usable stock quote path even though the page returned no usable price CSV/JSON.",
+            "checked_at": "2026-07-28T23:45:14Z"
         },
         {
             "market_type": "stock",
             "symbol": "GM",
-            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=GM&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
-            "ok": true,
-            "status": 200,
-            "has_price_payload": true,
-            "symbol_probe": null,
+            "requested_url": "http://127.0.0.1:8765/index.php?market_type=stock&symbol=GM&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/GM?range=1d&interval=5m&includePrePost=false",
+                "ok": true,
+                "status": 200,
+                "looks_real": true
+            },
             "removed_from_list": false,
-            "remove_reason": "",
-            "checked_at": "2026-07-28T19:46:29Z"
+            "remove_reason": "Kept symbol because Yahoo still returned a usable stock quote path even though the page returned no usable price CSV/JSON.",
+            "checked_at": "2026-07-28T23:45:19Z"
         },
         {
             "market_type": "stock",
             "symbol": "TSLA",
-            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=TSLA&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
-            "ok": true,
-            "status": 200,
-            "has_price_payload": true,
-            "symbol_probe": null,
+            "requested_url": "http://127.0.0.1:8765/index.php?market_type=stock&symbol=TSLA&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/TSLA?range=1d&interval=5m&includePrePost=false",
+                "ok": true,
+                "status": 200,
+                "looks_real": true
+            },
             "removed_from_list": false,
-            "remove_reason": "",
-            "checked_at": "2026-07-28T19:46:32Z"
+            "remove_reason": "Kept symbol because Yahoo still returned a usable stock quote path even though the page returned no usable price CSV/JSON.",
+            "checked_at": "2026-07-28T23:45:20Z"
         }
     ]
 }
