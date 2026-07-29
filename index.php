@@ -1132,6 +1132,56 @@ function walletResetPasswordMatches(string $configuredPassword, string $provided
     return hash_equals($configuredPassword, $providedPassword);
 }
 
+function cashOutPinMatches(string $configuredPin, string $providedPin): bool
+{
+    $configuredPin = trim($configuredPin);
+    $providedPin = trim($providedPin);
+    if (!preg_match('/^[1-4]{4}$/', $configuredPin)) return false;
+    if (!preg_match('/^[1-4]{4}$/', $providedPin)) return false;
+    return hash_equals($configuredPin, $providedPin);
+}
+
+function randomCashOutPin(): string
+{
+    $pin = '';
+    for ($index = 0; $index < 4; $index++) {
+        $pin .= (string)random_int(1, 4);
+    }
+    return $pin;
+}
+
+function paperWalletCashOutPinPath(string $directory, string $marketType, string $symbol): string
+{
+    $safeMarketType = preg_replace('/[^a-z0-9_-]+/i', '-', strtolower(trim($marketType)));
+    $safeSymbol = preg_replace('/[^A-Z0-9._-]+/i', '-', strtoupper(trim($symbol)));
+    $safeMarketType = is_string($safeMarketType) && $safeMarketType !== '' ? $safeMarketType : 'market';
+    $safeSymbol = is_string($safeSymbol) && $safeSymbol !== '' ? $safeSymbol : 'SYMBOL';
+    return rtrim($directory, '/\\') . DIRECTORY_SEPARATOR . $safeMarketType . '-' . $safeSymbol . '-cashout-pin.json';
+}
+
+function loadOrCreateCashOutPin(string $path, string $marketType, string $symbol): string
+{
+    $state = loadLocalJsonArray($path);
+    $pin = trim((string)($state['pin'] ?? ''));
+    if (preg_match('/^[1-4]{4}$/', $pin)) return $pin;
+    return rotateCashOutPin($path, $marketType, $symbol);
+}
+
+function rotateCashOutPin(string $path, string $marketType, string $symbol): string
+{
+    $pin = randomCashOutPin();
+    saveLocalJsonArray($path, [
+        'schema' => 'paper-cashout-pin-v1',
+        'market_type' => strtolower(trim($marketType)),
+        'symbol' => strtoupper(trim($symbol)),
+        'pin' => $pin,
+        'digits' => ['1', '2', '3', '4'],
+        'rotated_at' => gmdate('Y-m-d\TH:i:s\Z'),
+        'note' => 'Displayed dashboard confirmation code. Rotates after successful paper cash-out.',
+    ]);
+    return $pin;
+}
+
 function loadLocalJsonArray(string $path): array
 {
     if (!is_file($path)) return [];
@@ -1918,15 +1968,26 @@ $analysis_requested = isset($_GET['run_analysis']) && $_GET['run_analysis'] === 
     && !$is_live_request;
 $wallet_reset_requested = isset($_POST['reset_wallet']) && $_POST['reset_wallet'] === '1'
     && !$is_live_request;
+$wallet_cash_out_requested = isset($_POST['cash_out_wallet']) && $_POST['cash_out_wallet'] === '1'
+    && !$is_live_request;
+$wallet_buy_back_requested = isset($_POST['buy_back_wallet']) && $_POST['buy_back_wallet'] === '1'
+    && !$is_live_request;
 $tracked_symbol_remove_requested = isset($_POST['remove_tracked_symbol']) && $_POST['remove_tracked_symbol'] === '1'
     && !$is_live_request;
 $skip_auto_register_current = isset($_GET['skip_autoregister']) && $_GET['skip_autoregister'] === '1';
 $wallet_reset_done = isset($_GET['wallet_reset_done']) && $_GET['wallet_reset_done'] === '1';
+$wallet_cash_out_done = isset($_GET['wallet_cash_out_done']) && $_GET['wallet_cash_out_done'] === '1';
+$wallet_buy_back_done = isset($_GET['wallet_buy_back_done']) && $_GET['wallet_buy_back_done'] === '1';
 $wallet_reset_error = '';
+$wallet_cash_out_error = '';
+$wallet_buy_back_error = '';
 $tracked_symbol_remove_error = '';
 $configured_wallet_reset_password = localEnvironmentValue('WALLET_RESET_PASSWORD');
 $provided_wallet_reset_password = is_string($_POST['wallet_reset_password'] ?? null)
     ? (string)$_POST['wallet_reset_password']
+    : '';
+$provided_wallet_cash_out_pin = is_string($_POST['wallet_cash_out_pin'] ?? null)
+    ? (string)$_POST['wallet_cash_out_pin']
     : '';
 $remove_tracked_market_type = is_string($_POST['remove_market_type'] ?? null)
     ? strtolower(trim((string)$_POST['remove_market_type']))
@@ -1936,12 +1997,20 @@ $remove_tracked_symbol = is_string($_POST['remove_symbol'] ?? null)
     : '';
 $wallet_bootstrap_path = paperWalletBootstrapPath($dir, $market_type, $ticker);
 $model_wallet_state_path = $dir . $ticker . '-model-wallet-state.json';
+$wallet_cash_out_pin_path = paperWalletCashOutPinPath($dir, $market_type, $ticker);
+$current_wallet_cash_out_pin = loadOrCreateCashOutPin($wallet_cash_out_pin_path, $market_type, $ticker);
 if ($wallet_reset_requested) {
     if (!walletResetPasswordMatches($configured_wallet_reset_password, $provided_wallet_reset_password)) {
         $wallet_reset_error = $configured_wallet_reset_password === ''
             ? 'Wallet reset is disabled until WALLET_RESET_PASSWORD is configured on the server.'
             : 'Wallet reset password was not accepted.';
         $wallet_reset_requested = false;
+    }
+}
+if ($wallet_cash_out_requested) {
+    if (!cashOutPinMatches($current_wallet_cash_out_pin, $provided_wallet_cash_out_pin)) {
+        $wallet_cash_out_error = 'Cash out PIN was not accepted. Enter the four numbers shown on the dashboard.';
+        $wallet_cash_out_requested = false;
     }
 }
 if ($tracked_symbol_remove_requested) {
@@ -2181,10 +2250,11 @@ if (!defined('FUTURE_GUESS_HORIZON')) define('FUTURE_GUESS_HORIZON', 49);
 if (!defined('VISIBLE_FUTURE_GUESSES')) define('VISIBLE_FUTURE_GUESSES', 9);
 if (!defined('TRADE_ANALYSIS_HORIZON')) define('TRADE_ANALYSIS_HORIZON', ONE_HOUR_CANDLE_COUNT);
 if (!defined('REALIZE_LOSS_TRADES')) define('REALIZE_LOSS_TRADES', true);
+if (!defined('MAX_REALIZED_SELL_LOSS_AMOUNT')) define('MAX_REALIZED_SELL_LOSS_AMOUNT', 100.00);
 if (!defined('LOW_ACCURACY_INVERSION_PERCENT')) define('LOW_ACCURACY_INVERSION_PERCENT', 50.0);
 // Table-led paper execution should be able to sell immediately on a SELL call.
 if (!defined('MIN_SELL_EDGE_PERCENT')) define('MIN_SELL_EDGE_PERCENT', 0.00);
-if (!defined('MIN_TRADE_AMOUNT')) define('MIN_TRADE_AMOUNT', 2.00);
+if (!defined('MIN_TRADE_AMOUNT')) define('MIN_TRADE_AMOUNT', 5.00);
 if (!defined('SPIRAL_GUARD_SOFT_DRAWDOWN_PERCENT')) define('SPIRAL_GUARD_SOFT_DRAWDOWN_PERCENT', 0.75);
 if (!defined('SPIRAL_GUARD_HARD_DRAWDOWN_PERCENT')) define('SPIRAL_GUARD_HARD_DRAWDOWN_PERCENT', 2.00);
 if (!defined('SPIRAL_GUARD_ALPHA_LOSS_PERCENT')) define('SPIRAL_GUARD_ALPHA_LOSS_PERCENT', 0.50);
@@ -2194,6 +2264,7 @@ if (!defined('SPIRAL_GUARD_RECOVERY_CONFIDENCE_PERCENT')) define('SPIRAL_GUARD_R
 if (!defined('SPIRAL_GUARD_RECOVERY_COMPRESSION_PERCENT')) define('SPIRAL_GUARD_RECOVERY_COMPRESSION_PERCENT', 55.0);
 if (!defined('SPIRAL_GUARD_RECOVERY_CONFIRMATIONS')) define('SPIRAL_GUARD_RECOVERY_CONFIRMATIONS', 2);
 if (!defined('COMPRESSION_TOKEN_TAKEOVER_PERCENT')) define('COMPRESSION_TOKEN_TAKEOVER_PERCENT', 60.0);
+if (!defined('COMPRESSION_CANDLE_FLIP_PERCENT')) define('COMPRESSION_CANDLE_FLIP_PERCENT', 50.0);
 if (!defined('PAPER_CRYPTO_TAKER_FEE_BPS')) {
     define('PAPER_CRYPTO_TAKER_FEE_BPS', max(0.0, (float)(localEnvironmentValue('COINBASE_PAPER_TAKER_FEE_BPS') ?: 60.0)));
 }
@@ -5365,6 +5436,23 @@ function recomputeRealizedPnlFromTrades(array $trades): float
     return $realized;
 }
 
+function sellLossExceedsHardLimit(float $realizedPnl): bool
+{
+    $limit = defined('MAX_REALIZED_SELL_LOSS_AMOUNT')
+        ? abs((float)MAX_REALIZED_SELL_LOSS_AMOUNT)
+        : 0.0;
+    return $limit > 0.0 && $realizedPnl <= -$limit;
+}
+
+function sellLossLimitLabel(float $realizedPnl): string
+{
+    $limit = defined('MAX_REALIZED_SELL_LOSS_AMOUNT')
+        ? abs((float)MAX_REALIZED_SELL_LOSS_AMOUNT)
+        : 0.0;
+    return 'SELL BLOCKED · LOSS LIMIT $' . number_format($limit, 2)
+        . ' · PREVIEW ' . ($realizedPnl < 0.0 ? '-$' : '+$') . number_format(abs($realizedPnl), 2);
+}
+
 /** Ensure every ledger trade has an explicit BUY/SELL side and P&L role. */
 function normalizePaperTradeLedger(array $state): array
 {
@@ -5432,6 +5520,356 @@ function normalizePaperTradeLedger(array $state): array
     return $state;
 }
 
+function backupPaperWalletFiles(string $walletStatePath, string $bootstrapPath, string $symbol, string $reason): string
+{
+    $safeSymbol = preg_replace('/[^A-Z0-9._-]+/i', '-', strtoupper(trim($symbol)));
+    $safeReason = preg_replace('/[^a-z0-9._-]+/i', '-', strtolower(trim($reason)));
+    $safeSymbol = is_string($safeSymbol) && $safeSymbol !== '' ? $safeSymbol : 'SYMBOL';
+    $safeReason = is_string($safeReason) && $safeReason !== '' ? $safeReason : 'paper-wallet-backup';
+    $backupRoot = __DIR__ . DIRECTORY_SEPARATOR . 'wallet-reset-backups';
+    if (!is_dir($backupRoot)) @mkdir($backupRoot, 0775, true);
+    $backupDir = $backupRoot . DIRECTORY_SEPARATOR . gmdate('Y-m-d-His') . '-' . $safeSymbol . '-' . $safeReason;
+    if (!is_dir($backupDir)) @mkdir($backupDir, 0775, true);
+    foreach ([$walletStatePath, $bootstrapPath] as $path) {
+        if (!is_file($path)) continue;
+        @copy($path, $backupDir . DIRECTORY_SEPARATOR . basename($path));
+    }
+    return $backupDir;
+}
+
+function cashOutAndRebalancePaperWallet(
+    string $walletStatePath,
+    string $bootstrapPath,
+    string $marketType,
+    string $symbol,
+    float $currentPrice,
+    string $eventTime,
+    array $executionContext
+): array {
+    $state = loadLocalJsonArray($walletStatePath);
+    $state = is_array($state) ? $state : [];
+    $state = normalizeTraderDisplayState($state);
+    $state = markPaperWalletToMarket($state, $currentPrice);
+    $cashBefore = max(0.0, (float)($state['cash_left'] ?? 0.0));
+    $unitsBefore = max(0.0, (float)($state['asset_units'] ?? 0.0));
+    $costBasisBefore = max(0.0, (float)($state['asset_cost_basis'] ?? 0.0));
+    $holdingValueBefore = $unitsBefore * max(0.0, $currentPrice);
+    $sellEvent = null;
+    $realizedPnl = 0.0;
+    $cashAfterSale = $cashBefore;
+    if ($currentPrice > 0.0 && $unitsBefore > 0.0 && $holdingValueBefore > 0.0) {
+        $sellFill = paperExecutionFill(
+            'SELL',
+            exchangeFloorTradeRequestAmount('SELL', $holdingValueBefore, (float)($executionContext['minimum_funds'] ?? MIN_TRADE_AMOUNT)),
+            $holdingValueBefore,
+            $currentPrice,
+            $executionContext,
+            $unitsBefore,
+            true
+        );
+        if (($sellFill['eligible'] ?? false) === true && (float)($sellFill['units'] ?? 0.0) > 0.0) {
+            $sellUnits = (float)$sellFill['units'];
+            $costPortion = $unitsBefore > 0.0 ? $costBasisBefore * ($sellUnits / $unitsBefore) : 0.0;
+            $realizedPnl = (float)$sellFill['net_cash_amount'] - $costPortion;
+            if (sellLossExceedsHardLimit($realizedPnl)) {
+                $state['display_action'] = sellLossLimitLabel($realizedPnl);
+                $state['last_trade_result'] = 'BLOCKED';
+                $state['last_trade_pnl'] = 0.0;
+                $state['cash_out_blocked_reason'] = 'SELL_LOSS_LIMIT';
+                $state['cash_out_blocked_preview_pnl'] = round($realizedPnl, 8);
+                $state['sell_loss_limit_amount'] = round(abs((float)MAX_REALIZED_SELL_LOSS_AMOUNT), 2);
+                $state['events_by_time'][$eventTime] = [
+                    'action' => 'SELL',
+                    'label' => sellLossLimitLabel($realizedPnl),
+                    'class' => 'result-neutral-cell',
+                    'executed' => false,
+                    'amount' => 0.0,
+                    'realized_pnl' => null,
+                    'preview_realized_pnl' => $realizedPnl,
+                    'loss_limit_amount' => abs((float)MAX_REALIZED_SELL_LOSS_AMOUNT),
+                    'loss_limit_blocked' => true,
+                    'requested_amount' => $sellFill['requested_amount'],
+                    'available_amount' => $sellFill['available_amount'],
+                    'shortfall' => 0.0,
+                    'entry_price' => $sellUnits > 0.0 ? ($costPortion / $sellUnits) : null,
+                    'exit_price' => (float)$sellFill['fill_price'],
+                ];
+                saveLocalJsonArray($walletStatePath, normalizeTraderDisplayState($state));
+                return normalizeTraderDisplayState($state);
+            }
+            $sellEvent = array_merge($sellFill, [
+                'action' => 'SELL',
+                'side' => 'SELL',
+                'trade_side' => 'SELL',
+                'label' => 'CASH OUT SELL · REALIZE WALLET',
+                'class' => $realizedPnl >= 0.0 ? 'result-gain-cell' : 'result-loss-cell',
+                'executed' => true,
+                'amount' => (float)$sellFill['executed_amount'],
+                'units' => $sellUnits,
+                'realized_pnl' => $realizedPnl,
+                'pnl_contributes' => true,
+                'time' => $eventTime,
+                'price' => (float)$sellFill['fill_price'],
+                'entry_price' => $sellUnits > 0.0 ? ($costPortion / $sellUnits) : null,
+                'exit_price' => (float)$sellFill['fill_price'],
+            ]);
+            $cashAfterSale += (float)$sellFill['net_cash_amount'];
+        }
+    }
+
+    $seedAsset = 0.0;
+    $seedCash = $cashAfterSale;
+    $seedUnits = 0.0;
+    $newBootstrap = [
+        'market_type' => strtolower(trim($marketType)),
+        'symbol' => strtoupper(trim($symbol)),
+        'started_at' => $eventTime,
+        'entry_price' => $currentPrice,
+        'starting_pot' => 10000.0,
+        'cash_seed' => $seedCash,
+        'asset_seed' => 0.0,
+        'created_at' => gmdate('Y-m-d\TH:i:s\Z'),
+        'source' => 'CASH_OUT_REBALANCE',
+    ];
+    $newState = [
+        'position' => 'flat',
+        'entry_price' => null,
+        'entry_time' => null,
+        'display_action' => 'CASH OUT · WAITING TO REFILL',
+        'starting_pot' => 10000.0,
+        'current_price' => $currentPrice,
+        'observed_time' => $eventTime,
+        'cash_left' => $seedCash,
+        'asset_units' => 0.0,
+        'asset_cost_basis' => 0.0,
+        'holding_value' => 0.0,
+        'equity_value' => $seedCash,
+        'net_pnl' => $seedCash - 10000.0,
+        'open_pnl' => 0.0,
+        'realized_move' => 0.0,
+        'wins' => 0,
+        'losses' => 0,
+        'last_trade' => $sellEvent,
+        'last_trade_result' => $sellEvent === null ? 'REBALANCED' : ($realizedPnl > 0.00000001 ? 'PROFIT' : ($realizedPnl < -0.00000001 ? 'LOSS' : 'BREAKEVEN')),
+        'last_trade_pnl' => $sellEvent === null ? 0.0 : $realizedPnl,
+        'trades' => $sellEvent === null ? [] : [$sellEvent],
+        'events_by_time' => $sellEvent === null ? [] : [$eventTime => canonicalPaperWalletEvent($sellEvent)],
+        'first_buy_amount' => 0.0,
+        'first_buy_units' => 0.0,
+        'first_buy_price' => null,
+        'total_bought_units' => 0.0,
+        'total_bought_amount' => 0.0,
+        'total_sold_units' => $sellEvent === null ? 0.0 : (float)$sellEvent['units'],
+        'total_sold_amount' => $sellEvent === null ? 0.0 : (float)$sellEvent['amount'],
+        'bootstrap_started_at' => $eventTime,
+        'bootstrap_entry_price' => null,
+        'bootstrap_cash_amount' => $seedCash,
+        'bootstrap_asset_amount' => 0.0,
+        'portfolio_cash_neutral_baseline' => $seedCash,
+        'portfolio_pnl_basis' => 0.0,
+        'portfolio_pnl_basis_label' => 'CASH OUT FLAT · CASH NEUTRAL',
+        'rebuy_pending' => false,
+        'cash_out_refill_pending' => true,
+        'cash_out_refill_target_amount' => 5000.0,
+        'cash_out_asset_refill_target_amount' => 5000.0,
+        'cash_out_cash_kitty_reserve' => 5000.0,
+        'cash_out_refill_reason' => 'WAIT_FOR_MODEL_BUY_AFTER_CASH_OUT',
+        'cash_out_summary' => [
+            'schema' => 'paper-cash-out-v1',
+            'time' => $eventTime,
+            'cash_before' => round($cashBefore, 8),
+            'asset_units_before' => round($unitsBefore, 12),
+            'holding_value_before' => round($holdingValueBefore, 8),
+            'cash_after_sale' => round($cashAfterSale, 8),
+            'realized_pnl' => round($realizedPnl, 8),
+            'cash_left_after_cash_out' => round($seedCash, 8),
+            'asset_refill_value' => 0.0,
+            'target_asset_refill_value' => 5000.0,
+            'asset_refill_target_amount' => 5000.0,
+            'cash_kitty_reserve' => 5000.0,
+            'refill_status' => 'WAITING_FOR_MODEL_BUY',
+            'paper_only' => true,
+        ],
+        'paper_only' => true,
+        'live_orders' => false,
+    ];
+    saveLocalJsonArray($bootstrapPath, $newBootstrap);
+    saveLocalJsonArray($walletStatePath, normalizeTraderDisplayState($newState));
+    return $newState;
+}
+
+function buyBackInPaperWallet(
+    string $walletStatePath,
+    string $marketType,
+    string $symbol,
+    float $currentPrice,
+    string $eventTime,
+    array $executionContext
+): array {
+    $state = loadLocalJsonArray($walletStatePath);
+    $state = is_array($state) ? normalizeTraderDisplayState($state) : [];
+    $state = markPaperWalletToMarket($state, $currentPrice);
+    $cash = max(0.0, (float)($state['cash_left'] ?? 0.0));
+    $target = max(0.0, (float)($state['cash_out_refill_target_amount'] ?? 5000.0));
+    $cashKittyReserve = max(0.0, (float)($state['cash_out_cash_kitty_reserve'] ?? 5000.0));
+    $availableForAssetRefill = max(0.0, $cash - $cashKittyReserve);
+    $amount = min(5000.0, $target > 0.0 ? $target : 5000.0, $availableForAssetRefill);
+    $minimumFunds = max(MIN_TRADE_AMOUNT, (float)($executionContext['minimum_funds'] ?? MIN_TRADE_AMOUNT));
+    if ($currentPrice <= 0.0 || $amount < $minimumFunds) {
+        $state['cash_out_cash_kitty_reserve'] = round($cashKittyReserve, 8);
+        $state['cash_out_available_for_asset_refill'] = round($availableForAssetRefill, 8);
+        $state['display_action'] = 'BUY BACK WAITING · $5K CASH KITTY RESERVED';
+        saveLocalJsonArray($walletStatePath, $state);
+        return $state;
+    }
+    $buyFill = paperExecutionFill(
+        'BUY',
+        exchangeFloorTradeRequestAmount('BUY', $amount, $minimumFunds),
+        $cash,
+        $currentPrice,
+        $executionContext,
+        0.0,
+        true
+    );
+    $buyAmount = (float)($buyFill['executed_amount'] ?? 0.0);
+    $buyUnits = (float)($buyFill['units'] ?? 0.0);
+    if (($buyFill['eligible'] ?? false) !== true || $buyAmount <= 0.0 || $buyUnits <= 0.0) {
+        $state['display_action'] = 'BUY BACK WAITING · BELOW EXCHANGE MINIMUM';
+        saveLocalJsonArray($walletStatePath, $state);
+        return $state;
+    }
+    $trade = array_merge($buyFill, [
+        'action' => 'BUY BACK IN',
+        'side' => 'BUY',
+        'trade_side' => 'BUY',
+        'executed' => true,
+        'time' => $eventTime,
+        'price' => (float)$buyFill['fill_price'],
+        'amount' => $buyAmount,
+        'units' => $buyUnits,
+        'realized_pnl' => null,
+    ]);
+    $state['trades'] = is_array($state['trades'] ?? null) ? $state['trades'] : [];
+    $state['trades'][] = $trade;
+    $state['trades'] = array_slice($state['trades'], -200);
+    $state['last_trade'] = $trade;
+    $state['cash_left'] = max(0.0, $cash + (float)$buyFill['cash_delta']);
+    $state['asset_units'] = max(0.0, (float)($state['asset_units'] ?? 0.0)) + $buyUnits;
+    $state['asset_cost_basis'] = max(0.0, (float)($state['asset_cost_basis'] ?? 0.0)) + $buyAmount;
+    $state['position'] = 'long';
+    $state['entry_price'] = $state['asset_units'] > 0.0
+        ? $state['asset_cost_basis'] / $state['asset_units']
+        : (float)$buyFill['fill_price'];
+    $state['entry_time'] = $eventTime;
+    $state['total_bought_units'] = max(0.0, (float)($state['total_bought_units'] ?? 0.0)) + $buyUnits;
+    $state['total_bought_amount'] = max(0.0, (float)($state['total_bought_amount'] ?? 0.0)) + $buyAmount;
+    if (max(0.0, (float)($state['first_buy_amount'] ?? 0.0)) <= 0.0) {
+        $state['first_buy_amount'] = $buyAmount;
+        $state['first_buy_units'] = $buyUnits;
+        $state['first_buy_price'] = (float)$buyFill['fill_price'];
+    }
+    $state['cash_out_refill_pending'] = false;
+    $state['cash_out_refilled_at'] = $eventTime;
+    $state['cash_out_refilled_amount'] = $buyAmount;
+    $state['cash_out_cash_kitty_reserve'] = round($cashKittyReserve, 8);
+    $state['cash_out_available_for_asset_refill'] = round(max(0.0, (float)$state['cash_left'] - $cashKittyReserve), 8);
+    $state['cash_out_cash_kitty_after_refill'] = (float)$state['cash_left'];
+    $state['portfolio_cash_neutral_baseline'] = (float)$state['cash_left'];
+    $state['portfolio_pnl_basis'] = $buyAmount;
+    $state['portfolio_pnl_basis_label'] = 'BUY BACK ACTIVE LEG · $5K CASH KITTY RESERVED';
+    $state['bootstrap_cash_amount'] = (float)$state['cash_left'];
+    $state['bootstrap_asset_amount'] = $buyAmount;
+    $state['bootstrap_entry_price'] = (float)$buyFill['fill_price'];
+    $state['bootstrap_started_at'] = $eventTime;
+    $state['display_action'] = 'BUY BACK IN · $' . number_format($buyAmount, 2) . ' · $5K CASH KITTY RESERVED';
+    $state['events_by_time'] = is_array($state['events_by_time'] ?? null) ? $state['events_by_time'] : [];
+    $state['events_by_time'][$eventTime] = canonicalPaperWalletEvent(array_merge($buyFill, [
+        'action' => 'BUY',
+        'side' => 'BUY',
+        'trade_side' => 'BUY',
+        'label' => 'BUY BACK IN · REFILL AFTER CASH OUT',
+        'class' => 'result-neutral-cell',
+        'executed' => true,
+        'amount' => $buyAmount,
+        'units' => $buyUnits,
+        'realized_pnl' => null,
+        'entry_price' => (float)$buyFill['fill_price'],
+        'exit_price' => null,
+    ]));
+    $state['current_price'] = $currentPrice;
+    $state['observed_time'] = $eventTime;
+    $state = normalizeTraderDisplayState($state);
+    saveLocalJsonArray($walletStatePath, $state);
+    return $state;
+}
+
+function attachCashOutRejoinFeeEstimate(array $state, float $currentPrice, array $executionContext): array
+{
+    $summary = is_array($state['cash_out_summary'] ?? null) ? $state['cash_out_summary'] : [];
+    if (empty($summary)) {
+        $state['cash_out_rejoin_fee_estimate'] = 0.0;
+        $state['cash_out_after_rejoin_fee'] = 0.0;
+        $state['cash_out_rejoin_fee_label'] = 'NO CASHOUT';
+        return $state;
+    }
+
+    $cashOutAmount = is_numeric($summary['cash_left_after_cash_out'] ?? null)
+        ? max(0.0, (float)$summary['cash_left_after_cash_out'])
+        : (is_numeric($summary['cash_after_sale'] ?? null)
+            ? max(0.0, (float)$summary['cash_after_sale'])
+            : max(0.0, (float)($state['cash_left'] ?? 0.0)));
+    $minimumFunds = max(MIN_TRADE_AMOUNT, (float)($executionContext['minimum_funds'] ?? MIN_TRADE_AMOUNT));
+    $refillTarget = max(0.0, (float)($state['cash_out_refill_target_amount'] ?? ($summary['target_asset_refill_value'] ?? 5000.0)));
+    if ($refillTarget <= 0.0) $refillTarget = 5000.0;
+    $availableCash = max(0.0, (float)($state['cash_left'] ?? 0.0));
+    $cashKittyReserve = max(0.0, (float)($state['cash_out_cash_kitty_reserve'] ?? ($summary['cash_kitty_reserve'] ?? 5000.0)));
+    $availableForAssetRefill = max(0.0, $availableCash - $cashKittyReserve);
+    $rejoinAmount = min(5000.0, $refillTarget, $availableForAssetRefill);
+    $rejoinFee = 0.0;
+    $label = 'EST REJOIN FEE';
+
+    if (($state['cash_out_refill_pending'] ?? false) === true) {
+        if ($currentPrice > 0.0 && $rejoinAmount >= $minimumFunds) {
+            $buyFill = paperExecutionFill(
+                'BUY',
+                exchangeFloorTradeRequestAmount('BUY', $rejoinAmount, $minimumFunds),
+                $availableCash,
+                $currentPrice,
+                $executionContext,
+                0.0,
+                true
+            );
+            $rejoinFee = (($buyFill['eligible'] ?? false) === true)
+                ? max(0.0, (float)($buyFill['fee_amount'] ?? 0.0))
+                : 0.0;
+        }
+    } else {
+        $label = 'ACTUAL REJOIN FEE';
+        $lastTrade = is_array($state['last_trade'] ?? null) ? $state['last_trade'] : [];
+        $lastAction = strtoupper(trim((string)($lastTrade['action'] ?? '')));
+        if (preg_match('/\bBUY\b/', $lastAction) === 1 && is_numeric($lastTrade['fee_amount'] ?? null)) {
+            $rejoinFee = max(0.0, (float)$lastTrade['fee_amount']);
+        } else {
+            foreach (array_reverse((array)($state['trades'] ?? [])) as $trade) {
+                if (!is_array($trade)) continue;
+                $action = strtoupper(trim((string)($trade['action'] ?? '')));
+                if (preg_match('/\bBUY\b/', $action) !== 1 || !is_numeric($trade['fee_amount'] ?? null)) continue;
+                $rejoinFee = max(0.0, (float)$trade['fee_amount']);
+                break;
+            }
+        }
+    }
+
+    $state['cash_out_amount'] = round($cashOutAmount, 8);
+    $state['cash_out_cash_kitty_reserve'] = round($cashKittyReserve, 8);
+    $state['cash_out_available_for_asset_refill'] = round($availableForAssetRefill, 8);
+    $state['cash_out_rejoin_amount'] = round($rejoinAmount, 8);
+    $state['cash_out_rejoin_fee_estimate'] = round($rejoinFee, 8);
+    $state['cash_out_after_rejoin_fee'] = round(max(0.0, $cashOutAmount - $rejoinFee), 8);
+    $state['cash_out_rejoin_fee_label'] = $label;
+    return $state;
+}
+
 /** Separate passive 50/50 market movement from the strategy's incremental result. */
 function applyPortfolioBenchmark(array $state, ?float $currentPrice = null): array
 {
@@ -5442,15 +5880,22 @@ function applyPortfolioBenchmark(array $state, ?float $currentPrice = null): arr
     $bootstrapCash = max(0.0, (float)($state['bootstrap_cash_amount'] ?? 0.0));
     $bootstrapAsset = max(0.0, (float)($state['bootstrap_asset_amount'] ?? 0.0));
     $bootstrapPrice = max(0.0, (float)($state['bootstrap_entry_price'] ?? 0.0));
+    $cashNeutralBaseline = is_numeric($state['portfolio_cash_neutral_baseline'] ?? null)
+        ? max(0.0, (float)$state['portfolio_cash_neutral_baseline'])
+        : $bootstrapCash;
+    $activePnlBasis = is_numeric($state['portfolio_pnl_basis'] ?? null)
+        ? max(0.0, (float)$state['portfolio_pnl_basis'])
+        : ($bootstrapAsset > 0.0 ? $bootstrapAsset : max(0.0, $startingPot - $cashNeutralBaseline));
+    $portfolioPnlBaseline = $cashNeutralBaseline + $activePnlBasis;
     $benchmarkUnits = $bootstrapPrice > 0.0 ? ($bootstrapAsset / $bootstrapPrice) : 0.0;
     $benchmarkEquity = $bootstrapPrice > 0.0 && $price > 0.0
-        ? $bootstrapCash + ($benchmarkUnits * $price)
-        : $startingPot;
+        ? $cashNeutralBaseline + ($benchmarkUnits * $price)
+        : $portfolioPnlBaseline;
     $equity = is_numeric($state['equity_value'] ?? null)
         ? (float)$state['equity_value']
-        : $startingPot;
-    $portfolioPnl = $equity - $startingPot;
-    $benchmarkPnl = $benchmarkEquity - $startingPot;
+        : $portfolioPnlBaseline;
+    $portfolioPnl = $equity - $portfolioPnlBaseline;
+    $benchmarkPnl = $benchmarkEquity - $portfolioPnlBaseline;
     $strategyAlpha = $equity - $benchmarkEquity;
 
     $totalFees = 0.0;
@@ -5482,9 +5927,15 @@ function applyPortfolioBenchmark(array $state, ?float $currentPrice = null): arr
     $state['benchmark_equity'] = $benchmarkEquity;
     $state['benchmark_pnl'] = $benchmarkPnl;
     $state['strategy_alpha'] = $strategyAlpha;
-    $state['portfolio_return_percent'] = $startingPot > 0.0 ? ($portfolioPnl / $startingPot) * 100.0 : 0.0;
-    $state['benchmark_return_percent'] = $startingPot > 0.0 ? ($benchmarkPnl / $startingPot) * 100.0 : 0.0;
-    $state['strategy_alpha_percent'] = $startingPot > 0.0 ? ($strategyAlpha / $startingPot) * 100.0 : 0.0;
+    $state['portfolio_cash_neutral_baseline'] = $cashNeutralBaseline;
+    $state['portfolio_pnl_basis'] = $activePnlBasis;
+    $state['portfolio_pnl_baseline'] = $portfolioPnlBaseline;
+    $state['portfolio_pnl_basis_label'] = trim((string)($state['portfolio_pnl_basis_label'] ?? '')) !== ''
+        ? (string)$state['portfolio_pnl_basis_label']
+        : 'ACTIVE LEG';
+    $state['portfolio_return_percent'] = $activePnlBasis > 0.0 ? ($portfolioPnl / $activePnlBasis) * 100.0 : 0.0;
+    $state['benchmark_return_percent'] = $activePnlBasis > 0.0 ? ($benchmarkPnl / $activePnlBasis) * 100.0 : 0.0;
+    $state['strategy_alpha_percent'] = $activePnlBasis > 0.0 ? ($strategyAlpha / $activePnlBasis) * 100.0 : 0.0;
     $state['total_fees'] = $totalFees;
     $state['total_slippage_cost'] = $totalSlippageCost;
     $state['gross_traded'] = $grossTraded;
@@ -6438,7 +6889,9 @@ function exchangeFloorTradeRequestAmount(
     $requested = max(0.0, $requestedAmount);
     if ($action !== 'BUY' && $action !== 'SELL') return 0.0;
     if ($requested <= 0.0) return 0.0;
-    return max(max(MIN_TRADE_AMOUNT, $minimumFunds), $requested);
+    $floor = max(MIN_TRADE_AMOUNT, $minimumFunds);
+    $roundingBuffer = max(0.01, $floor * 0.0025);
+    return max($floor + $roundingBuffer, $requested);
 }
 
 function floorToMarketIncrement(float $value, float $increment): float
@@ -6615,6 +7068,12 @@ function paperExecutionFill(
             $units = $maximumUnits;
         }
         $gross = $units * $fillPrice;
+        if ($gross < $minimumFunds && ($maximumUnits * $fillPrice) >= $minimumFunds) {
+            $minimumGross = min($maximumUnits * $fillPrice, $minimumFunds + max($quoteIncrement, $minimumFunds * 0.0025));
+            $units = ceilToMarketIncrement($minimumGross / $fillPrice, $baseIncrement);
+            $units = min($units, $maximumUnits);
+            $gross = $units * $fillPrice;
+        }
         $fee = $gross * $feeRate;
         $netProceeds = max(0.0, $gross - $fee);
         if ($gross < $minimumFunds || $units <= 0.0) return $result;
@@ -6759,7 +7218,8 @@ function displayCommitmentAmountForAction(
     string $action,
     ?array $hourlyPlan,
     float $fixedTradeAmount,
-    float $sellMultiplier = 1.0
+    float $sellMultiplier = 1.0,
+    float $buyMultiplier = 1.0
 ): float {
     $action = strtoupper(trim($action));
     if ($action !== 'BUY' && $action !== 'SELL') return 0.0;
@@ -6777,7 +7237,7 @@ function displayCommitmentAmountForAction(
         }
     }
     return $action === 'BUY'
-        ? max(0.0, $fixedTradeAmount)
+        ? max(0.0, $fixedTradeAmount * max(0.0, $buyMultiplier))
         : max(0.0, $fixedTradeAmount * max(0.0, $sellMultiplier));
 }
 
@@ -6792,7 +7252,8 @@ function requestedPaperTradeAmountForAction(
     bool $forcedRebuy = false,
     float $rebuyAmount = 0.0,
     bool $sneakEligible = false,
-    float $sneakFactor = 1.0
+    float $sneakFactor = 1.0,
+    float $buyMultiplier = 1.0
 ): float {
     $action = strtoupper(trim($action));
     if ($action !== 'BUY' && $action !== 'SELL') return 0.0;
@@ -6802,7 +7263,7 @@ function requestedPaperTradeAmountForAction(
             ? $bellCurveBuyAmount
             : ($forcedRebuy
                 ? $rebuyAmount
-                : max(0.0, $fixedTradeAmount));
+                : max(0.0, $fixedTradeAmount * max(0.0, $buyMultiplier)));
     } else {
         $amount = $bellCurveSellAmount > 0.0
             ? $bellCurveSellAmount
@@ -7140,7 +7601,13 @@ function updatePaperBreakTrader(
                 ? $costBasisBefore * ($sellUnits / $unitsHeldBefore)
                 : 0.0;
             $realizedPnl = $sellAmount - $costPortion;
-            if (!REALIZE_LOSS_TRADES && $realizedPnl < 0.0) {
+            if (sellLossExceedsHardLimit($realizedPnl)) {
+                $state['display_action'] = sellLossLimitLabel($realizedPnl);
+                $state['last_trade_result'] = 'BLOCKED';
+                $state['last_trade_pnl'] = 0.0;
+                $state['sell_loss_limit_amount'] = round(abs((float)MAX_REALIZED_SELL_LOSS_AMOUNT), 2);
+                $state['sell_loss_blocked_preview_pnl'] = round($realizedPnl, 8);
+            } elseif (!REALIZE_LOSS_TRADES && $realizedPnl < 0.0) {
                 $state['display_action'] = 'HOLD LONG';
             } else {
             $trade = [
@@ -7278,6 +7745,7 @@ function buildModelPaperTraderState(
     string $observedTime,
     ?array $bootstrap = null,
     float $initialTradeAmount = 0.0,
+    float $buyMultiplier = 1.0,
     float $sellMultiplier = 1.0,
     float $trustPercent = 75.0,
     array $resolvedResultsByTime = [],
@@ -7351,6 +7819,8 @@ function buildModelPaperTraderState(
         'bootstrap_cash_amount' => $cashSeed,
         'bootstrap_asset_amount' => $assetSeed,
         'fixed_trade_amount' => max(0.0, $initialTradeAmount),
+        'buy_multiplier' => max(0.0, $buyMultiplier),
+        'sell_multiplier' => max(0.0, $sellMultiplier),
         'settings' => [
             'buy_drop_percent' => 100.0,
             'take_gain_percent' => 100.0,
@@ -7358,6 +7828,8 @@ function buildModelPaperTraderState(
             'buy_allocation_percent' => 100.0,
             'sell_allocation_percent' => 100.0,
             'fixed_trade_amount' => max(0.0, $initialTradeAmount),
+            'buy_multiplier' => max(0.0, $buyMultiplier),
+            'sell_multiplier' => max(0.0, $sellMultiplier),
         ],
         'paper_only' => true,
         'live_orders' => false,
@@ -7470,7 +7942,8 @@ function buildModelPaperTraderState(
                 false,
                 0.0,
                 $sneakEligible,
-                $sneakFactor
+                $sneakFactor,
+                $buyMultiplier
             );
             $heldAvailable = $action === 'BUY'
                 ? (float)$state['cash_left']
@@ -7508,7 +7981,8 @@ function buildModelPaperTraderState(
                     false,
                     0.0,
                     $sneakEligible,
-                    $sneakFactor
+                    $sneakFactor,
+                    $buyMultiplier
                 );
                 $blockedBuySizing = canonicalTradeSizing(
                     'BUY',
@@ -7535,7 +8009,7 @@ function buildModelPaperTraderState(
                 $entryWallet = (float)$state['cash_left'] + ((float)$state['asset_units'] * $tradePrice);
                 $fixedTradeAmount = max(0.0, (float)($state['fixed_trade_amount'] ?? $initialTradeAmount));
                 $buyAmount = $fixedTradeAmount > 0.0
-                    ? $fixedTradeAmount
+                    ? $fixedTradeAmount * max(0.0, $buyMultiplier)
                     : (float)$state['cash_left'];
                 $buySequenceMultiplier = ($sequence['enabled'] ?? false) === true
                     ? max(1, (int)($sequence['trade_count'] ?? 1))
@@ -7611,7 +8085,11 @@ function buildModelPaperTraderState(
             } else {
                 $blockedBuySizing = canonicalTradeSizing(
                     'BUY',
-                    exchangeFloorTradeRequestAmount('BUY', (float)($state['fixed_trade_amount'] ?? $initialTradeAmount), $minimumFunds),
+                    exchangeFloorTradeRequestAmount(
+                        'BUY',
+                        (float)($state['fixed_trade_amount'] ?? $initialTradeAmount) * max(0.0, $buyMultiplier),
+                        $minimumFunds
+                    ),
                     (float)$state['cash_left'],
                     $minimumFunds,
                     $minimumFundsSource
@@ -7688,7 +8166,25 @@ function buildModelPaperTraderState(
                 ? $costBasisBefore * ($sellUnits / $unitsHeldBefore)
                 : 0.0;
             $realizedPnl = (float)$sellFill['net_cash_amount'] - $costPortion;
-            if (!REALIZE_LOSS_TRADES && $realizedPnl < 0.0) {
+            if (sellLossExceedsHardLimit($realizedPnl)) {
+                $state['events_by_time'][$time] = [
+                    'action' => 'SELL',
+                    'label' => sellLossLimitLabel($realizedPnl),
+                    'class' => 'result-neutral-cell',
+                    'executed' => false,
+                    'amount' => 0.0,
+                    'realized_pnl' => null,
+                    'preview_realized_pnl' => $realizedPnl,
+                    'loss_limit_amount' => abs((float)MAX_REALIZED_SELL_LOSS_AMOUNT),
+                    'loss_limit_blocked' => true,
+                    'requested_amount' => $sellFill['requested_amount'],
+                    'available_amount' => $sellFill['available_amount'],
+                    'shortfall' => 0.0,
+                    'entry_price' => $sellUnits > 0.0 ? ($costPortion / $sellUnits) : null,
+                    'exit_price' => (float)$sellFill['fill_price'],
+                ];
+                $state['display_action'] = 'HOLD LONG · LOSS LIMIT $' . number_format(abs((float)MAX_REALIZED_SELL_LOSS_AMOUNT), 2);
+            } elseif (!REALIZE_LOSS_TRADES && $realizedPnl < 0.0) {
                 $state['events_by_time'][$time] = [
                     'action' => 'SELL',
                     'label' => 'SELL BLOCKED · LOSS PROTECTION',
@@ -7852,6 +8348,7 @@ function updateBoundaryModelTraderState(
     ?array $sequenceSignal = null,
     ?array $hourlyBellCurvePlan = null,
     float $initialTradeAmount = 0.0,
+    float $buyMultiplier = 1.0,
     float $sellMultiplier = 1.0,
     float $stopLossPercent = 0.0,
     ?array $sneakProfile = null,
@@ -7916,6 +8413,8 @@ function updateBoundaryModelTraderState(
         'bootstrap_cash_amount' => $cashSeed,
         'bootstrap_asset_amount' => $assetSeed,
         'fixed_trade_amount' => max(0.0, $initialTradeAmount),
+        'buy_multiplier' => max(0.0, $buyMultiplier),
+        'sell_multiplier' => max(0.0, $sellMultiplier),
         'stop_loss_percent' => max(0.0, $stopLossPercent),
         'last_processed_boundary' => null,
         'last_regime_trade_hour' => null,
@@ -8065,6 +8564,8 @@ function updateBoundaryModelTraderState(
     $state['total_sold_units'] = max(0.0, (float)($state['total_sold_units'] ?? 0.0));
     $state['total_sold_amount'] = max(0.0, (float)($state['total_sold_amount'] ?? 0.0));
     $state['fixed_trade_amount'] = max(0.0, (float)($state['fixed_trade_amount'] ?? $initialTradeAmount));
+    $state['buy_multiplier'] = max(0.0, $buyMultiplier);
+    $state['sell_multiplier'] = max(0.0, $sellMultiplier);
     $state['stop_loss_percent'] = max(0.0, (float)($state['stop_loss_percent'] ?? $stopLossPercent));
     // Refresh persisted sizing so changed BUY multiplier settings are used;
     // SELL applies its own multiplier at execution time below.
@@ -8155,6 +8656,17 @@ function updateBoundaryModelTraderState(
                 && (float)$state['asset_units'] <= 0.00000001
                 && (float)$state['cash_left'] >= 5000.0;
             $rebuyAmount = $forcedRebuy ? min(5000.0, (float)$state['cash_left']) : 0.0;
+            $cashOutCashKittyReserve = max(0.0, (float)($state['cash_out_cash_kitty_reserve'] ?? 5000.0));
+            $cashOutAssetRefillAvailable = max(0.0, (float)$state['cash_left'] - $cashOutCashKittyReserve);
+            $cashOutRefillPending = (($state['cash_out_refill_pending'] ?? false) === true)
+                && (float)$state['asset_units'] <= 0.00000001
+                && $cashOutAssetRefillAvailable >= $minimumFunds;
+            $cashOutRefillAmount = $cashOutRefillPending
+                ? min(
+                    max(0.0, (float)($state['cash_out_refill_target_amount'] ?? 5000.0)),
+                    $cashOutAssetRefillAvailable
+                )
+                : 0.0;
             $sequenceEnabled = is_array($sequenceSignal) && (($sequenceSignal['enabled'] ?? false) === true);
             if ($sequenceEnabled) $action = (string)($sequenceSignal['action'] ?? $action);
             $bellCurveActive = is_array($hourlyBellCurvePlan)
@@ -8228,7 +8740,7 @@ function updateBoundaryModelTraderState(
                 && $allocatedPhaseAction === $phaseAction
                 && (!$regimeActive || !$newRegimeHour);
             $phaseEntry = $phaseAction !== 'NO TRADE' && !$phaseAlreadyAllocated;
-            if ($forcedRebuy) $phaseEntry = true;
+            if ($forcedRebuy || ($cashOutRefillPending && $phaseAction === 'BUY')) $phaseEntry = true;
             if ($modelPhaseChanged) {
                 $state['signal_history'][] = $phaseAction;
                 $state['signal_history'] = array_slice($state['signal_history'], -8);
@@ -8280,7 +8792,7 @@ function updateBoundaryModelTraderState(
                 && ($previousSignalAction === 'BUY' || $previousSignalAction === 'SELL')
                 && ($phaseAction === 'BUY' || $phaseAction === 'SELL')
                 && $phaseEntry;
-            if ($forcedRebuy || $forcedStopSell) $sneakEligible = false;
+            if ($forcedRebuy || $cashOutRefillPending || $forcedStopSell) $sneakEligible = false;
             $sneakFactor = $sneakEligible && is_numeric($sneakProfile['factor'] ?? null)
                 ? max(0.10, min(1.00, (float)$sneakProfile['factor']))
                 : 1.0;
@@ -8343,7 +8855,8 @@ function updateBoundaryModelTraderState(
                     false,
                     0.0,
                     $sneakEligible,
-                    $sneakFactor
+                    $sneakFactor,
+                    $buyMultiplier
                 );
                 $heldAvailable = $phaseAction === 'BUY'
                     ? (float)$state['cash_left']
@@ -8376,7 +8889,8 @@ function updateBoundaryModelTraderState(
                     false,
                     0.0,
                     $sneakEligible,
-                    $sneakFactor
+                    $sneakFactor,
+                    $buyMultiplier
                 );
                 $blockedSellRequested = exchangeFloorTradeRequestAmount('SELL', $blockedSellRequested, $minimumFunds);
                 $blockedSellAvailable = (float)$state['asset_units'] * $currentPrice;
@@ -8429,7 +8943,25 @@ function updateBoundaryModelTraderState(
                     ? $costBasisBefore * ($sellUnits / $unitsHeldBefore)
                     : 0.0;
                 $realizedPnl = (float)$sellFill['net_cash_amount'] - $costPortion;
-                if (!REALIZE_LOSS_TRADES && $realizedPnl < 0.0) {
+                if (sellLossExceedsHardLimit($realizedPnl)) {
+                    $state['events_by_time'][$boundaryTime] = [
+                        'action' => 'SELL',
+                        'label' => sellLossLimitLabel($realizedPnl),
+                        'class' => 'result-neutral-cell',
+                        'executed' => false,
+                        'amount' => 0.0,
+                        'realized_pnl' => null,
+                        'preview_realized_pnl' => $realizedPnl,
+                        'loss_limit_amount' => abs((float)MAX_REALIZED_SELL_LOSS_AMOUNT),
+                        'loss_limit_blocked' => true,
+                        'requested_amount' => $sellFill['requested_amount'],
+                        'available_amount' => $sellFill['available_amount'],
+                        'shortfall' => 0.0,
+                        'entry_price' => $sellUnits > 0.0 ? ($costPortion / $sellUnits) : null,
+                        'exit_price' => (float)$sellFill['fill_price'],
+                    ];
+                    $state['display_action'] = 'HOLD LONG · LOSS LIMIT $' . number_format(abs((float)MAX_REALIZED_SELL_LOSS_AMOUNT), 2);
+                } elseif (!REALIZE_LOSS_TRADES && $realizedPnl < 0.0) {
                     $state['events_by_time'][$boundaryTime] = [
                         'action' => 'SELL',
                         'label' => 'SELL BLOCKED · LOSS PROTECTION',
@@ -8539,11 +9071,13 @@ function updateBoundaryModelTraderState(
                 $entryWallet = (float)$state['cash_left'] + ((float)$state['asset_units'] * $currentPrice);
                 $buyAmount = $bellCurveActive && $bellCurveBuyAmount > 0.0
                     ? $bellCurveBuyAmount
-                    : ($forcedRebuy
-                    ? $rebuyAmount
-                    : ($state['fixed_trade_amount'] > 0.0
-                    ? (float)$state['fixed_trade_amount']
-                    : (float)$state['cash_left']));
+                    : ($cashOutRefillPending && $phaseAction === 'BUY'
+                        ? $cashOutRefillAmount
+                        : ($forcedRebuy
+                            ? $rebuyAmount
+                            : ($state['fixed_trade_amount'] > 0.0
+                                ? (float)$state['fixed_trade_amount'] * max(0.0, $buyMultiplier)
+                                : (float)$state['cash_left'])));
                 $buySequenceMultiplier = $regimeActive ? 1 : ($sequenceEnabled ? max(1, (int)($sequenceSignal['trade_count'] ?? 1)) : 1);
                 $buyAmount *= $buySequenceMultiplier;
                 if ($sneakEligible) {
@@ -8593,6 +9127,21 @@ function updateBoundaryModelTraderState(
                     $state['total_bought_units'] += $buyUnits;
                     $state['total_bought_amount'] += $buyAmount;
                     if ($forcedRebuy) $state['rebuy_pending'] = false;
+                    if ($cashOutRefillPending) {
+                        $state['cash_out_refill_pending'] = false;
+                        $state['cash_out_refilled_at'] = $boundaryTime;
+                        $state['cash_out_refilled_amount'] = $buyAmount;
+                        $state['cash_out_cash_kitty_reserve'] = round($cashOutCashKittyReserve, 8);
+                        $state['cash_out_available_for_asset_refill'] = round(max(0.0, (float)$state['cash_left'] - $cashOutCashKittyReserve), 8);
+                        $state['cash_out_cash_kitty_after_refill'] = (float)$state['cash_left'];
+                        $state['portfolio_cash_neutral_baseline'] = (float)$state['cash_left'];
+                        $state['portfolio_pnl_basis'] = $buyAmount;
+                        $state['portfolio_pnl_basis_label'] = 'MODEL REFILL ACTIVE LEG · $5K CASH KITTY RESERVED';
+                        $state['bootstrap_cash_amount'] = (float)$state['cash_left'];
+                        $state['bootstrap_asset_amount'] = $buyAmount;
+                        $state['bootstrap_entry_price'] = (float)$buyFill['fill_price'];
+                        $state['bootstrap_started_at'] = $boundaryTime;
+                    }
                     if ($state['first_buy_amount'] <= 0.0) {
                         $state['first_buy_amount'] = $buyAmount;
                         $state['first_buy_units'] = $buyUnits;
@@ -8600,11 +9149,13 @@ function updateBoundaryModelTraderState(
                     }
                     $state['events_by_time'][$boundaryTime] = array_merge($buyFill, [
                         'action' => 'BUY',
-                        'label' => $sneakEligible
+                        'label' => $cashOutRefillPending
+                            ? 'CASH OUT REFILL BUY · MAX $5,000 ASSET · $5K CASH RESERVED'
+                            : ($sneakEligible
                             ? 'SNEAK BUY x' . number_format($sneakFactor, 2)
                             : (($sequenceEnabled
                                 ? 'BUY SEQUENCE x' . (int)($sequenceSignal['trade_count'] ?? 1) . ' (' . number_format((float)($sequenceSignal['accuracy'] ?? 0.0), 1) . '%)'
-                                : 'BUY ENTERED')),
+                                : 'BUY ENTERED'))),
                         'class' => 'result-neutral-cell',
                         'executed' => true,
                         'amount' => $buyAmount,
@@ -8613,13 +9164,15 @@ function updateBoundaryModelTraderState(
                         'entry_price' => (float)$buyFill['fill_price'],
                         'exit_price' => null,
                     ]);
-                    $state['display_action'] = $bellCurveActive
+                    $state['display_action'] = $cashOutRefillPending
+                        ? 'CASH OUT REFILL BUY $' . number_format($buyAmount, 2) . ' · $5K CASH RESERVED'
+                        : ($bellCurveActive
                         ? 'BELL BUY x' . (int)($hourlyBellCurvePlan['actionable_slots'] ?? 0)
                         : ($sneakEligible
                             ? 'SNEAK BUY x' . number_format($sneakFactor, 2)
                             : ($sequenceEnabled
                                 ? 'BUY SEQUENCE x' . (int)($sequenceSignal['trade_count'] ?? 1)
-                                : 'BUY'));
+                                : 'BUY')));
                 } else {
                     $state['events_by_time'][$boundaryTime] = [
                         'action' => 'BUY',
@@ -8648,7 +9201,8 @@ function updateBoundaryModelTraderState(
                     $forcedRebuy,
                     $rebuyAmount,
                     $sneakEligible,
-                    $sneakFactor
+                    $sneakFactor,
+                    $buyMultiplier
                 );
                 $blockedBuySizing = canonicalTradeSizing(
                     'BUY',
@@ -8683,7 +9237,8 @@ function updateBoundaryModelTraderState(
                     false,
                     0.0,
                     $sneakEligible,
-                    $sneakFactor
+                    $sneakFactor,
+                    $buyMultiplier
                 );
                 $blockedSellRequested = exchangeFloorTradeRequestAmount('SELL', $blockedSellRequested, $minimumFunds);
                 $blockedSellSizing = canonicalTradeSizing(
@@ -8744,6 +9299,20 @@ function updateBoundaryModelTraderState(
                 }
                 $state['events_by_time'][$boundaryTime]['alternation_control'] = $alternationControl;
             }
+            if (($riskMetricContext['compression_candle_branch_flip_active'] ?? false) === true) {
+                $compressionFlipLabel = 'COMPRESSION CANDLE FLIP '
+                    . strtoupper(trim((string)($riskMetricContext['compression_pre_flip_action'] ?? 'NO TRADE')))
+                    . '→'
+                    . strtoupper(trim((string)($riskMetricContext['compression_candle_branch_action'] ?? 'NO TRADE')))
+                    . ' x'
+                    . (int)($riskMetricContext['compression_candle_branch_horizon'] ?? ONE_HOUR_CANDLE_COUNT);
+                $eventLabel = trim((string)($state['events_by_time'][$boundaryTime]['label'] ?? ''));
+                if ($eventLabel === '' || !str_contains($eventLabel, $compressionFlipLabel)) {
+                    $state['events_by_time'][$boundaryTime]['label'] = trim(
+                        $eventLabel . ($eventLabel !== '' ? ' · ' : '') . $compressionFlipLabel
+                    );
+                }
+            }
             $idempotencyShort = strtoupper(substr(
                 str_replace('paper-', '', $boundaryExecutionIdempotencyKey),
                 0,
@@ -8769,6 +9338,20 @@ function updateBoundaryModelTraderState(
             $state['events_by_time'][$boundaryTime]['evidence_orientation'] = (string)(
                 $riskMetricContext['evidence_orientation'] ?? 'HOLD'
             );
+            foreach ([
+                'compression_candle_branch_active',
+                'compression_candle_branch_flip_active',
+                'compression_candle_branch_opposes_action',
+                'compression_candle_branch_action',
+                'compression_candle_branch_score',
+                'compression_candle_branch_threshold',
+                'compression_candle_branch_horizon',
+                'compression_pre_flip_action',
+            ] as $compressionDecisionField) {
+                if (array_key_exists($compressionDecisionField, $riskMetricContext)) {
+                    $state['events_by_time'][$boundaryTime][$compressionDecisionField] = $riskMetricContext[$compressionDecisionField];
+                }
+            }
             if (!isset($state['events_by_time'][$boundaryTime]['minimum_funds'])) {
                 $state['events_by_time'][$boundaryTime]['minimum_funds'] = $minimumFunds;
             }
@@ -9370,6 +9953,8 @@ if (count($candle_chart) > 1) {
     }
     $average_change = array_sum($spot_changes) / count($spot_changes);
 }
+$average_buy_commitment = max(0.0, $average_change * max(0.0, (float)$buy_multiplier));
+$average_sell_commitment = max(0.0, $average_change * max(0.0, (float)$sell_multiplier));
 $previous_completed_change = previousCompletedFiveMinuteMove($candle_chart);
 $latent_guess_change = $previous_completed_change > 0.0
     ? $previous_completed_change
@@ -9440,6 +10025,79 @@ $paper_wallet_bootstrap = loadOrCreatePaperWalletBootstrap(
     (float)$current_price,
     10000.0
 );
+if ($wallet_cash_out_requested) {
+    if ($current_price <= 0.0) {
+        $wallet_cash_out_error = 'Cash out needs a current market price before it can realize this paper wallet.';
+        $wallet_cash_out_requested = false;
+    } else {
+        backupPaperWalletFiles($model_wallet_state_path, $wallet_bootstrap_path, $ticker, 'cash-out-before-rebalance');
+        cashOutAndRebalancePaperWallet(
+            $model_wallet_state_path,
+            $wallet_bootstrap_path,
+            $market_type,
+            $ticker,
+            (float)$current_price,
+            $early_boundary_key,
+            $paper_execution_context
+        );
+        deleteLocalFileIfExists($dir . $ticker . '-live-output.json');
+        deleteLocalFileIfExists($dir . $ticker . '-cron-summary.json');
+        $current_wallet_cash_out_pin = rotateCashOutPin($wallet_cash_out_pin_path, $market_type, $ticker);
+        if (PHP_SAPI !== 'cli') {
+            $redirectParams = $_GET;
+            $redirectParams['wallet_cash_out_done'] = '1';
+            unset($redirectParams['wallet_reset_done'], $redirectParams['run_analysis']);
+            $redirectParams['_'] = (string)time();
+            $scriptPath = (string)($_SERVER['PHP_SELF'] ?? 'index.php');
+            $redirectTarget = $scriptPath . ($redirectParams ? ('?' . http_build_query($redirectParams)) : '');
+            header('Location: ' . $redirectTarget);
+            exit;
+        }
+        $wallet_cash_out_done = true;
+        $paper_wallet_bootstrap = loadOrCreatePaperWalletBootstrap(
+            $wallet_bootstrap_path,
+            $market_type,
+            $ticker,
+            $latest_market_time,
+            (float)$current_price,
+            10000.0
+        );
+    }
+}
+if ($wallet_buy_back_requested) {
+    $pendingState = loadLocalJsonArray($model_wallet_state_path);
+    $pendingRefill = (($pendingState['cash_out_refill_pending'] ?? false) === true);
+    if (!$pendingRefill) {
+        $wallet_buy_back_error = 'Buy back is available only after this wallet has been cashed out and is waiting to refill.';
+        $wallet_buy_back_requested = false;
+    } elseif ($current_price <= 0.0) {
+        $wallet_buy_back_error = 'Buy back needs a current market price before it can refill this paper wallet.';
+        $wallet_buy_back_requested = false;
+    } else {
+        backupPaperWalletFiles($model_wallet_state_path, $wallet_bootstrap_path, $ticker, 'buy-back-before-refill');
+        buyBackInPaperWallet(
+            $model_wallet_state_path,
+            $market_type,
+            $ticker,
+            (float)$current_price,
+            gmdate('Y-m-d\TH:i:s\Z'),
+            $paper_execution_context
+        );
+        deleteLocalFileIfExists($dir . $ticker . '-live-output.json');
+        deleteLocalFileIfExists($dir . $ticker . '-cron-summary.json');
+        if (PHP_SAPI !== 'cli') {
+            $redirectParams = $_GET;
+            $redirectParams['wallet_buy_back_done'] = '1';
+            unset($redirectParams['wallet_reset_done'], $redirectParams['wallet_cash_out_done'], $redirectParams['run_analysis']);
+            $redirectParams['_'] = (string)time();
+            $scriptPath = (string)($_SERVER['PHP_SELF'] ?? 'index.php');
+            $redirectTarget = $scriptPath . ($redirectParams ? ('?' . http_build_query($redirectParams)) : '');
+            header('Location: ' . $redirectTarget);
+            exit;
+        }
+        $wallet_buy_back_done = true;
+    }
+}
 $guess_candles = [];
 $effective_guess_by_time = [];
 $paper_profit = 0.0;
@@ -10553,6 +11211,16 @@ $compression_token_takeover_action = strtoupper(trim((string)($compression_influ
 if ($compression_token_takeover_action !== 'BUY' && $compression_token_takeover_action !== 'SELL') {
     $compression_token_takeover_action = 'NO TRADE';
 }
+$compression_candle_branch_score = (float)($compression_influence['score'] ?? 0.0);
+$compression_candle_branch_threshold = COMPRESSION_CANDLE_FLIP_PERCENT;
+$compression_candle_branch_dominant = strtoupper(trim((string)($compression_influence['dominant_direction'] ?? 'MIXED')));
+$compression_candle_branch_action = $compression_candle_branch_dominant === 'BUY FAMILY'
+    ? 'BUY'
+    : ($compression_candle_branch_dominant === 'SELL FAMILY' ? 'SELL' : 'NO TRADE');
+$compression_candle_branch_active = false;
+$compression_candle_branch_flip_active = false;
+$compression_candle_branch_opposes_action = false;
+$compression_candle_branch_horizon = ONE_HOUR_CANDLE_COUNT;
 $compression_note .= $compression_token_takeover_active
     ? ' • TOKEN TAKEOVER ' . $compression_token_takeover_action
         . ' ' . number_format((float)($compression_influence['score'] ?? 0.0), 1)
@@ -10596,8 +11264,50 @@ if ($execution_inversion_active && $execution_bell_curve_eligible && is_array($e
         $effective_execution_guess['action'] = $effective_execution_guess['direction'] === '+' ? 'BUY' : 'SELL';
     }
 }
+$pre_compression_candle_action = guessStoredAction($effective_execution_guess);
+$compression_candle_branch_active = $compression_candle_branch_score >= $compression_candle_branch_threshold
+    && ($compression_candle_branch_action === 'BUY' || $compression_candle_branch_action === 'SELL')
+    && ($pre_compression_candle_action === 'BUY' || $pre_compression_candle_action === 'SELL');
+$compression_candle_branch_opposes_action = $compression_candle_branch_active
+    && $pre_compression_candle_action !== $compression_candle_branch_action;
+$compression_candle_branch_flip_active = $compression_candle_branch_opposes_action;
+if ($compression_candle_branch_flip_active && is_array($effective_execution_guess)) {
+    $effective_execution_guess['direction'] = $compression_candle_branch_action === 'BUY' ? '+' : '-';
+    $effective_execution_guess['action'] = $compression_candle_branch_action;
+    $effective_execution_guess['compression_candle_branch'] = true;
+    $effective_execution_guess['compression_candle_flip'] = true;
+    $effective_execution_guess['compression_candle_score'] = round($compression_candle_branch_score, 2);
+    $effective_execution_guess['compression_candle_horizon'] = $compression_candle_branch_horizon;
+    $execution_bell_curve_source = 'COMPRESSION_CANDLE';
+    $execution_bell_curve_orientation = 'INVERT';
+    $execution_bell_curve_eligible = true;
+    $execution_bell_curve_strength = $compression_candle_branch_score;
+    $execution_bell_curve['eligible'] = true;
+    $execution_bell_curve['observation_eligible'] = true;
+    $execution_bell_curve['orientation'] = 'INVERT';
+    $execution_bell_curve['observation_orientation'] = 'INVERT';
+    $execution_bell_curve['effective_percent'] = round($compression_candle_branch_score, 2);
+    $execution_bell_curve['evidence_percent'] = round($compression_candle_branch_score, 2);
+    $execution_bell_curve['stake_multiplier'] = max(
+        (float)($execution_bell_curve['stake_multiplier'] ?? 0.0),
+        (float)($compression_influence['stake_multiplier'] ?? 1.0)
+    );
+    $compressionCandleMultiplier = max(0.60, min(1.25, $compression_candle_branch_score / 100.0))
+        * (float)($compression_influence['stake_multiplier'] ?? 1.0);
+    $execution_bell_curve_multiplier = max(
+        $execution_bell_curve_multiplier,
+        min(2.0, $compressionCandleMultiplier)
+    );
+}
+$compression_note .= $compression_candle_branch_flip_active
+    ? ' • CANDLE BRANCH FLIP ' . $pre_compression_candle_action . '→' . $compression_candle_branch_action
+        . ' x' . $compression_candle_branch_horizon
+        . ' @ ' . number_format($compression_candle_branch_score, 1) . '%'
+    : ' • candle branch ' . $compression_candle_branch_action
+        . ' threshold ' . number_format($compression_candle_branch_threshold, 1) . '%';
 if ($compression_token_takeover_active
     && !$execution_inversion_active
+    && !$compression_candle_branch_flip_active
     && is_array($effective_execution_guess)
     && ($compression_token_takeover_action === 'BUY' || $compression_token_takeover_action === 'SELL')
 ) {
@@ -10606,7 +11316,23 @@ if ($compression_token_takeover_active
     $effective_execution_guess['compression_token_takeover'] = true;
     $effective_execution_guess['compression_token_score'] = round((float)($compression_influence['score'] ?? 0.0), 2);
 }
+$execution_inversion_active = $execution_bell_curve_eligible
+    && $execution_bell_curve_orientation === 'INVERT';
+$alternation_execution_flip_active = $execution_bell_curve_source === 'ALTERNATION'
+    && $execution_inversion_active;
+$alternation_execution_keep_active = $execution_bell_curve_source === 'ALTERNATION'
+    && $execution_bell_curve_eligible
+    && $execution_bell_curve_orientation === 'KEEP';
+$quarter_execution_inversion_active = $execution_bell_curve_source === 'QUARTER'
+    && $execution_inversion_active;
+$execution_branch_flip_active = $execution_bell_curve_source === 'FAMILY'
+    && $execution_inversion_active;
+$execution_branch_trusted = $execution_bell_curve_source === 'FAMILY'
+    && $execution_bell_curve_eligible
+    && $execution_bell_curve_orientation === 'KEEP'
+    && (float)($execution_bell_curve['effective_percent'] ?? 0.0) >= 85.0;
 $trade_guess = $effective_execution_guess;
+$execution_current_guess = $trade_guess;
 $quarter_regime_trade_blocked = false;
 $latest_candle_for_gate = $candle_chart ? $candle_chart[count($candle_chart) - 1] : null;
 $current_candle_is_down = is_array($latest_candle_for_gate)
@@ -10653,7 +11379,7 @@ $attack_trade_amount = $first_trade_amount * (float)($attack_profile['factor'] ?
 $hourly_bell_curve_plan = buildHourlyBellCurvePlan(
     $forecast_by_time,
     $early_boundary_key,
-    $locked_current_guess,
+    $trade_guess,
     $attack_trade_amount,
     $buy_multiplier,
     $sell_multiplier,
@@ -10697,7 +11423,7 @@ $attack_profile['reason'] = $compression_token_takeover_active
 $hourly_bell_curve_plan = buildHourlyBellCurvePlan(
     $forecast_by_time,
     $early_boundary_key,
-    $locked_current_guess,
+    $trade_guess,
     $attack_trade_amount,
     $buy_multiplier,
     $sell_multiplier,
@@ -10717,6 +11443,9 @@ $hourly_bell_curve_plan = compressHourlyPlanToSingleTrade(
 );
 $regime_five_minute_steps = max(1, (int)($current_phase_status['steps_in'] ?? 1));
 $regime_step_count = max(1, min(12, (int)ceil($regime_five_minute_steps / 12)));
+if ($compression_candle_branch_flip_active) {
+    $regime_step_count = ONE_HOUR_CANDLE_COUNT;
+}
 $regime_average_commitment = max(
     0.0,
     ($average_change > 0.0 ? $average_change : $latent_guess_change) * $trade_capture_ratio
@@ -10852,8 +11581,8 @@ if ($regime_plan_active && ($formula_execution_action === 'BUY' || $formula_exec
         'trade_count' => $regime_step_count,
         'pair' => guessPairLabel($trade_guess),
         'run_pair' => guessPairLabel($trade_guess),
-        'accuracy' => $execution_confidence,
-        'samples' => $accuracy_total,
+        'accuracy' => $compression_candle_branch_flip_active ? $compression_candle_branch_score : $execution_confidence,
+        'samples' => $compression_candle_branch_flip_active ? max(1, $compression_samples) : $accuracy_total,
     ];
 }
 $spiral_guard_metric_context = [
@@ -10870,6 +11599,14 @@ $spiral_guard_metric_context = [
     'compression_token_takeover_action' => $compression_token_takeover_action,
     'compression_token_takeover_threshold' => COMPRESSION_TOKEN_TAKEOVER_PERCENT,
     'compression_token_takeover_score' => (float)($compression_influence['score'] ?? 0.0),
+    'compression_candle_branch_active' => $compression_candle_branch_active,
+    'compression_candle_branch_flip_active' => $compression_candle_branch_flip_active,
+    'compression_candle_branch_opposes_action' => $compression_candle_branch_opposes_action,
+    'compression_candle_branch_action' => $compression_candle_branch_action,
+    'compression_candle_branch_score' => $compression_candle_branch_score,
+    'compression_candle_branch_threshold' => $compression_candle_branch_threshold,
+    'compression_candle_branch_horizon' => $compression_candle_branch_horizon,
+    'compression_pre_flip_action' => $pre_compression_candle_action,
     'internal_agreement' => $internal_agreement_recent_effective_percent,
     'evidence_source' => $execution_bell_curve_source,
     'evidence_orientation' => $execution_bell_curve_orientation,
@@ -10891,6 +11628,7 @@ $paper_break_replay_state = buildModelPaperTraderState(
     $latest_market_time,
     $paper_wallet_bootstrap,
     $attack_trade_amount,
+    $buy_multiplier,
     $sell_multiplier,
     $trust_percent,
     $resolved_results_by_time,
@@ -10910,6 +11648,7 @@ $paper_break_state = $loop_update_allowed
         $sequence_signal,
         $hourly_bell_curve_plan,
         $attack_trade_amount,
+        $buy_multiplier,
         $sell_multiplier,
         $break_stop_loss_pct,
         $sneak_profile,
@@ -10921,6 +11660,7 @@ $paper_break_state = $loop_update_allowed
         ? $stored_model_wallet_state
         : $paper_break_replay_state);
 $paper_break_state = normalizeTraderDisplayState($paper_break_state);
+$paper_break_state = attachCashOutRejoinFeeEstimate($paper_break_state, (float)$current_price, $paper_execution_context);
 $paper_break_state['forecast_observation'] = $forecast_observation_state;
 $paper_break_state['global_wrong_mark_branches'] = $tracked_wrong_mark_branches;
 $paper_break_state['accuracy_source'] = 'FORECAST_OBSERVATION';
@@ -11018,6 +11758,15 @@ $paper_break_benchmark_pnl = (float)($paper_break_state['benchmark_pnl'] ?? 0.0)
 $paper_break_strategy_alpha = (float)($paper_break_state['strategy_alpha'] ?? 0.0);
 $paper_break_total_fees = (float)($paper_break_state['total_fees'] ?? 0.0);
 $paper_break_slippage_cost = (float)($paper_break_state['total_slippage_cost'] ?? 0.0);
+$paper_break_pnl_basis = (float)($paper_break_state['portfolio_pnl_basis'] ?? 0.0);
+$paper_break_cash_neutral_baseline = (float)($paper_break_state['portfolio_cash_neutral_baseline'] ?? 0.0);
+$paper_break_pnl_basis_label = trim((string)($paper_break_state['portfolio_pnl_basis_label'] ?? 'ACTIVE LEG'));
+$paper_break_cashout_total = (float)($paper_break_state['cash_out_amount'] ?? 0.0);
+$paper_break_cashout_after_rejoin_fee = (float)($paper_break_state['cash_out_after_rejoin_fee'] ?? 0.0);
+$paper_break_cashout_rejoin_fee = (float)($paper_break_state['cash_out_rejoin_fee_estimate'] ?? 0.0);
+$paper_break_cashout_rejoin_label = trim((string)($paper_break_state['cash_out_rejoin_fee_label'] ?? 'NO CASHOUT'));
+$paper_break_cashout_cash_kitty_reserve = (float)($paper_break_state['cash_out_cash_kitty_reserve'] ?? 5000.0);
+$paper_break_cashout_available_for_asset_refill = (float)($paper_break_state['cash_out_available_for_asset_refill'] ?? max(0.0, $paper_break_cash_left - $paper_break_cashout_cash_kitty_reserve));
 $spiral_guard_metrics = is_array($spiral_guard['metrics'] ?? null) ? $spiral_guard['metrics'] : [];
 $spiral_guard_status_label = $spiral_guard_paused ? 'PAUSED' : 'MONITORING';
 $spiral_guard_class = $spiral_guard_paused ? 'low' : 'good';
@@ -11087,6 +11836,24 @@ $paper_break_asset_bought_label = $paper_break_asset_code !== ''
 $paper_break_asset_sold_label = $paper_break_asset_code !== ''
     ? $paper_break_asset_code . ' SOLD'
     : ($market_type === 'crypto' ? 'COIN SOLD' : 'UNITS SOLD');
+$wallet_buy_back_available = (($paper_break_state['cash_out_refill_pending'] ?? false) === true);
+$wallet_buy_back_target_amount = max(0.0, (float)($paper_break_state['cash_out_refill_target_amount'] ?? 5000.0));
+if ($wallet_buy_back_target_amount <= 0.0) {
+    $wallet_buy_back_target_amount = 5000.0;
+}
+$wallet_buy_back_cash_reserve = max(0.0, (float)($paper_break_state['cash_out_cash_kitty_reserve'] ?? 5000.0));
+$wallet_buy_back_cash_available = max(0.0, $paper_break_cash_left - $wallet_buy_back_cash_reserve);
+$wallet_buy_back_amount = $wallet_buy_back_available
+    ? min(5000.0, $wallet_buy_back_target_amount, $wallet_buy_back_cash_available)
+    : 0.0;
+$wallet_buy_back_eligible = $wallet_buy_back_available
+    && $wallet_buy_back_amount >= $paper_minimum_trade_funds
+    && (float)$current_price > 0.0;
+$wallet_buy_back_note = $wallet_buy_back_available
+    ? ('Pending refill • buys up to $' . number_format($wallet_buy_back_amount, 2) . ' in '
+        . ($paper_break_asset_code !== '' ? $paper_break_asset_code : 'the asset')
+        . ' while keeping $' . number_format($wallet_buy_back_cash_reserve, 2) . ' cash kitty')
+    : '';
 $paper_break_asset_left_amount = $market_type === 'crypto'
     ? number_format($paper_break_held_units, 8, '.', '')
     : number_format($paper_break_held_units, 4, '.', '');
@@ -11105,7 +11872,8 @@ $display_commitment_amount = displayCommitmentAmountForAction(
     $display_commitment_source_action,
     $hourly_bell_curve_plan,
     $attack_trade_amount,
-    $sell_multiplier
+    $sell_multiplier,
+    $buy_multiplier
 );
 $phase_sizing_action = strtoupper(trim((string)$execution_current_action));
 if ($phase_sizing_action !== 'BUY' && $phase_sizing_action !== 'SELL') {
@@ -11141,6 +11909,11 @@ $current_phase_sizing['kitty_unchanged'] = true;
 $current_phase_sizing['event_executed'] = false;
 $current_phase_sizing['confidence_bell_curve'] = $execution_bell_curve;
 $current_phase_sizing['confidence_bell_curve_source'] = $execution_bell_curve_source;
+$current_phase_sizing['buy_multiplier'] = $buy_multiplier;
+$current_phase_sizing['sell_multiplier'] = $sell_multiplier;
+$current_phase_sizing['raw_average_move'] = $average_change;
+$current_phase_sizing['buy_average_commitment'] = $average_buy_commitment;
+$current_phase_sizing['sell_average_commitment'] = $average_sell_commitment;
 $current_phase_sizing['confidence_bell_curve_multiplier'] = round($execution_bell_curve_multiplier, 6);
 $current_phase_sizing['confidence_bell_curve_trade_eligible'] = $bell_curve_trade_eligible;
 $current_phase_sizing['confidence_bell_curve_trade_reason'] = $bell_curve_trade_reason;
@@ -11200,7 +11973,11 @@ if (is_array($current_boundary_trade_event)) {
     foreach ([
         'execution_idempotency_key', 'execution_idempotency_version',
         'execution_gate_state', 'forecast_fingerprint', 'evidence_source',
-        'evidence_orientation',
+        'evidence_orientation', 'compression_candle_branch_active',
+        'compression_candle_branch_flip_active', 'compression_candle_branch_opposes_action',
+        'compression_candle_branch_action', 'compression_candle_branch_score',
+        'compression_candle_branch_threshold', 'compression_candle_branch_horizon',
+        'compression_pre_flip_action',
     ] as $decisionField) {
         $current_phase_sizing[$decisionField] = (string)($current_boundary_trade_event[$decisionField] ?? '');
     }
@@ -11232,6 +12009,11 @@ $paper_break_note = 'POT $' . number_format($paper_break_equity, 2)
     . ' • ' . $paper_break_asset_sold_label . ' ' . $paper_break_asset_sold_amount . ' ($' . number_format($paper_break_sold_amount, 2) . ')'
     . ' • HOLDING $' . number_format($paper_break_holding_value, 2)
     . ' • CASH KITTY $' . number_format($paper_break_cash_left, 2)
+    . ' • P&L BASIS $' . number_format($paper_break_pnl_basis, 2)
+    . ($paper_break_cash_neutral_baseline > 0.0 ? ' ACTIVE + CASH NEUTRAL $' . number_format($paper_break_cash_neutral_baseline, 2) : '')
+    . ($paper_break_pnl_basis_label !== '' ? ' · ' . $paper_break_pnl_basis_label : '')
+    . ' • CASHOUT AFTER REJOIN FEE $' . number_format($paper_break_cashout_after_rejoin_fee, 2)
+    . ' (' . ($paper_break_cashout_rejoin_label !== '' ? $paper_break_cashout_rejoin_label : 'REJOIN FEE') . ' $' . number_format($paper_break_cashout_rejoin_fee, 2) . ')'
     . ' • RESERVED $0.00'
     . ' • POSITION ' . $paper_break_position
     . ' • SIGNAL ' . $paper_break_action
@@ -11295,7 +12077,8 @@ foreach ($display_timeline as $record) {
             $currentDisplayAction,
             $hourly_bell_curve_plan,
             $attack_trade_amount,
-            $sell_multiplier
+            $sell_multiplier,
+            $buy_multiplier
         );
     }
     // The execution unit is one decision per hour; do not display a
@@ -11410,6 +12193,11 @@ $paper_break_note = $paper_break_position
     . ' ' . ($paper_break_last_trade_result !== '' ? (($paper_break_last_trade_pnl >= 0.0 ? '+' : '-') . '$' . number_format(abs($paper_break_last_trade_pnl), 2)) : '—')
     . ' • EXECUTED EXIT P/L ' . (int)($paper_break_state['wins'] ?? 0) . '/' . (int)($paper_break_state['losses'] ?? 0)
     . ' • ALPHA ' . ($paper_break_strategy_alpha >= 0.0 ? '+' : '-') . '$' . number_format(abs($paper_break_strategy_alpha), 2)
+    . ' • P&L BASIS $' . number_format($paper_break_pnl_basis, 2)
+    . ($paper_break_cash_neutral_baseline > 0.0 ? ' ACTIVE + CASH NEUTRAL $' . number_format($paper_break_cash_neutral_baseline, 2) : '')
+    . ($paper_break_pnl_basis_label !== '' ? ' · ' . $paper_break_pnl_basis_label : '')
+    . ' • CASHOUT AFTER REJOIN FEE $' . number_format($paper_break_cashout_after_rejoin_fee, 2)
+    . ' (' . ($paper_break_cashout_rejoin_label !== '' ? $paper_break_cashout_rejoin_label : 'REJOIN FEE') . ' $' . number_format($paper_break_cashout_rejoin_fee, 2) . ')'
     . ' • FEES $' . number_format($paper_break_total_fees, 2)
     . ' • Paper only';
 $updated_at = file_exists($file_path) ? date('M j, Y g:i A', filemtime($file_path)) : 'Unavailable';
@@ -11435,11 +12223,23 @@ if ($cron_summary_written_at !== '') {
         : '';
     $market_update_note .= ' • Cron cache ' . $cron_summary_written_at . $future_ready_note;
 }
-if ($wallet_reset_done || $analysis_requested) {
-    $market_update_note = ($analysis_requested ? 'New analysis started' : 'Wallet reset')
-        . ' with $5,000 cash and $5,000 in '
-        . ($paper_break_asset_code !== '' ? $paper_break_asset_code : 'the asset')
-        . ($market_update_note !== '' ? ' • ' . $market_update_note : '');
+if ($wallet_reset_done || $wallet_cash_out_done || $wallet_buy_back_done || $analysis_requested) {
+    if ($wallet_cash_out_done) {
+        $market_update_note = 'Wallet cashed out, realized P&L into cash, and is waiting to refill up to $5,000 in '
+            . ($paper_break_asset_code !== '' ? $paper_break_asset_code : 'the asset')
+            . ' from a later model BUY or the dashboard buy-back button'
+            . ($market_update_note !== '' ? ' • ' . $market_update_note : '');
+    } elseif ($wallet_buy_back_done) {
+        $market_update_note = 'Wallet bought back in up to $5,000 in '
+            . ($paper_break_asset_code !== '' ? $paper_break_asset_code : 'the asset')
+            . ' from the cash kitty'
+            . ($market_update_note !== '' ? ' • ' . $market_update_note : '');
+    } else {
+        $market_update_note = ($analysis_requested ? 'New analysis started' : 'Wallet reset')
+            . ' with $5,000 cash and $5,000 in '
+            . ($paper_break_asset_code !== '' ? $paper_break_asset_code : 'the asset')
+            . ($market_update_note !== '' ? ' • ' . $market_update_note : '');
+    }
 } elseif ($readonly_browser_mode) {
     $market_update_note = trim($scheduler_cache_note . ($market_update_note !== '' ? ' • ' . $market_update_note : ''));
 }
@@ -11843,6 +12643,14 @@ if (isset($_GET['live']) && $_GET['live'] === '1') {
         'compressionTokenTakeoverAction' => $compression_token_takeover_action,
         'compressionTokenTakeoverThreshold' => COMPRESSION_TOKEN_TAKEOVER_PERCENT,
         'compressionTokenTakeoverScore' => (float)($compression_influence['score'] ?? 0.0),
+        'compressionCandleBranchActive' => $compression_candle_branch_active,
+        'compressionCandleBranchFlipActive' => $compression_candle_branch_flip_active,
+        'compressionCandleBranchOpposesAction' => $compression_candle_branch_opposes_action,
+        'compressionCandleBranchAction' => $compression_candle_branch_action,
+        'compressionCandleBranchScore' => $compression_candle_branch_score,
+        'compressionCandleBranchThreshold' => $compression_candle_branch_threshold,
+        'compressionCandleBranchHorizon' => $compression_candle_branch_horizon,
+        'compressionPreFlipAction' => $pre_compression_candle_action,
         'alternationEvidence' => $alternation_evidence,
         'alternationTail' => $alternation_tail,
         'alternationPatternActive' => $alternation_pattern_active,
@@ -11891,6 +12699,10 @@ if (isset($_GET['live']) && $_GET['live'] === '1') {
         'globalAccuracyIndependentOfExecution' => true,
         'globalWrongMarkBranches' => $tracked_wrong_mark_branches,
         'averageChange' => $average_change,
+        'averageBuyCommitment' => $average_buy_commitment,
+        'averageSellCommitment' => $average_sell_commitment,
+        'buyMultiplier' => $buy_multiplier,
+        'sellMultiplier' => $sell_multiplier,
         'paperProfit' => $paper_profit,
         'simulatedNetMove' => $paper_profit,
         'simulationOnly' => true,
@@ -12185,6 +12997,85 @@ if (isset($_GET['live']) && $_GET['live'] === '1') {
 
         .secondary-action:hover {
             filter: brightness(1.08);
+        }
+
+        .cashout-panel {
+            grid-template-columns: minmax(180px, 1fr) auto auto;
+            align-items: center;
+        }
+
+        .cashout-pin-field {
+            display: grid;
+            gap: 8px;
+        }
+
+        .cashout-pin-buttons {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .cashout-pin-button {
+            width: 24px;
+            min-width: 24px;
+            max-width: 24px;
+            flex: 0 0 24px;
+            height: 24px;
+            min-height: 24px;
+            max-height: 24px;
+            padding: 0;
+            border-radius: 7px;
+            font-size: .68rem;
+            line-height: 1;
+        }
+
+        .cashout-pin-button.is-used {
+            outline: 2px solid rgba(251, 191, 36, .95);
+            box-shadow: 0 0 0 4px rgba(251, 191, 36, .16);
+        }
+
+        .cashout-pin-status {
+            color: var(--muted);
+            font-size: .8rem;
+            font-weight: 800;
+            letter-spacing: .04em;
+        }
+
+        .cashout-current-pin {
+            display: inline-flex;
+            width: fit-content;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 10px;
+            border-radius: 999px;
+            border: 1px solid rgba(251, 191, 36, .45);
+            background: rgba(251, 191, 36, .10);
+            color: #fef3c7;
+            font-size: .82rem;
+            font-weight: 900;
+            letter-spacing: .06em;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .cashout-current-pin strong {
+            color: #fbbf24;
+            font-size: 1rem;
+        }
+
+        .cashout-clear-button {
+            min-height: 30px;
+            padding: 0 10px;
+            border-radius: 9px;
+            font-size: .76rem;
+        }
+
+        .cashout-submit {
+            min-height: 38px;
+            padding: 0 14px;
+            font-size: .82rem;
+            background: #fbbf24;
+            color: #231604;
         }
 
         .market-types {
@@ -13235,6 +14126,14 @@ if (isset($_GET['live']) && $_GET['live'] === '1') {
             box-shadow: 0 12px 28px rgba(74, 222, 128, .15);
         }
 
+        .compact-dashboard .cashout-pin-button {
+            width: 24px;
+            min-width: 24px;
+            max-width: 24px;
+            flex: 0 0 24px;
+            padding: 0;
+        }
+
         .compact-dashboard .market-pulse-metrics {
             grid-template-columns: repeat(3, minmax(0, 1fr));
             gap: 14px;
@@ -13276,6 +14175,13 @@ if (isset($_GET['live']) && $_GET['live'] === '1') {
             justify-content: space-between;
             align-items: flex-start;
             gap: 12px;
+        }
+        .dashboard-card-actions {
+            display: inline-flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 8px;
+            flex-wrap: wrap;
         }
 
         .card-kicker {
@@ -13950,6 +14856,47 @@ if (isset($_GET['live']) && $_GET['live'] === '1') {
         <input id="walletResetPassword" name="wallet_reset_password" type="password" autocomplete="current-password" required>
         <button type="submit" name="reset_wallet" value="1" class="secondary-action">Reset paper wallet</button>
     </form>
+    <form class="control-panel cashout-panel" method="post" action="" data-cashout-pin-form>
+        <input type="hidden" name="market_type" value="<?= htmlspecialchars($market_type) ?>">
+        <input type="hidden" name="symbol" value="<?= htmlspecialchars($ticker) ?>">
+        <input type="hidden" name="wallet_cash_out_pin" value="" data-cashout-pin-value>
+        <div class="cashout-pin-field">
+            <label>Cash out PIN · <?= htmlspecialchars($ticker) ?></label>
+            <span class="cashout-current-pin">Current PIN <strong><?= htmlspecialchars($current_wallet_cash_out_pin) ?></strong></span>
+            <div class="cashout-pin-buttons" aria-label="Cash out PIN buttons">
+                <button type="button" class="cashout-pin-button" data-cashout-pin-button="1" aria-label="Enter PIN digit 1">1</button>
+                <button type="button" class="cashout-pin-button" data-cashout-pin-button="2" aria-label="Enter PIN digit 2">2</button>
+                <button type="button" class="cashout-pin-button" data-cashout-pin-button="3" aria-label="Enter PIN digit 3">3</button>
+                <button type="button" class="cashout-pin-button" data-cashout-pin-button="4" aria-label="Enter PIN digit 4">4</button>
+                <button type="button" class="secondary-action cashout-clear-button" data-cashout-pin-clear>Clear</button>
+            </div>
+            <span class="cashout-pin-status" data-cashout-pin-status>PIN: 0 / 4</span>
+        </div>
+        <button type="submit" name="cash_out_wallet" value="1" class="cashout-submit" data-cashout-submit disabled>Cash out + wait to refill</button>
+        <span class="metric-note">Sells the current paper position, realizes P&amp;L into cash, then waits to refill up to $5k in the asset on a later BUY.</span>
+    </form>
+    <?php if ($wallet_buy_back_available): ?>
+        <form class="control-panel cashout-panel buyback-panel" method="post" action="">
+            <input type="hidden" name="market_type" value="<?= htmlspecialchars($market_type) ?>">
+            <input type="hidden" name="symbol" value="<?= htmlspecialchars($ticker) ?>">
+            <div class="cashout-pin-field">
+                <label>Buy back in · <?= htmlspecialchars($ticker) ?></label>
+                <span class="metric-note"><?= htmlspecialchars($wallet_buy_back_note) ?></span>
+            </div>
+            <button
+                type="submit"
+                name="buy_back_wallet"
+                value="1"
+                class="cashout-submit"
+                <?= $wallet_buy_back_eligible ? '' : 'disabled' ?>
+            >Buy back in $<?= number_format($wallet_buy_back_amount, 2) ?></button>
+            <span class="metric-note">
+                <?= $wallet_buy_back_eligible
+                    ? 'Paper BUY now; clears the pending refill while preserving the $5k cash kitty.'
+                    : 'Waiting for at least $' . number_format($paper_minimum_trade_funds, 2) . ' executable cash above the $5k cash reserve and a valid current price.' ?>
+            </span>
+        </form>
+    <?php endif; ?>
 
     <?php if ($error_message !== ''): ?>
         <section class="error-panel">
@@ -13963,6 +14910,18 @@ if (isset($_GET['live']) && $_GET['live'] === '1') {
             <?= htmlspecialchars($wallet_reset_error) ?>
         </section>
     <?php endif; ?>
+    <?php if ($wallet_cash_out_error !== ''): ?>
+        <section class="error-panel">
+            <strong>Wallet was not cashed out.</strong>
+            <?= htmlspecialchars($wallet_cash_out_error) ?>
+        </section>
+    <?php endif; ?>
+    <?php if ($wallet_buy_back_error !== ''): ?>
+        <section class="error-panel">
+            <strong>Wallet was not bought back in.</strong>
+            <?= htmlspecialchars($wallet_buy_back_error) ?>
+        </section>
+    <?php endif; ?>
 
     <section class="market-pulse-metrics">
         <article class="metric market-pulse-card summary-card summary-card--market">
@@ -13971,7 +14930,10 @@ if (isset($_GET['live']) && $_GET['live'] === '1') {
                     <span class="metric-label">Market now</span>
                     <p class="card-kicker">Hourly spot pulse</p>
                 </div>
-                <span id="marketSourceChip" class="card-chip <?= $current_price_source === 'YAHOO' ? 'is-live' : 'is-file' ?>"><?= htmlspecialchars($market_source_chip_label) ?></span>
+                <div class="dashboard-card-actions">
+                    <button type="button" class="tracked-dashboard-refresh" data-refresh-dashboard aria-label="Reload dashboard">Reload</button>
+                    <span id="marketSourceChip" class="card-chip <?= $current_price_source === 'YAHOO' ? 'is-live' : 'is-file' ?>"><?= htmlspecialchars($market_source_chip_label) ?></span>
+                </div>
             </div>
             <div class="card-main">
                 <div id="currentPriceValue" class="metric-value <?= $current_price_class ?>">$<?= number_format($current_price, 2) ?></div>
@@ -14018,6 +14980,22 @@ if (isset($_GET['live']) && $_GET['live'] === '1') {
                 <div class="summary-stat">
                     <span>Cash kitty</span>
                     <strong id="walletCashValue">$<?= number_format($paper_break_cash_left, 2) ?></strong>
+                </div>
+                <div class="summary-stat">
+                    <span>CASHOUT TOTAL</span>
+                    <strong id="walletCashoutTotalValue">$<?= number_format($paper_break_cashout_total, 2) ?></strong>
+                </div>
+                <div class="summary-stat">
+                    <span>Cashout minus rejoin fee</span>
+                    <strong id="walletCashoutAfterRejoinFeeValue">$<?= number_format($paper_break_cashout_after_rejoin_fee, 2) ?></strong>
+                </div>
+                <div class="summary-stat">
+                    <span>Cash kitty reserve</span>
+                    <strong id="walletCashoutReserveValue">$<?= number_format($paper_break_cashout_cash_kitty_reserve, 2) ?></strong>
+                </div>
+                <div class="summary-stat">
+                    <span>Asset refill available</span>
+                    <strong id="walletAssetRefillAvailableValue">$<?= number_format($paper_break_cashout_available_for_asset_refill, 2) ?></strong>
                 </div>
                 <div class="summary-stat">
                     <span>Reserved</span>
@@ -14207,16 +15185,16 @@ if (isset($_GET['live']) && $_GET['live'] === '1') {
             <div class="results-header results-header--chart">
                 <div>
                     <h2 id="chartHeading"><?= $chart_actual_count ?> real hourly candles • <?= $chart_scored_count ?> scored 12/12 • <?= $chart_forecast_count ?> forecast candles</h2>
-                    <p>Each prediction stick rolls twelve locked five-minute guesses forward • STEP = current average five-minute price move • NET = UP marks minus DOWN marks</p>
+                    <p>Each prediction stick rolls twelve locked five-minute guesses forward • STEP = raw current average five-minute price move • BUY/SELL AVG = raw average × board multiplier • NET = UP marks minus DOWN marks</p>
                 </div>
                 <div class="header-chips">
-                    <span id="chartStats" class="panel-chip">Price range <?= number_format($chart_price_min, 2) ?>–<?= number_format($chart_price_max, 2) ?> • Average move <?= number_format($average_change, 2) ?></span>
+                    <span id="chartStats" class="panel-chip">Price range <?= number_format($chart_price_min, 2) ?>–<?= number_format($chart_price_max, 2) ?> • Raw avg <?= number_format($average_change, 2) ?> • BUY avg <?= number_format($average_buy_commitment, 2) ?> • SELL avg <?= number_format($average_sell_commitment, 2) ?></span>
                 </div>
             </div>
             <div class="chart-stage">
                 <canvas id="candleChart" aria-label="Chart with <?= $chart_actual_count ?> real hourly candles, <?= $chart_scored_count ?> scored twelve-mark predictions, and <?= $chart_forecast_count ?> combined forecast candlesticks"></canvas>
                 <div class="trade-overlay">
-                    <span id="averageMove">AVG MOVE <?= $average_change >= 0 ? '+' : '' ?>$<?= number_format($average_change, 2) ?></span>
+                    <span id="averageMove">RAW AVG <?= $average_change >= 0 ? '+' : '' ?>$<?= number_format($average_change, 2) ?> · BUY $<?= number_format($average_buy_commitment, 2) ?> · SELL $<?= number_format($average_sell_commitment, 2) ?></span>
                     <span id="paperProfit" style="color:<?= $paper_profit >= 0 ? 'var(--accent)' : 'var(--danger)' ?>">PORTFOLIO P&amp;L <?= $paper_profit >= 0 ? '+' : '' ?>$<?= number_format($paper_profit, 2) ?></span>
                 </div>
             </div>
@@ -15595,6 +16573,24 @@ function renderAutoBreakTrader(state) {
     const assetSoldAmount = isCryptoPage ? number8(state.total_sold_units) : number4(state.total_sold_units);
     const totalBoughtAmount = Number(state.total_bought_amount || 0);
     const totalSoldAmount = Number(state.total_sold_amount || 0);
+    const pnlBasis = Number(state.portfolio_pnl_basis || 0);
+    const cashNeutralBaseline = Number(state.portfolio_cash_neutral_baseline || 0);
+    const pnlBasisLabel = String(state.portfolio_pnl_basis_label || 'ACTIVE LEG').trim();
+    const cashoutTotal = Number(state.cash_out_amount || 0);
+    const cashoutAfterRejoinFee = Number(state.cash_out_after_rejoin_fee || 0);
+    const cashoutRejoinFee = Number(state.cash_out_rejoin_fee_estimate || 0);
+    const cashoutRejoinLabel = String(state.cash_out_rejoin_fee_label || 'REJOIN FEE').trim();
+    const cashoutReserve = Number(state.cash_out_cash_kitty_reserve || 5000);
+    const cashoutAssetRefillAvailable = Number(
+        state.cash_out_available_for_asset_refill || Math.max(0, Number(state.cash_left || 0) - cashoutReserve)
+    );
+    const pnlBasisText = ' • P&L BASIS $' + number2(pnlBasis)
+        + (cashNeutralBaseline > 0 ? ' ACTIVE + CASH NEUTRAL $' + number2(cashNeutralBaseline) : '')
+        + (pnlBasisLabel ? ' · ' + pnlBasisLabel : '')
+        + ' • CASH KITTY RESERVE $' + number2(cashoutReserve)
+        + ' • ASSET REFILLABLE $' + number2(cashoutAssetRefillAvailable)
+        + ' • CASHOUT AFTER REJOIN FEE $' + number2(cashoutAfterRejoinFee)
+        + ' (' + (cashoutRejoinLabel || 'REJOIN FEE') + ' $' + number2(cashoutRejoinFee) + ')';
     const bootstrapEntryPrice = Number(state.bootstrap_entry_price || 0);
     const bootstrapStartedAt = String(state.bootstrap_started_at || '');
     const valueNode = document.getElementById('autoBreakValue');
@@ -15611,6 +16607,7 @@ function renderAutoBreakTrader(state) {
         + ' ' + (lastTradeResult ? ((lastTradePnl >= 0 ? '+' : '-') + '$' + number2(Math.abs(lastTradePnl))) : '—')
         + ' • EXECUTED EXIT P/L ' + wins + '/' + losses
         + ' • ALPHA ' + (strategyAlpha >= 0 ? '+' : '-') + '$' + number2(Math.abs(strategyAlpha))
+        + pnlBasisText
         + ' • FEES $' + number2(totalFees)
         + ' • GUARD ' + (spiralPaused ? 'PAUSED' : 'MONITORING')
         + ' • Paper only';
@@ -15619,6 +16616,10 @@ function renderAutoBreakTrader(state) {
     setNodeText('walletAssetValue', assetLeftAmount);
     setNodeText('walletHoldingValue', '$' + number2(state.holding_value));
     setNodeText('walletCashValue', '$' + number2(state.cash_left));
+    setNodeText('walletCashoutTotalValue', '$' + number2(cashoutTotal));
+    setNodeText('walletCashoutAfterRejoinFeeValue', '$' + number2(cashoutAfterRejoinFee));
+    setNodeText('walletCashoutReserveValue', '$' + number2(cashoutReserve));
+    setNodeText('walletAssetRefillAvailableValue', '$' + number2(cashoutAssetRefillAvailable));
     setNodeText('walletReservedValue', '$0.00');
     setNodeText('walletNetMoveValue', `${simNetMove >= 0 ? '+' : '-'}$${number2(Math.abs(simNetMove))}`);
     setNodeText('walletBenchmarkValue', `${benchmarkPnl >= 0 ? '+' : '-'}$${number2(Math.abs(benchmarkPnl))}`);
@@ -15684,9 +16685,18 @@ function renderCompression(data) {
     const tokenTakeoverAction = String(data.compressionTokenTakeoverAction || 'NO TRADE');
     const tokenTakeoverThreshold = Number(data.compressionTokenTakeoverThreshold || 60);
     const tokenTakeoverScore = Number(data.compressionTokenTakeoverScore || primaryScore);
+    const candleBranchFlipActive = data.compressionCandleBranchFlipActive === true;
+    const candleBranchAction = String(data.compressionCandleBranchAction || 'NO TRADE');
+    const candleBranchScore = Number(data.compressionCandleBranchScore || tokenTakeoverScore);
+    const candleBranchThreshold = Number(data.compressionCandleBranchThreshold || 50);
+    const candleBranchHorizon = Number(data.compressionCandleBranchHorizon || 12);
+    const compressionPreFlipAction = String(data.compressionPreFlipAction || 'NO TRADE');
     const tokenTakeoverText = tokenTakeoverActive
         ? ` • TOKEN TAKEOVER ${tokenTakeoverAction} ${number2(tokenTakeoverScore)}% ≥ ${number2(tokenTakeoverThreshold)}%`
         : ` • token threshold ${number2(tokenTakeoverThreshold)}%`;
+    const candleBranchText = candleBranchFlipActive
+        ? ` • CANDLE BRANCH FLIP ${compressionPreFlipAction}→${candleBranchAction} x${candleBranchHorizon} @ ${number2(candleBranchScore)}%`
+        : ` • candle branch ${candleBranchAction} threshold ${number2(candleBranchThreshold)}%`;
     const hasSamples = samples > 0 || firstLoopScore > 0;
     const valueNode = setNodeText('compressionValue', hasSamples ? `${number2(primaryScore)}%` : '—');
     if (valueNode) {
@@ -15695,7 +16705,7 @@ function renderCompression(data) {
     setNodeText(
         'compressionNote',
         hasSamples
-            ? `${dominantDirection} • entropy ${number2(entropy)}% • ${phaseCount} RLE phases / ${phaseChanges} changes • 100% runs ${perfectMin}–${perfectMax} parts • first loop ${number2(firstLoopScore)}% • secondary ${secondaryState} ${number2(secondaryScore)}% • combined ${number2(combinedScore)}%${tokenTakeoverText}`
+            ? `${dominantDirection} • entropy ${number2(entropy)}% • ${phaseCount} RLE phases / ${phaseChanges} changes • 100% runs ${perfectMin}–${perfectMax} parts • first loop ${number2(firstLoopScore)}% • secondary ${secondaryState} ${number2(secondaryScore)}% • combined ${number2(combinedScore)}%${tokenTakeoverText}${candleBranchText}`
             : 'Waiting for resolved family samples'
     );
 }
@@ -15901,8 +16911,11 @@ async function loadLiveData(options = {}) {
         localizeTableTimes();
         const guess = lockedCurrentGuess(data.currentGuess || {});
         renderModelStance(guess, traderState, data);
-        document.getElementById('chartStats').textContent = `Price range ${number2(chartPriceMin)}–${number2(chartPriceMax)} • Average move ${number2(data.averageChange)}`;
-        document.getElementById('averageMove').textContent = `AVG MOVE ${Number(data.averageChange || 0) >= 0 ? '+' : ''}$${number2(data.averageChange)}`;
+        const rawAverageMove = Number(data.averageChange || 0);
+        const buyAverageCommitment = Number(data.averageBuyCommitment || (rawAverageMove * Number(data.buyMultiplier || 1)));
+        const sellAverageCommitment = Number(data.averageSellCommitment || (rawAverageMove * Number(data.sellMultiplier || 1)));
+        document.getElementById('chartStats').textContent = `Price range ${number2(chartPriceMin)}–${number2(chartPriceMax)} • Raw avg ${number2(rawAverageMove)} • BUY avg ${number2(buyAverageCommitment)} • SELL avg ${number2(sellAverageCommitment)}`;
+        document.getElementById('averageMove').textContent = `RAW AVG ${rawAverageMove >= 0 ? '+' : ''}$${number2(rawAverageMove)} · BUY $${number2(buyAverageCommitment)} · SELL $${number2(sellAverageCommitment)}`;
         syncChartMeta();
         drawCandleChart();
     } catch (error) {
@@ -16116,6 +17129,48 @@ function setupDashboardRefreshButton() {
     });
 }
 
+function setupCashoutPinPad() {
+    document.querySelectorAll('[data-cashout-pin-form]').forEach((form) => {
+        const input = form.querySelector('[data-cashout-pin-value]');
+        const submit = form.querySelector('[data-cashout-submit]');
+        const buttons = Array.from(form.querySelectorAll('[data-cashout-pin-button]'));
+        const status = form.querySelector('[data-cashout-pin-status]');
+        const clear = form.querySelector('[data-cashout-pin-clear]');
+        if (!input || !submit || buttons.length !== 4) return;
+        let pin = '';
+        const render = () => {
+            input.value = pin;
+            buttons.forEach((button) => {
+                const digit = String(button.getAttribute('data-cashout-pin-button') || '');
+                button.classList.toggle('is-used', pin.includes(digit));
+            });
+            if (status) status.textContent = `PIN: ${pin.length} / 4${pin.length ? ` • ${pin}` : ''}`;
+            submit.disabled = pin.length !== 4;
+        };
+        buttons.forEach((button) => {
+            button.addEventListener('click', () => {
+                const digit = String(button.getAttribute('data-cashout-pin-button') || '');
+                if (!/^[1-4]$/.test(digit) || pin.length >= 4) return;
+                pin += digit;
+                render();
+            });
+        });
+        if (clear) {
+            clear.addEventListener('click', () => {
+                pin = '';
+                render();
+            });
+        }
+        form.addEventListener('submit', (event) => {
+            if (!/^[1-4]{4}$/.test(pin)) {
+                event.preventDefault();
+                render();
+            }
+        });
+        render();
+    });
+}
+
 function setupReferenceCloseButtons() {
     document.querySelectorAll('[data-close-reference]').forEach((button) => {
         button.addEventListener('click', () => {
@@ -16128,7 +17183,7 @@ function setupReferenceCloseButtons() {
 function clearOneShotDashboardParams() {
     const url = new URL(window.location.href);
     let changed = false;
-    ['run_analysis', 'wallet_reset_done', 'live', 'cache_only', '_'].forEach((name) => {
+    ['run_analysis', 'wallet_reset_done', 'wallet_cash_out_done', 'wallet_buy_back_done', 'live', 'cache_only', '_'].forEach((name) => {
         if (!url.searchParams.has(name)) return;
         url.searchParams.delete(name);
         changed = true;
@@ -16144,6 +17199,7 @@ clearOneShotDashboardParams();
 setupMarqueeCarousel();
 setupTrackedDashboardCarousel();
 setupDashboardRefreshButton();
+setupCashoutPinPad();
 setupReferenceCloseButtons();
 updateRetrieveTimer();
 setInterval(updateRetrieveTimer, 250);
