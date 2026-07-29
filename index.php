@@ -2252,6 +2252,7 @@ if (!defined('TRADE_ANALYSIS_HORIZON')) define('TRADE_ANALYSIS_HORIZON', ONE_HOU
 if (!defined('REALIZE_LOSS_TRADES')) define('REALIZE_LOSS_TRADES', true);
 if (!defined('MAX_REALIZED_SELL_LOSS_AMOUNT')) define('MAX_REALIZED_SELL_LOSS_AMOUNT', 100.00);
 if (!defined('LOW_ACCURACY_INVERSION_PERCENT')) define('LOW_ACCURACY_INVERSION_PERCENT', 50.0);
+if (!defined('LATE_WRONG_MARK_FLIP_DELAY_SECONDS')) define('LATE_WRONG_MARK_FLIP_DELAY_SECONDS', 60);
 // Table-led paper execution should be able to sell immediately on a SELL call.
 if (!defined('MIN_SELL_EDGE_PERCENT')) define('MIN_SELL_EDGE_PERCENT', 0.00);
 if (!defined('MIN_TRADE_AMOUNT')) define('MIN_TRADE_AMOUNT', 5.00);
@@ -5274,6 +5275,59 @@ function buildForecastObservationState(array $resolvedResultsByTime): array
         'execution_orientation' => (string)($bellCurve['orientation'] ?? 'HOLD'),
         'bell_curve' => $bellCurve,
         'latest' => $latest,
+    ];
+}
+
+/**
+ * Execution-only guard: when the most recent strict-forward five-minute
+ * forecast resolves WRONG, wait until one minute after that candle closes,
+ * then flip the current execution direction to the observed direction.
+ */
+function buildLateWrongMarkFlipState(array $forecastObservationState, int $nowEpoch): array
+{
+    $latest = is_array($forecastObservationState['latest'] ?? null)
+        ? $forecastObservationState['latest']
+        : [];
+    $targetTime = trim((string)($latest['time'] ?? ''));
+    $targetEpoch = $targetTime !== '' ? yahooTimestamp($targetTime) : null;
+    $predicted = trim((string)($latest['predicted'] ?? ''));
+    $actual = trim((string)($latest['actual'] ?? ''));
+    $result = strtoupper(trim((string)($latest['result'] ?? '')));
+    $predictedAction = $predicted === '+'
+        ? 'BUY'
+        : ($predicted === '-' ? 'SELL' : 'NO TRADE');
+    $actualAction = $actual === '+'
+        ? 'BUY'
+        : ($actual === '-' ? 'SELL' : 'NO TRADE');
+    $activationEpoch = is_int($targetEpoch)
+        ? $targetEpoch + 300 + LATE_WRONG_MARK_FLIP_DELAY_SECONDS
+        : null;
+    $eligible = $result === 'WRONG'
+        && is_int($targetEpoch)
+        && ($predicted === '+' || $predicted === '-')
+        && ($actual === '+' || $actual === '-')
+        && $predicted !== $actual;
+    $active = $eligible
+        && is_int($activationEpoch)
+        && $nowEpoch >= $activationEpoch;
+
+    return [
+        'schema' => 'late-wrong-mark-flip-v1',
+        'eligible' => $eligible,
+        'active' => $active,
+        'delay_seconds' => LATE_WRONG_MARK_FLIP_DELAY_SECONDS,
+        'target_time' => $targetTime,
+        'target_epoch' => $targetEpoch,
+        'activation_epoch' => $activationEpoch,
+        'activation_time' => is_int($activationEpoch) ? gmdate('Y-m-d\TH:i:s\Z', $activationEpoch) : '',
+        'predicted' => $predicted,
+        'actual' => $actual,
+        'pre_flip_action' => $predictedAction,
+        'flip_action' => $actualAction,
+        'reason' => $active
+            ? 'WRONG MARK +6M FLIP'
+            : ($eligible ? 'WAITING FOR +6M' : 'NO WRONG MARK'),
+        'forecast_fingerprint' => (string)($latest['forecast_fingerprint'] ?? ''),
     ];
 }
 
@@ -9313,6 +9367,19 @@ function updateBoundaryModelTraderState(
                     );
                 }
             }
+            if (($riskMetricContext['late_wrong_mark_flip_active'] ?? false) === true) {
+                $lateWrongFlipLabel = 'LATE WRONG MARK FLIP '
+                    . strtoupper(trim((string)($riskMetricContext['late_wrong_mark_pre_flip_action'] ?? 'NO TRADE')))
+                    . '→'
+                    . strtoupper(trim((string)($riskMetricContext['late_wrong_mark_flip_action'] ?? 'NO TRADE')))
+                    . ' @ +6M';
+                $eventLabel = trim((string)($state['events_by_time'][$boundaryTime]['label'] ?? ''));
+                if ($eventLabel === '' || !str_contains($eventLabel, $lateWrongFlipLabel)) {
+                    $state['events_by_time'][$boundaryTime]['label'] = trim(
+                        $eventLabel . ($eventLabel !== '' ? ' · ' : '') . $lateWrongFlipLabel
+                    );
+                }
+            }
             $idempotencyShort = strtoupper(substr(
                 str_replace('paper-', '', $boundaryExecutionIdempotencyKey),
                 0,
@@ -9347,9 +9414,14 @@ function updateBoundaryModelTraderState(
                 'compression_candle_branch_threshold',
                 'compression_candle_branch_horizon',
                 'compression_pre_flip_action',
-            ] as $compressionDecisionField) {
-                if (array_key_exists($compressionDecisionField, $riskMetricContext)) {
-                    $state['events_by_time'][$boundaryTime][$compressionDecisionField] = $riskMetricContext[$compressionDecisionField];
+                'late_wrong_mark_flip_active',
+                'late_wrong_mark_flip_action',
+                'late_wrong_mark_pre_flip_action',
+                'late_wrong_mark_target_time',
+                'late_wrong_mark_activation_time',
+            ] as $decisionField) {
+                if (array_key_exists($decisionField, $riskMetricContext)) {
+                    $state['events_by_time'][$boundaryTime][$decisionField] = $riskMetricContext[$decisionField];
                 }
             }
             if (!isset($state['events_by_time'][$boundaryTime]['minimum_funds'])) {
@@ -10832,6 +10904,7 @@ foreach ($pair_stats as &$pair_stat) {
 }
 unset($pair_stat);
 $forecast_observation_state = buildForecastObservationState($resolved_results_by_time);
+$late_wrong_mark_flip = buildLateWrongMarkFlipState($forecast_observation_state, time());
 $accuracy_total = (int)($forecast_observation_state['total'] ?? 0);
 $accuracy_right = (int)($forecast_observation_state['right'] ?? 0);
 $internal_agreement = internalAgreementStatsFromResolvedTable($resolved_results_by_time, ONE_HOUR_CANDLE_COUNT);
@@ -11264,8 +11337,38 @@ if ($execution_inversion_active && $execution_bell_curve_eligible && is_array($e
         $effective_execution_guess['action'] = $effective_execution_guess['direction'] === '+' ? 'BUY' : 'SELL';
     }
 }
+$late_wrong_mark_flip_active = (($late_wrong_mark_flip['active'] ?? false) === true);
+$late_wrong_mark_flip_action = strtoupper(trim((string)($late_wrong_mark_flip['flip_action'] ?? 'NO TRADE')));
+if ($late_wrong_mark_flip_action !== 'BUY' && $late_wrong_mark_flip_action !== 'SELL') {
+    $late_wrong_mark_flip_action = 'NO TRADE';
+}
+$late_wrong_mark_pre_flip_action = guessStoredAction($effective_execution_guess);
+if ($late_wrong_mark_flip_active
+    && is_array($effective_execution_guess)
+    && ($late_wrong_mark_flip_action === 'BUY' || $late_wrong_mark_flip_action === 'SELL')
+) {
+    $effective_execution_guess['direction'] = $late_wrong_mark_flip_action === 'BUY' ? '+' : '-';
+    $effective_execution_guess['action'] = $late_wrong_mark_flip_action;
+    $effective_execution_guess['late_wrong_mark_flip'] = true;
+    $effective_execution_guess['late_wrong_mark_target_time'] = (string)($late_wrong_mark_flip['target_time'] ?? '');
+    $effective_execution_guess['late_wrong_mark_activation_time'] = (string)($late_wrong_mark_flip['activation_time'] ?? '');
+    $execution_bell_curve_source = 'LATE_WRONG_MARK';
+    $execution_bell_curve_orientation = 'INVERT';
+    $execution_bell_curve_eligible = true;
+    $execution_bell_curve_strength = 100.0;
+    $execution_bell_curve['eligible'] = true;
+    $execution_bell_curve['observation_eligible'] = true;
+    $execution_bell_curve['orientation'] = 'INVERT';
+    $execution_bell_curve['observation_orientation'] = 'INVERT';
+    $execution_bell_curve['effective_percent'] = 100.0;
+    $execution_bell_curve['evidence_percent'] = 100.0;
+    $execution_bell_curve['reason'] = 'WRONG MARK +6M FLIP';
+    $execution_bell_curve['stake_multiplier'] = max(1.0, (float)($execution_bell_curve['stake_multiplier'] ?? 0.0));
+    $execution_bell_curve_multiplier = max($execution_bell_curve_multiplier, 1.0);
+}
 $pre_compression_candle_action = guessStoredAction($effective_execution_guess);
-$compression_candle_branch_active = $compression_candle_branch_score >= $compression_candle_branch_threshold
+$compression_candle_branch_active = !$late_wrong_mark_flip_active
+    && $compression_candle_branch_score >= $compression_candle_branch_threshold
     && ($compression_candle_branch_action === 'BUY' || $compression_candle_branch_action === 'SELL')
     && ($pre_compression_candle_action === 'BUY' || $pre_compression_candle_action === 'SELL');
 $compression_candle_branch_opposes_action = $compression_candle_branch_active
@@ -11306,6 +11409,7 @@ $compression_note .= $compression_candle_branch_flip_active
     : ' • candle branch ' . $compression_candle_branch_action
         . ' threshold ' . number_format($compression_candle_branch_threshold, 1) . '%';
 if ($compression_token_takeover_active
+    && !$late_wrong_mark_flip_active
     && !$execution_inversion_active
     && !$compression_candle_branch_flip_active
     && is_array($effective_execution_guess)
@@ -11607,6 +11711,12 @@ $spiral_guard_metric_context = [
     'compression_candle_branch_threshold' => $compression_candle_branch_threshold,
     'compression_candle_branch_horizon' => $compression_candle_branch_horizon,
     'compression_pre_flip_action' => $pre_compression_candle_action,
+    'late_wrong_mark_flip' => $late_wrong_mark_flip,
+    'late_wrong_mark_flip_active' => $late_wrong_mark_flip_active,
+    'late_wrong_mark_flip_action' => $late_wrong_mark_flip_action,
+    'late_wrong_mark_pre_flip_action' => $late_wrong_mark_pre_flip_action,
+    'late_wrong_mark_target_time' => (string)($late_wrong_mark_flip['target_time'] ?? ''),
+    'late_wrong_mark_activation_time' => (string)($late_wrong_mark_flip['activation_time'] ?? ''),
     'internal_agreement' => $internal_agreement_recent_effective_percent,
     'evidence_source' => $execution_bell_curve_source,
     'evidence_orientation' => $execution_bell_curve_orientation,
@@ -11917,6 +12027,12 @@ $current_phase_sizing['sell_average_commitment'] = $average_sell_commitment;
 $current_phase_sizing['confidence_bell_curve_multiplier'] = round($execution_bell_curve_multiplier, 6);
 $current_phase_sizing['confidence_bell_curve_trade_eligible'] = $bell_curve_trade_eligible;
 $current_phase_sizing['confidence_bell_curve_trade_reason'] = $bell_curve_trade_reason;
+$current_phase_sizing['late_wrong_mark_flip'] = $late_wrong_mark_flip;
+$current_phase_sizing['late_wrong_mark_flip_active'] = $late_wrong_mark_flip_active;
+$current_phase_sizing['late_wrong_mark_flip_action'] = $late_wrong_mark_flip_action;
+$current_phase_sizing['late_wrong_mark_pre_flip_action'] = $late_wrong_mark_pre_flip_action;
+$current_phase_sizing['late_wrong_mark_target_time'] = (string)($late_wrong_mark_flip['target_time'] ?? '');
+$current_phase_sizing['late_wrong_mark_activation_time'] = (string)($late_wrong_mark_flip['activation_time'] ?? '');
 $current_boundary_trade_event = is_array($paper_break_events_by_time[$early_boundary_key] ?? null)
     ? $paper_break_events_by_time[$early_boundary_key]
     : null;
@@ -11977,7 +12093,9 @@ if (is_array($current_boundary_trade_event)) {
         'compression_candle_branch_flip_active', 'compression_candle_branch_opposes_action',
         'compression_candle_branch_action', 'compression_candle_branch_score',
         'compression_candle_branch_threshold', 'compression_candle_branch_horizon',
-        'compression_pre_flip_action',
+        'compression_pre_flip_action', 'late_wrong_mark_flip_active',
+        'late_wrong_mark_flip_action', 'late_wrong_mark_pre_flip_action',
+        'late_wrong_mark_target_time', 'late_wrong_mark_activation_time',
     ] as $decisionField) {
         $current_phase_sizing[$decisionField] = (string)($current_boundary_trade_event[$decisionField] ?? '');
     }
@@ -12651,6 +12769,12 @@ if (isset($_GET['live']) && $_GET['live'] === '1') {
         'compressionCandleBranchThreshold' => $compression_candle_branch_threshold,
         'compressionCandleBranchHorizon' => $compression_candle_branch_horizon,
         'compressionPreFlipAction' => $pre_compression_candle_action,
+        'lateWrongMarkFlip' => $late_wrong_mark_flip,
+        'lateWrongMarkFlipActive' => $late_wrong_mark_flip_active,
+        'lateWrongMarkFlipAction' => $late_wrong_mark_flip_action,
+        'lateWrongMarkPreFlipAction' => $late_wrong_mark_pre_flip_action,
+        'lateWrongMarkTargetTime' => (string)($late_wrong_mark_flip['target_time'] ?? ''),
+        'lateWrongMarkActivationTime' => (string)($late_wrong_mark_flip['activation_time'] ?? ''),
         'alternationEvidence' => $alternation_evidence,
         'alternationTail' => $alternation_tail,
         'alternationPatternActive' => $alternation_pattern_active,
@@ -16691,22 +16815,29 @@ function renderCompression(data) {
     const candleBranchThreshold = Number(data.compressionCandleBranchThreshold || 50);
     const candleBranchHorizon = Number(data.compressionCandleBranchHorizon || 12);
     const compressionPreFlipAction = String(data.compressionPreFlipAction || 'NO TRADE');
+    const lateWrongActive = data.lateWrongMarkFlipActive === true;
+    const lateWrongAction = String(data.lateWrongMarkFlipAction || 'NO TRADE');
+    const lateWrongPreFlipAction = String(data.lateWrongMarkPreFlipAction || 'NO TRADE');
+    const lateWrongActivation = String(data.lateWrongMarkActivationTime || '');
     const tokenTakeoverText = tokenTakeoverActive
         ? ` • TOKEN TAKEOVER ${tokenTakeoverAction} ${number2(tokenTakeoverScore)}% ≥ ${number2(tokenTakeoverThreshold)}%`
         : ` • token threshold ${number2(tokenTakeoverThreshold)}%`;
     const candleBranchText = candleBranchFlipActive
         ? ` • CANDLE BRANCH FLIP ${compressionPreFlipAction}→${candleBranchAction} x${candleBranchHorizon} @ ${number2(candleBranchScore)}%`
         : ` • candle branch ${candleBranchAction} threshold ${number2(candleBranchThreshold)}%`;
-    const hasSamples = samples > 0 || firstLoopScore > 0;
+    const lateWrongText = lateWrongActive
+        ? ` • LATE WRONG MARK FLIP ${lateWrongPreFlipAction}→${lateWrongAction} @ +6M${lateWrongActivation ? ` ${lateWrongActivation}` : ''}`
+        : '';
+    const hasSamples = samples > 0 || firstLoopScore > 0 || lateWrongActive;
     const valueNode = setNodeText('compressionValue', hasSamples ? `${number2(primaryScore)}%` : '—');
     if (valueNode) {
         setToneClass(valueNode, !hasSamples ? 'medium' : (primaryScore >= 65 ? 'good' : (primaryScore >= 45 ? 'medium' : 'low')));
     }
     setNodeText(
         'compressionNote',
-        hasSamples
-            ? `${dominantDirection} • entropy ${number2(entropy)}% • ${phaseCount} RLE phases / ${phaseChanges} changes • 100% runs ${perfectMin}–${perfectMax} parts • first loop ${number2(firstLoopScore)}% • secondary ${secondaryState} ${number2(secondaryScore)}% • combined ${number2(combinedScore)}%${tokenTakeoverText}${candleBranchText}`
-            : 'Waiting for resolved family samples'
+        hasSamples && (samples > 0 || firstLoopScore > 0)
+            ? `${dominantDirection} • entropy ${number2(entropy)}% • ${phaseCount} RLE phases / ${phaseChanges} changes • 100% runs ${perfectMin}–${perfectMax} parts • first loop ${number2(firstLoopScore)}% • secondary ${secondaryState} ${number2(secondaryScore)}% • combined ${number2(combinedScore)}%${tokenTakeoverText}${candleBranchText}${lateWrongText}`
+            : (lateWrongActive ? lateWrongText.replace(/^ • /, '') : 'Waiting for resolved family samples')
     );
 }
 

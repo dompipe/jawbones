@@ -1,5 +1,5 @@
 {
-    "ran_at": "2026-07-29T18:50:04Z",
+    "ran_at": "2026-07-29T19:16:03Z",
     "target_count": 5,
     "target_batch_limit": 5,
     "target_batch_offset": 0,
@@ -10,86 +10,61 @@
             "market_type": "crypto",
             "symbol": "BTC-USD",
             "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.80&sell_multiplier=0.65&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
-            "ok": false,
-            "status": 0,
-            "has_price_payload": false,
-            "symbol_probe": {
-                "url": "https://query1.finance.yahoo.com/v8/finance/chart/BTC-USD?range=1d&interval=5m&includePrePost=false",
-                "ok": true,
-                "status": 200,
-                "looks_real": true
-            },
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
             "removed_from_list": false,
-            "remove_reason": "Kept symbol because direct crypto symbol probe still looked valid even though the page returned no usable price CSV/JSON.",
-            "checked_at": "2026-07-29T18:50:05Z"
+            "remove_reason": "",
+            "checked_at": "2026-07-29T19:16:06Z"
         },
         {
             "market_type": "crypto",
             "symbol": "ETH-USD",
             "requested_url": "http://127.0.0.1:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
-            "ok": false,
-            "status": 0,
-            "has_price_payload": false,
-            "symbol_probe": {
-                "url": "https://query1.finance.yahoo.com/v8/finance/chart/ETH-USD?range=1d&interval=5m&includePrePost=false",
-                "ok": true,
-                "status": 200,
-                "looks_real": true
-            },
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
             "removed_from_list": false,
-            "remove_reason": "Kept symbol because direct crypto symbol probe still looked valid even though the page returned no usable price CSV/JSON.",
-            "checked_at": "2026-07-29T18:50:06Z"
+            "remove_reason": "",
+            "checked_at": "2026-07-29T19:16:07Z"
         },
         {
             "market_type": "stock",
             "symbol": "AAPL",
-            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=AAPL&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
-            "ok": false,
-            "status": 0,
-            "has_price_payload": false,
-            "symbol_probe": {
-                "url": "https://query1.finance.yahoo.com/v8/finance/chart/AAPL?range=1d&interval=5m&includePrePost=false",
-                "ok": true,
-                "status": 200,
-                "looks_real": true
-            },
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=AAPL&buy_multiplier=5.00&sell_multiplier=4.00&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
             "removed_from_list": false,
-            "remove_reason": "Kept symbol because Yahoo still returned a usable stock quote path even though the page returned no usable price CSV/JSON.",
-            "checked_at": "2026-07-29T18:50:06Z"
+            "remove_reason": "",
+            "checked_at": "2026-07-29T19:16:10Z"
         },
         {
             "market_type": "stock",
             "symbol": "GM",
             "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=GM&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
-            "ok": false,
-            "status": 0,
-            "has_price_payload": false,
-            "symbol_probe": {
-                "url": "https://query1.finance.yahoo.com/v8/finance/chart/GM?range=1d&interval=5m&includePrePost=false",
-                "ok": true,
-                "status": 200,
-                "looks_real": true
-            },
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
             "removed_from_list": false,
-            "remove_reason": "Kept symbol because Yahoo still returned a usable stock quote path even though the page returned no usable price CSV/JSON.",
-            "checked_at": "2026-07-29T18:50:06Z"
+            "remove_reason": "",
+            "checked_at": "2026-07-29T19:16:13Z"
         },
         {
             "market_type": "stock",
             "symbol": "TSLA",
             "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=TSLA&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
-            "ok": false,
-            "status": 0,
-            "has_price_payload": false,
-            "symbol_probe": {
-                "url": "https://query1.finance.yahoo.com/v8/finance/chart/TSLA?range=1d&interval=5m&includePrePost=false",
-                "ok": true,
-                "status": 200,
-                "looks_real": true
-            },
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
             "removed_from_list": false,
-            "remove_reason": "Kept symbol because Yahoo still returned a usable stock quote path even though the page returned no usable price CSV/JSON.",
-            "checked_at": "2026-07-29T18:50:07Z"
+            "remove_reason": "",
+            "checked_at": "2026-07-29T19:16:17Z"
         }
     ]
 }

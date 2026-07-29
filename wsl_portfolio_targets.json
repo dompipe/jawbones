@@ -10,7 +10,7 @@
             "break_buy": "0.50",
             "break_gain": "0.50",
             "break_loss": "0.50",
-            "updated_at": "2026-07-29T18:50:50Z"
+            "updated_at": "2026-07-29T19:16:05Z"
         },
         {
             "market_type": "crypto",
@@ -22,19 +22,19 @@
             "break_buy": "0.50",
             "break_gain": "0.50",
             "break_loss": "0.50",
-            "updated_at": "2026-07-29T18:50:44Z"
+            "updated_at": "2026-07-29T19:16:06Z"
         },
         {
             "market_type": "stock",
             "symbol": "AAPL",
             "base_url": "http://localhost:8081/index.php",
-            "buy_multiplier": 0.5,
-            "sell_multiplier": 0.4,
+            "buy_multiplier": 5,
+            "sell_multiplier": 4,
             "trust_percent": "50.00",
             "break_buy": "0.50",
             "break_gain": "0.50",
             "break_loss": "0.50",
-            "updated_at": "2026-07-29T18:46:10Z"
+            "updated_at": "2026-07-29T19:16:09Z"
         },
         {
             "market_type": "stock",
@@ -46,7 +46,7 @@
             "break_buy": "0.50",
             "break_gain": "0.50",
             "break_loss": "0.50",
-            "updated_at": "2026-07-29T18:46:14Z"
+            "updated_at": "2026-07-29T19:16:13Z"
         },
         {
             "market_type": "stock",
@@ -58,7 +58,7 @@
             "break_buy": "0.50",
             "break_gain": "0.50",
             "break_loss": "0.50",
-            "updated_at": "2026-07-29T18:46:19Z"
+            "updated_at": "2026-07-29T19:16:15Z"
         }
     ]
 }
