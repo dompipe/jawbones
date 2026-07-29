@@ -1,5 +1,5 @@
 {
-    "ran_at": "2026-07-29T02:15:07Z",
+    "ran_at": "2026-07-29T02:35:07Z",
     "target_count": 5,
     "target_batch_limit": 5,
     "target_batch_offset": 0,
@@ -16,7 +16,7 @@
             "symbol_probe": null,
             "removed_from_list": false,
             "remove_reason": "",
-            "checked_at": "2026-07-29T02:15:10Z"
+            "checked_at": "2026-07-29T02:35:10Z"
         },
         {
             "market_type": "crypto",
@@ -28,7 +28,7 @@
             "symbol_probe": null,
             "removed_from_list": false,
             "remove_reason": "",
-            "checked_at": "2026-07-29T02:15:12Z"
+            "checked_at": "2026-07-29T02:35:13Z"
         },
         {
             "market_type": "stock",
@@ -45,7 +45,7 @@
             },
             "removed_from_list": false,
             "remove_reason": "Kept symbol because Yahoo still returned a usable stock quote path even though the page returned no usable price CSV/JSON.",
-            "checked_at": "2026-07-29T02:15:12Z"
+            "checked_at": "2026-07-29T02:35:13Z"
         },
         {
             "market_type": "stock",
@@ -62,7 +62,7 @@
             },
             "removed_from_list": false,
             "remove_reason": "Kept symbol because Yahoo still returned a usable stock quote path even though the page returned no usable price CSV/JSON.",
-            "checked_at": "2026-07-29T02:15:12Z"
+            "checked_at": "2026-07-29T02:35:14Z"
         },
         {
             "market_type": "stock",
@@ -79,7 +79,7 @@
             },
             "removed_from_list": false,
             "remove_reason": "Kept symbol because Yahoo still returned a usable stock quote path even though the page returned no usable price CSV/JSON.",
-            "checked_at": "2026-07-29T02:15:13Z"
+            "checked_at": "2026-07-29T02:35:14Z"
         }
     ]
 }

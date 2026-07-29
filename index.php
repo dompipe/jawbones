@@ -5056,6 +5056,42 @@ function displayCommitmentAmountForAction(
         : max(0.0, $fixedTradeAmount * max(0.0, $sellMultiplier));
 }
 
+function requestedPaperTradeAmountForAction(
+    string $action,
+    float $fixedTradeAmount,
+    float $sellMultiplier = 1.0,
+    int $sequenceCount = 1,
+    bool $regimeActive = false,
+    float $bellCurveBuyAmount = 0.0,
+    float $bellCurveSellAmount = 0.0,
+    bool $forcedRebuy = false,
+    float $rebuyAmount = 0.0,
+    bool $sneakEligible = false,
+    float $sneakFactor = 1.0
+): float {
+    $action = strtoupper(trim($action));
+    if ($action !== 'BUY' && $action !== 'SELL') return 0.0;
+
+    if ($action === 'BUY') {
+        $amount = $bellCurveBuyAmount > 0.0
+            ? $bellCurveBuyAmount
+            : ($forcedRebuy
+                ? $rebuyAmount
+                : max(0.0, $fixedTradeAmount));
+    } else {
+        $amount = $bellCurveSellAmount > 0.0
+            ? $bellCurveSellAmount
+            : max(0.0, $fixedTradeAmount * max(0.0, $sellMultiplier));
+    }
+
+    $sequenceMultiplier = $regimeActive ? 1 : max(1, $sequenceCount);
+    $amount *= $sequenceMultiplier;
+    if ($sneakEligible) {
+        $amount *= max(0.10, min(1.00, $sneakFactor));
+    }
+    return max(0.0, $amount);
+}
+
 /** Prefer the exact stored move size when it exists; otherwise fall back. */
 function guessStoredChange(?array $guess, float $fallback): float
 {
@@ -5621,9 +5657,19 @@ function buildModelPaperTraderState(
             : 1.0;
         $lastAction = $action;
         if (!$phaseEntry || $unstableAlternation) {
-            $heldRequested = $action === 'BUY'
-                ? (float)($state['fixed_trade_amount'] ?? $initialTradeAmount)
-                : (float)($state['fixed_trade_amount'] ?? $initialTradeAmount) * $sellMultiplier;
+            $heldRequested = requestedPaperTradeAmountForAction(
+                $action,
+                (float)($state['fixed_trade_amount'] ?? $initialTradeAmount),
+                $sellMultiplier,
+                (int)($sequence['trade_count'] ?? 1),
+                false,
+                0.0,
+                0.0,
+                false,
+                0.0,
+                $sneakEligible,
+                $sneakFactor
+            );
             $heldAvailable = $action === 'BUY'
                 ? (float)$state['cash_left']
                 : (float)$state['asset_units'] * $tradePrice;
@@ -5648,9 +5694,22 @@ function buildModelPaperTraderState(
         if ($action === 'BUY') {
             $cashBelowMinimum = (float)$state['cash_left'] < MIN_TRADE_AMOUNT;
             if ($cashBelowMinimum) {
+                $blockedBuyRequested = requestedPaperTradeAmountForAction(
+                    'BUY',
+                    (float)($state['fixed_trade_amount'] ?? $initialTradeAmount),
+                    $sellMultiplier,
+                    (int)($sequence['trade_count'] ?? 1),
+                    false,
+                    0.0,
+                    0.0,
+                    false,
+                    0.0,
+                    $sneakEligible,
+                    $sneakFactor
+                );
                 $blockedBuySizing = canonicalTradeSizing(
                     'BUY',
-                    max(MIN_TRADE_AMOUNT, (float)($state['fixed_trade_amount'] ?? $initialTradeAmount)),
+                    max(MIN_TRADE_AMOUNT, $blockedBuyRequested),
                     (float)$state['cash_left']
                 );
                 $state['display_action'] = 'HOLD · CASH BELOW $2';
@@ -6326,9 +6385,19 @@ function updateBoundaryModelTraderState(
                 && !is_array($state['events_by_time'][$boundaryTime] ?? null)
                 && ($phaseAction === 'BUY' || $phaseAction === 'SELL')
             ) {
-                $heldRequested = $phaseAction === 'BUY'
-                    ? ($bellCurveBuyAmount > 0.0 ? $bellCurveBuyAmount : (float)$state['fixed_trade_amount'])
-                    : ($bellCurveSellAmount > 0.0 ? $bellCurveSellAmount : (float)$state['fixed_trade_amount'] * $sellMultiplier);
+                $heldRequested = requestedPaperTradeAmountForAction(
+                    $phaseAction,
+                    (float)$state['fixed_trade_amount'],
+                    $sellMultiplier,
+                    (int)($sequenceSignal['trade_count'] ?? 1),
+                    $regimeActive,
+                    $bellCurveBuyAmount,
+                    $bellCurveSellAmount,
+                    false,
+                    0.0,
+                    $sneakEligible,
+                    $sneakFactor
+                );
                 $heldAvailable = $phaseAction === 'BUY'
                     ? (float)$state['cash_left']
                     : (float)$state['asset_units'] * $currentPrice;
@@ -6348,9 +6417,19 @@ function updateBoundaryModelTraderState(
                 ];
             }
             if ($saleBlockedByEdge) {
-                $blockedSellRequested = $bellCurveActive && $bellCurveSellAmount > 0.0
-                    ? $bellCurveSellAmount
-                    : ((float)$state['fixed_trade_amount'] * $sellMultiplier);
+                $blockedSellRequested = requestedPaperTradeAmountForAction(
+                    'SELL',
+                    (float)$state['fixed_trade_amount'],
+                    $sellMultiplier,
+                    (int)($sequenceSignal['trade_count'] ?? 1),
+                    $regimeActive,
+                    $bellCurveBuyAmount,
+                    $bellCurveSellAmount,
+                    false,
+                    0.0,
+                    $sneakEligible,
+                    $sneakFactor
+                );
                 $blockedSellRequested = max(MIN_TRADE_AMOUNT, $blockedSellRequested);
                 $blockedSellAvailable = (float)$state['asset_units'] * $currentPrice;
                 $state['events_by_time'][$boundaryTime] = [
@@ -6564,9 +6643,22 @@ function updateBoundaryModelTraderState(
                                 : 'BUY'));
                 }
             } elseif ($action === 'BUY') {
+                $blockedBuyRequested = requestedPaperTradeAmountForAction(
+                    'BUY',
+                    (float)$state['fixed_trade_amount'],
+                    $sellMultiplier,
+                    (int)($sequenceSignal['trade_count'] ?? 1),
+                    $regimeActive,
+                    $bellCurveBuyAmount,
+                    $bellCurveSellAmount,
+                    $forcedRebuy,
+                    $rebuyAmount,
+                    $sneakEligible,
+                    $sneakFactor
+                );
                 $blockedBuySizing = canonicalTradeSizing(
                     'BUY',
-                    max(MIN_TRADE_AMOUNT, (float)$state['fixed_trade_amount']),
+                    max(MIN_TRADE_AMOUNT, $blockedBuyRequested),
                     (float)$state['cash_left']
                 );
                 $state['events_by_time'][$boundaryTime] = [
@@ -6584,9 +6676,20 @@ function updateBoundaryModelTraderState(
                 ];
                 $state['display_action'] = 'HOLD · CASH BELOW $2';
             } elseif ($action === 'SELL') {
-                $blockedSellRequested = $bellCurveActive && $bellCurveSellAmount > 0.0
-                    ? $bellCurveSellAmount
-                    : max(MIN_TRADE_AMOUNT, (float)$state['fixed_trade_amount'] * $sellMultiplier);
+                $blockedSellRequested = requestedPaperTradeAmountForAction(
+                    'SELL',
+                    (float)$state['fixed_trade_amount'],
+                    $sellMultiplier,
+                    (int)($sequenceSignal['trade_count'] ?? 1),
+                    $regimeActive,
+                    $bellCurveBuyAmount,
+                    $bellCurveSellAmount,
+                    false,
+                    0.0,
+                    $sneakEligible,
+                    $sneakFactor
+                );
+                $blockedSellRequested = max(MIN_TRADE_AMOUNT, $blockedSellRequested);
                 $blockedSellSizing = canonicalTradeSizing(
                     'SELL',
                     $blockedSellRequested,
@@ -12523,8 +12626,28 @@ function drawCandleChart() {
             : (guess.elasticity && typeof guess.elasticity === 'object' ? guess.elasticity : {});
         const persistence = Math.max(0, Math.min(100, Number(elasticity.persistence_percent || 0)));
         const elasticityStep = Math.max(0, Number(elasticity.step || 0));
+        const elasticityTotal = Math.max(0, Number(elasticity.total || 0));
         const netDirectionalSteps = Number(elasticity.net_directional_steps || 0);
         const isSettledResult = result === 'RIGHT' || result === 'WRONG' || result === 'FLAT';
+        const neutralStretch = Math.abs(Number(guess.change || 0)) <= 0.00000001
+            && elasticityTotal > 0.00000001;
+        if (neutralStretch) {
+            const restingLevel = Number.isFinite(Number(elasticity.resting_level))
+                ? Number(elasticity.resting_level)
+                : Number(guess.open || guess.close || 0);
+            const visualHalfSpan = Math.max(elasticityStep, elasticityTotal / 2);
+            const visualHigh = restingLevel + visualHalfSpan;
+            const visualLow = restingLevel - visualHalfSpan;
+            ctx.save();
+            ctx.strokeStyle = 'rgba(143,164,189,.8)';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([4, 3]);
+            ctx.beginPath();
+            ctx.moveTo(center, y(visualHigh));
+            ctx.lineTo(center, y(visualLow));
+            ctx.stroke();
+            ctx.restore();
+        }
         const progressLabel = isSettledResult
             ? `${result} ${rightMarks}R/${wrongMarks}W`
             : (record.actual
@@ -12543,8 +12666,8 @@ function drawCandleChart() {
             if (slot >= 34) {
                 const netLabel = `${netDirectionalSteps >= 0 ? '+' : ''}${netDirectionalSteps}`;
                 const elasticityLabel = slot >= 80
-                    ? `STEP $${formatChartPrice(elasticityStep)} • NET ${netLabel} • ${persistence.toFixed(0)}%`
-                    : `STEP $${formatChartPrice(elasticityStep)} • NET ${netLabel}`;
+                    ? `STEP $${formatChartPrice(elasticityStep)} • PATH $${formatChartPrice(elasticityTotal)} • NET ${netLabel} • ${persistence.toFixed(0)}%`
+                    : `STEP $${formatChartPrice(elasticityStep)} • PATH $${formatChartPrice(elasticityTotal)}`;
                 ctx.font = '8px ui-monospace, monospace';
                 ctx.fillStyle = '#8fa4bd';
                 ctx.fillText(elasticityLabel, center, resultY + 11);
