@@ -356,6 +356,30 @@ if (($singleMarketType === 'crypto' || $singleMarketType === 'stock') && $single
     $defaultStatusPath = __DIR__ . '/wsl_portfolio_status-' . $safeMarketType . '-' . $safeSymbol . '.json';
 }
 $statusPath = cliArgValue($argv, 'status', $defaultStatusPath);
+$lockPath = cliArgValue($argv, 'lock', __DIR__ . '/wsl_portfolio_cron.lock');
+$lockHandle = @fopen($lockPath, 'c+');
+if ($lockHandle === false) {
+    fwrite(STDERR, "Unable to open portfolio scheduler lock.\n");
+    exit(1);
+}
+if (!flock($lockHandle, LOCK_EX | LOCK_NB)) {
+    fclose($lockHandle);
+    echo json_encode([
+        'ran_at' => gmdate('Y-m-d\TH:i:s\Z'),
+        'skipped' => true,
+        'reason' => 'OVERLAP_LOCK_ACTIVE',
+        'lock_path' => $lockPath,
+    ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL;
+    exit(0);
+}
+ftruncate($lockHandle, 0);
+fwrite($lockHandle, (string)getmypid() . PHP_EOL);
+fflush($lockHandle);
+register_shutdown_function(static function () use ($lockHandle): void {
+    flock($lockHandle, LOCK_UN);
+    fclose($lockHandle);
+});
+
 $registry = loadJsonFile($registryPath);
 $targets = is_array($registry['targets'] ?? null) ? $registry['targets'] : [];
 $normalizedTargetCount = count(normalizeTargets($targets));

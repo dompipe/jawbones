@@ -1,34 +1,48 @@
 {
   "schema": "cngn-coinbase-paper-console-build-plan",
-  "version": 5,
-  "updated_at": "2026-07-28",
+  "version": 24,
+  "updated_at": "2026-07-29",
   "source_file": "E:\\coinbase\\index.php",
   "purpose": "Recreate the exact CNGN Coinbase paper-trading dashboard and its dynamic hourly regime behavior.",
   "non_negotiable_boundaries": {
     "execution_mode": "paper_only",
     "live_coinbase_orders": false,
     "asset_scope": "all tracked stocks and crypto assets",
-    "historical_truth": "saved resolved table rows",
+    "historical_truth": "verified forecasts created strictly before their target candle opened and resolved against provider OHLC",
     "historical_rows_are_immutable": true,
     "page_independent_processing": true,
     "timezone": "America/New_York",
     "minimum_trade_amount": 2.0,
-    "minimum_sell_edge_percent": 0.50,
+    "minimum_sell_edge_percent": 0.0,
     "cngn_formula": "immutable_and_authoritative",
-    "actual_candle_source": "provider_ohlc_only",
-    "spot_quotes_may_fabricate_ohlc": false
+    "actual_candle_source": "Coinbase Exchange OHLC for crypto, Yahoo OHLC for stocks, with any fallback explicitly labeled",
+    "spot_quotes_may_fabricate_ohlc": false,
+    "verified_result_schema": "cngn-forward-results-v2",
+    "crypto_paper_fill_model": "Coinbase top of book plus configurable taker fee, adverse slippage, spread fallback, and product increments",
+    "spiral_down_guard": "per-asset persistent execution pause with verified-metric recovery",
+    "alternation_control": "forward-only BUY/SELL alternation evidence may KEEP, INVERT, or HOLD future execution",
+    "browser_refreshes_execute_trades": false
   },
   "truth_contract": {
     "source_model": "The timestamp-locked CNGN pair, direction, and change are immutable source facts.",
+    "forward_provenance": "A confidence-bearing row must carry target_open, created_at, origin_boundary, horizon_step, rule_version, source=live_projection, forward_eligible=true, and a fingerprint; created_at must be strictly earlier than target_open.",
+    "legacy_exclusion": "Historical table reconstructions and the legacy settled-results ledger are diagnostic only and may never influence confidence, inversion, sizing, or execution.",
     "actual_market": "Completed provider OHLC rows are the sole source of candle direction. Spot quotes may mark current price but may not create candles.",
     "effective_execution": "Future-only inversion and safety gates may transform or block the source model action, but must be labeled separately.",
-    "wallet_execution": "Only a persisted paper-wallet event with executed=true may transfer value between cash and asset holdings.",
+    "wallet_execution": "Only a persisted paper-wallet event with executed=true may transfer value between cash and asset holdings. BUY executed_amount is total cash consumed; SELL executed_amount is gross notional sold; cash_delta is fee-net cash movement.",
+    "ledger_pnl": "Every executed paper trade and event must carry side/trade_side as BUY or SELL. BUY affects cash, asset units, cost basis, holding value, open P&L, and equity. SELL affects cash, asset units, cost basis, realized P&L, total sold amount, and equity. Realized P&L is recomputed only from executed SELL ledger records with numeric realized_pnl.",
     "wallet_reservation": "Model requests, HOLDs, safety blocks, and NOT EXECUTED events reserve zero cash and zero asset units; the complete amount remains in the kitty.",
-    "boundary_idempotency": "A five-minute boundary owns at most one persisted decision and at most one executed trade. Refreshes and changing model views may not overwrite it with an opposite action.",
+    "boundary_idempotency": "A five-minute boundary owns at most one persisted decision and at most one executed trade. Every decision has a deterministic key over asset, target boundary, locked forecast fingerprint and rule, selected evidence source and orientation, effective action, and safety-gate state. Refreshes and changing model views may not overwrite it with an opposite action.",
     "historical_confidence": "Raw RIGHT, WRONG, TOTAL, and RIGHT/TOTAL percentages remain visible even when an effective inverted percentage is used.",
     "gaussian_confidence": "Use a sample-aware normal approximation around the 50% chance baseline. The curve may change only future execution orientation and stake strength; it never rewrites historical rows.",
+    "observation_accuracy": "Accuracy is a forecast-observation state built only from timestamp-locked guesses and completed provider candles. Executed, blocked, held, profitable, or losing wallet events are never consulted.",
     "unscored_metrics": "When TOTAL is zero, the percentage is undefined and every card must show an em dash or UNSCORED rather than 0% or 100%.",
-    "ui_reconciliation": "Cards, charts, audit rows, trade ledger, cron summary, and live JSON must use the same source fields and labels."
+    "ui_reconciliation": "Cards, charts, audit rows, trade ledger, cron summary, and live JSON must use the same source fields and labels.",
+    "portfolio_attribution": "Portfolio P&L, passive 50/50 benchmark P&L, and strategy alpha versus that benchmark are separate values and must never be presented as interchangeable.",
+    "spiral_guard": "Each asset owns an independent drawdown circuit breaker. A paused asset creates zero-value HOLD events and cannot transfer cash or units until evidence-based recovery completes.",
+    "alternation_truth": "BUY/SELL alternation is scored only from verified forward rows. A losing alternating branch may invert future actions, but historical rows and CNGN output are immutable.",
+    "execution_ownership": "An explicit Analyze request is one-shot in the browser. Browser refreshes are display-only; the scheduled five-minute worker is the authoritative recurring execution path.",
+    "scheduler_overlap": "The portfolio worker owns a nonblocking process lock. A duplicate Windows or WSL invocation exits with OVERLAP_LOCK_ACTIVE before requesting any asset."
   },
   "implementation_plan": [
     {
@@ -38,7 +52,10 @@
         "Read E:\\coinbase\\index.php first and preserve its named functions and state contracts.",
         "Load the active ticker plus every tracked stock and crypto asset for background evaluation.",
         "Keep scheduled processing active when the browser page is closed.",
-        "Keep OAuth credentials and any Coinbase credentials server-side; this page remains paper-only."
+        "Acquire one nonblocking whole-portfolio worker lock before processing targets so duplicate scheduler invocations cannot overlap.",
+        "Keep OAuth credentials and any Coinbase credentials server-side; this page remains paper-only.",
+        "Use unauthenticated Coinbase Exchange five-minute candles and top-of-book quotes as the primary crypto market source; use Yahoo only as an explicitly labeled crypto fallback.",
+        "Fetch tracked crypto quotes concurrently and cache completed crypto candles to their five-minute boundary so dashboard refreshes remain responsive."
       ]
     },
     {
@@ -50,18 +67,25 @@
         "Show requested stake, executed stake, zero reserved stake, available kitty amount, shortfall, locked event action, regime hour count, and time remaining in the phase.",
         "Color each tracked-asset dashboard price green for UP, red for DOWN, and neutral for FLAT or unavailable, using the asset's hourly price direction.",
         "Apply that same reconciled price and hourly direction class to the compact tracked-symbol cards at the top of the page.",
-        "Show a floating total-paper-portfolio card aggregating tracked-asset net P&L, labeled UP or DOWN with the signed dollar total and tracked-asset count.",
+        "Show a floating total-paper-portfolio card aggregating tracked-asset portfolio P&L and strategy alpha versus the passive 50/50 benchmark.",
         "Render tracked assets as a snap-to-card carousel with five cards across on desktop and tablets and one full-width card on mobile phones; arrow controls advance exactly one card.",
         "Keep horizontal movement inside the tracked-card carousel on mobile; its controls and other page sections must not create document-level horizontal scrolling.",
-        "Show SOLD or BOUGHT proceeds separately from realized P&L.",
-        "Use precise amounts and do not display an estimated dollar result as realized profit."
+        "Show SOLD or BOUGHT proceeds, fee, fill price, and net cash separately from realized P&L.",
+        "Use precise amounts and do not display an estimated dollar result as realized profit.",
+        "Show each asset's spiral guard status, drawdown, downward equity steps, realized-loss streak, recovery confirmations, selected confidence, and compression support.",
+        "Show BUY/SELL alternation raw history, effective percentage, Gaussian evidence, current four-action tail, and KEEP, INVERT, or HOLD decision.",
+        "Show model observation RIGHT/WRONG totals and the latest observed forecast result separately from executed-trade profit/loss."
       ]
     },
     {
       "step": 3,
       "name": "Create and freeze the signal ledger",
       "requirements": [
-        "Store each timestamp-locked guess with time, pair, predicted direction, actual direction, and right/false result.",
+        "Store each future guess before its target opens with target_open, created_at, origin_boundary, horizon_step, source, forward_eligible, rule_version, fingerprint, pair, direction, and immutable change.",
+        "Write confidence-bearing outcomes only to <SYMBOL>-forward-results-v2.json.",
+        "Require created_at to be strictly earlier than target_open; a same-boundary projection is display-only and cannot be scored or traded.",
+        "Keep reconstructed historical table rows source=historical_diagnostic and forward_eligible=false.",
+        "Preserve the legacy settled-results file for diagnostics but exclude all of its rows from confidence and execution.",
         "Never replace an existing settled-result timestamp.",
         "Read candle open and close from the same provider OHLC row.",
         "Copy provider OHLC rows exactly into any fallback observation cache; never append a quote-derived flat candle.",
@@ -83,7 +107,9 @@
         "Calculate internal agreement from resolved table RIGHT/WRONG results over the recent 12 rows and all rows.",
         "Calculate phase-action confidence from the first resolved candle of each phase.",
         "Expose raw historical and effective inverted values separately whenever a metric is flipped.",
-        "For every binary confidence family calculate z = (RIGHT/TOTAL - 0.5) / sqrt(0.25/TOTAL), centered bell evidence = (2 * Phi(abs(z)) - 1) * 100, and a 0..1 stake multiplier."
+        "For every binary confidence family calculate z = (RIGHT/TOTAL - 0.5) / sqrt(0.25/TOTAL), centered bell evidence = (2 * Phi(abs(z)) - 1) * 100, and a 0..1 stake multiplier.",
+        "Build every accuracy and inversion input from forecast-observation-v1 over cngn-forward-results-v2; do not read wallet events, trade count, fill status, or trade P&L.",
+        "Keep executed-exit PROFIT/LOSS counts in a separately labeled trade-performance state; never label them RIGHT/WRONG."
       ]
     },
     {
@@ -91,12 +117,18 @@
       "name": "Apply dynamic inversion",
       "requirements": [
         "Use a stable baseline pair map to prevent flip cascades.",
-        "Require at least 12 samples and at least 50% centered Gaussian evidence before a confidence family may control execution.",
-        "When eligible history is below 50% RIGHT, mark future orientation INVERT; when above 50%, mark KEEP; exactly 50% or insufficient evidence is HOLD.",
-        "Effective confidence is 100% minus raw historical confidence only when the eligible curve applies INVERT; otherwise retain the raw percentage.",
-        "Apply the same Gaussian orientation to future backend execution, cards, phase statistics, internal-agreement display, and live JSON.",
+        "Require at least 6 samples and at least 50% centered Gaussian evidence before a confidence family may control execution.",
+        "For any scored right/wrong percentage card, when pre-inversion observation accuracy is below 50% RIGHT, mark observation orientation INVERT and display effective confidence as 100% minus raw. When above 50%, mark observation orientation KEEP. Exactly 50% or unscored remains observation HOLD.",
+        "Effective observation confidence is 100% minus raw historical confidence when observation orientation is INVERT, even when weak bell evidence keeps execution on HOLD.",
+        "Require at least 6 samples and the separate centered-bell evidence floor before that observation orientation may control a paper trade; display OBS orientation and EXEC orientation independently.",
+        "Use effective observation accuracy for forecast-response orientation and confidence display. Use execution orientation and its stake multiplier for sizing. Never feed the post-flip value back through the threshold or flip it a second time.",
+        "Apply the same Gaussian orientation to future backend execution, live JSON, and every right/wrong percentage card: accuracy, BUY, SELL, phase action, internal agreement, family confidence, quarter regime, and alternation evidence.",
+        "Injected observation, inversion, and removal rules are global program tasks. Wallets are accounting ledgers only and must not own private prediction-quality logic.",
+        "The tracked dashboard uses global-forecast-observation-v1 across every tracked asset for its displayed accuracy shape; it must not read one wallet's trade P&L or private cached accuracy as its truth source.",
+        "MIN_CONFIDENCE_EXECUTION_SAMPLES is 6 globally; do not leave any injected percent-card or execution gate using a private 12-sample threshold.",
+        "Compute globalWrongMarkBranches across all tracked assets by hour and 12-mark position. Include only positions that are WRONG on at least 3 tracked assets in the same hour, cap the list at 4, and branch that same list into each wallet state as global_wrong_mark_branches.",
         "Label affected displays HISTORICAL, EFFECTIVE, BELL evidence, z score, KEEP/INVERT/HOLD, stake multiplier, and FLIPPED when applied.",
-        "Select exactly one execution-evidence source in priority order: same-quarter regime, current family plus agreement shape, then all history.",
+        "Select exactly one execution-evidence source in priority order: current verified BUY/SELL alternation branch, same-quarter regime, current family plus agreement shape, then all history.",
         "Treat overlapping family, quarter, and aggregate evidence as one selected orientation; never flip twice.",
         "Raw historical values remain available for audit and no-lookahead verification."
       ]
@@ -128,7 +160,17 @@
         "Reset the hourly allowance only when the hour changes or the regime changes.",
         "Consume the phase/hour allowance only after an event executes. A blocked request remains unallocated and may retry on the next five-minute boundary.",
         "Never execute or overwrite a second BUY/SELL at a boundary that already owns a persisted decision.",
-        "Hold after four alternating BUY/SELL phase calls such as BUY, SELL, BUY, SELL."
+        "Generate execution idempotency keys under paper-execution-idempotency-v1 from market type, symbol, target boundary, locked forecast fingerprint, forecast rule version, selected evidence source, selected orientation, effective action, and gate state.",
+        "Persist the full idempotency key on the event and in a bounded per-wallet key registry; display a compact key in the audit label.",
+        "A change in low-accuracy inversion during a refresh cannot replace the settled boundary event. It becomes eligible only at a later boundary whose timestamp produces a new key.",
+        "If a key remains in the registry while its event is missing or damaged, create a nonexecuted IDEMPOTENCY HOLD rather than repeat the transfer.",
+        "Detect a four-call BUY, SELL, BUY, SELL or SELL, BUY, SELL, BUY tail from strict-forward forecasts.",
+        "Score an alternation occurrence only when a verified forward result completes that four-call tail.",
+        "If the alternating branch has eligible Gaussian evidence and raw accuracy below 50%, select it once as the execution source and invert the current future action.",
+        "If the eligible alternating branch is winning, KEEP its current future action.",
+        "If alternation evidence is unverified or ineligible, HOLD unless pattern compression supports the selected action with at least 50% influence.",
+        "When compressed-token influence is above 60% and has a BUY FAMILY or SELL FAMILY dominant direction, allow compression to take over the current execution action in that dominant direction with a bounded compression stake multiplier. Label the takeover separately from family, quarter, and alternation evidence.",
+        "Never stack an alternation flip on a quarter, family, or aggregate flip."
       ]
     },
     {
@@ -140,14 +182,19 @@
         "When effective historical confidence is at least 85% and Gaussian evidence is eligible, enable AGGRESSIVE actions in the selected BUY/SELL direction and scale the commitment by a bounded confidence factor up to 2.0x.",
         "Use the BUY multiplier for BUY and the SELL multiplier for SELL; never apply the wrong multiplier.",
         "Apply the phase count once only; do not multiply again through sequence or bell-curve code.",
-        "Use one canonical sizing result containing requested_amount, available_amount, executable_amount, executed_amount, reserved_amount, shortfall, multiplier, regime_step_count, eligible, and kitty_unchanged.",
+        "Use one canonical sizing result containing requested_amount, available_amount, executable_amount, executed_amount, reserved_amount, shortfall, multiplier, regime_step_count, eligible, kitty_unchanged, gross_notional, fee_amount, net_cash_amount, fill_price, reference_price, spread_bps, and slippage_bps.",
         "Do not impose a fabricated 90% confidence floor; confidence fields must contain measured values.",
-        "Cap BUY by available cash.",
+        "Globally normalize every positive BUY or SELL intent through exchangeFloorTradeRequestAmount before phase planning, replay, current wallet execution, audit labels, and live JSON. Positive intended trades below the active exchange minimum are lifted to that minimum; zero or NO TRADE intent remains zero. Carry minimum_funds and minimum_funds_source on sizing, fills, blocked events, phase cards, and live JSON.",
+        "Cap BUY by available cash. Treat requested and executed BUY amount as total cash consumed, including the modeled fee. For BUY minimum eligibility, compare the fee-inclusive cash spent to the active exchange minimum so a minimum committed BUY actually purchases units. After base-increment rounding, consume the committed BUY cash budget and account for the tiny remainder as modeled execution cost so the wallet buys the committed amount.",
         "A phase-entry BUY may add the committed amount to an existing long position when cash is available; cost basis and units must update together.",
-        "If SELL request exceeds held asset value, sell all available holdings and report the shortfall.",
+        "Treat requested and executed SELL amount as gross notional. Credit cash with net proceeds after the modeled fee.",
+        "If SELL request exceeds held asset value, sell every executable unit permitted by the base increment and report the shortfall.",
+        "For current crypto fills use Coinbase bid for SELL and ask for BUY, then apply adverse configurable slippage. For replay fills apply half of the configured fallback spread plus adverse slippage to candle-open reference prices.",
+        "Default crypto paper assumptions are 60 bps taker fee, 5 bps adverse slippage, and 4 bps fallback spread; allow server-side environment overrides and label them as assumptions rather than an actual account fee tier.",
+        "Respect Coinbase base_increment, quote_increment, and min_market_funds when product metadata is available.",
         "Every event exposes cash_delta and asset_units_delta. Both deltas are zero unless executed=true.",
         "A nonexecuted event always exposes amount=0, executed_amount=0, reserved_amount=0, allocation_consumed=false, and kitty_unchanged=true.",
-        "Never execute below $2.00."
+        "Never execute below the active exchange minimum. For Coinbase crypto, use the product min_market_funds from Coinbase product metadata when available; otherwise fall back to the local MIN_TRADE_AMOUNT safety floor."
       ]
     },
     {
@@ -157,8 +204,14 @@
         "Require current price to exceed average cost by MIN_SELL_EDGE_PERCENT before selling.",
         "When asset dust is below threshold after a full sale, mark the wallet drained.",
         "Set rebuy_pending and buy up to $5,000 at the next boundary when cash is available.",
-        "Keep cash, units, cost basis, proceeds, realized P&L, open P&L, and equity separate.",
+        "Keep cash, units, cost basis, gross proceeds, net proceeds, fees, modeled slippage cost, realized P&L, open P&L, and equity separate.",
+        "Mark every wallet to the current reconciled quote and expose portfolio P&L, passive 50/50 benchmark P&L, and strategy alpha separately.",
         "Expose reserved_cash=0 and reserved_asset_units=0, plus the currently available cash and asset units, in wallet state and live JSON.",
+        "Maintain a per-asset equity history of the latest 12 five-minute boundaries and count consecutive downward equity steps.",
+        "Pause an asset on a 2.00% hard peak-equity drawdown; on a 0.75% drawdown combined with strategy alpha at or below -0.50%; on four downward equity steps plus weak confidence or compression; or after two consecutive realized SELL losses totaling at least 0.25% of starting capital while portfolio P&L is negative.",
+        "While paused, block every model BUY and SELL, execute no reservation, and leave the complete kitty unchanged.",
+        "Continue evaluating verified metrics while paused. Recovery requires at least 6 verified samples, eligible effective confidence of at least 60%, combined compression of at least 55%, and a stabilized non-declining equity step.",
+        "Require two distinct top-of-hour recovery confirmations before rearming that asset, then rebase its drawdown peak and old realized-loss streak without rewriting its trade history.",
         "Reset paper wallets only through the authenticated reset mechanism."
       ]
     },
@@ -191,7 +244,7 @@
         "Use no more than 12 parts when reporting shortest and longest 100% compressed runs.",
         "Use internal agreement as secondary compression at 30% of the combined score.",
         "Show entropy, phase count, phase changes, tail streak, perfect-run bounds, secondary state, and combined score.",
-        "Treat compression and entropy as supporting diagnostics; family inversion controls future direction."
+        "Treat compression and entropy as supporting diagnostics below the token takeover threshold. Above 60%, compressed tokens may become an actionable execution influence, selecting the dominant BUY or SELL family and exposing TOKEN TAKEOVER labels in the dashboard and live JSON."
       ]
     },
     {
@@ -199,34 +252,46 @@
       "name": "Refresh the complete page",
       "requirements": [
         "Patch fast price values every 30 seconds.",
-        "Reload the complete PHP-rendered page at least every 60 seconds.",
-        "Reload at each five-minute boundary so all innerText, cards, tables, audit rows, wallet state, phase state, and tracked-asset prices share one snapshot.",
-        "Provide a visible Refresh button that triggers the same complete page reload immediately when pressed.",
+        "After an explicit Analyze response, remove run_analysis and other one-shot response parameters from browser history before any automatic or manual reload.",
+        "Keep browser reloads display-only. Only a new explicit Analyze submission or the scheduled five-minute worker may request execution.",
+        "Refresh the complete live dashboard payload every 45 seconds.",
+        "At each live dashboard refresh, update tracked cards, the total paper portfolio float, current asset cards, tables, audit rows, wallet state, phase state, and tracked-asset prices from one snapshot.",
+        "Provide a visible Refresh button that triggers the same in-place live dashboard refresh immediately when pressed.",
         "Use no-store/no-cache behavior for live JSON and page refreshes."
       ]
     }
   ],
   "required_json_contract": {
-    "historical_fields": ["time", "pair", "predicted", "actual", "right"],
-    "sizing_fields": ["requested_amount", "available_amount", "executable_amount", "executed_amount", "reserved_amount", "shortfall", "phase_step_multiplier", "regime_step_count", "eligible", "kitty_unchanged"],
-    "event_accounting_fields": ["executed", "amount", "units", "cash_delta", "asset_units_delta", "allocation_consumed", "kitty_unchanged"],
+    "forecast_provenance_fields": ["target_open", "created_at", "origin_boundary", "horizon_step", "source", "forward_eligible", "rule_version", "fingerprint"],
+    "historical_fields": ["time", "pair", "predicted", "actual", "right", "forecast_created_at", "target_open", "horizon_step", "rule_version", "forecast_fingerprint", "evidence_class", "resolved_at"],
+    "sizing_fields": ["requested_amount", "available_amount", "executable_amount", "executed_amount", "reserved_amount", "shortfall", "phase_step_multiplier", "regime_step_count", "eligible", "kitty_unchanged", "gross_notional", "fee_amount", "net_cash_amount", "fill_price", "reference_price", "spread_bps", "slippage_bps"],
+    "event_accounting_fields": ["executed", "amount", "units", "cash_delta", "asset_units_delta", "allocation_consumed", "kitty_unchanged", "gross_notional", "fee_amount", "net_cash_amount", "fill_price", "reference_price", "execution_source", "top_of_book_used", "execution_idempotency_key", "execution_idempotency_version", "execution_gate_state", "forecast_fingerprint", "evidence_source", "evidence_orientation"],
     "chart_mark_fields": ["expectedMarks", "combinedMarks", "directionPath", "directionSequence", "markStats", "markProgress", "guessCreditLabel", "elasticity", "guessResult", "guessResultReason"],
     "flip_fields": ["historical_percentage", "effective_percentage", "flipped", "bell_curve", "adaptiveCompleteFlip", "branchFlipActive", "executionInversionActive", "accuracyHistorical", "accuracyEffective", "accuracyFlipped", "accuracyBellCurve"],
-    "gaussian_fields": ["right", "wrong", "total", "raw_percent", "effective_percent", "z_score", "evidence_percent", "candidate_orientation", "orientation", "eligible", "stake_multiplier", "minimum_samples", "minimum_evidence_percent", "reason"],
-    "execution_fields": ["modelAction", "quarterCandidateAction", "executionBellCurveFormulaAction", "selectedExecutionAction", "executionAction", "executionBellCurve", "executionBellCurveSource", "executionBellCurveEligible", "executionBellCurveStrength", "executionBellCurveMultiplier", "executionBellCurveTradeEligible", "executionBellCurveTradeReason"],
-    "dashboard_fields": ["currentPhaseStatus", "phaseSizing", "phaseStakeAmount", "regimeStepCount", "regimeRequestedAmount", "pairStats", "phaseActionStats", "internalAgreementRecent", "internalAgreementRecentEffective", "currentFamilyConfidence", "hourAudit", "chartTimeline"],
-    "scoring_flags": ["accuracyScored", "compressionScored", "internalAgreementScored", "currentFamilyConfidence.scored", "quarterRegime.scored"]
+    "gaussian_fields": ["right", "wrong", "total", "raw_percent", "effective_percent", "execution_effective_percent", "z_score", "evidence_percent", "candidate_orientation", "observation_orientation", "observation_eligible", "observation_flipped", "orientation", "eligible", "stake_multiplier", "minimum_samples", "minimum_evidence_percent", "inversion_threshold_percent", "reason"],
+    "forecast_observation_fields": ["schema", "source", "asset_scope", "independent_of_execution", "trade_events_consulted", "wallet_events_consulted", "scored", "right", "wrong", "total", "historical_percent", "effective_percent", "flipped", "eligible", "orientation", "execution_eligible", "execution_orientation", "bell_curve", "latest"],
+    "execution_fields": ["modelAction", "quarterCandidateAction", "executionBellCurveFormulaAction", "selectedExecutionAction", "executionAction", "executionBellCurve", "executionBellCurveSource", "executionBellCurveEligible", "executionBellCurveStrength", "executionBellCurveMultiplier", "executionBellCurveTradeEligible", "executionBellCurveTradeReason", "spiralGuardPaused", "alternationPatternActive", "alternationExecutionFlipActive", "executionIdempotencySchema", "currentExecutionIdempotencyKey"],
+    "dashboard_fields": ["currentPhaseStatus", "phaseSizing", "phaseStakeAmount", "regimeStepCount", "regimeRequestedAmount", "pairStats", "phaseActionStats", "internalAgreementRecent", "internalAgreementRecentEffective", "currentFamilyConfidence", "hourAudit", "chartTimeline", "globalWrongMarkBranches", "trackedDashboardCards", "trackedPortfolio", "globalForecastObservationState", "globalAccuracyHistorical", "globalAccuracyEffective", "globalAccuracyFlipped", "spiralGuard", "alternationEvidence", "alternationTail", "forecastObservationState", "latestObservation", "autoBreakTrader.forecast_observation", "autoBreakTrader.global_wrong_mark_branches", "autoBreakTrader.spiral_guard", "autoBreakTrader.alternation_control", "autoBreakTrader.benchmark_pnl", "autoBreakTrader.strategy_alpha", "autoBreakTrader.total_fees", "autoBreakTrader.total_slippage_cost"],
+    "scoring_flags": ["accuracyScored", "accuracyIndependentOfExecution", "verifiedForwardOnly", "evidenceSchema", "legacyHistoricalRowsExcluded", "unverifiedRowsExcluded", "compressionScored", "internalAgreementScored", "currentFamilyConfidence.scored", "quarterRegime.scored"]
   },
   "files_and_state": {
     "main_code": "E:\\coinbase\\index.php",
+    "portfolio_worker": "E:\\coinbase\\wsl_portfolio_cron.php",
     "specification": "E:\\coinbase\\strategy-spec.json",
     "state": "E:\\coinbase\\tickers\\<SYMBOL>-*.json",
+    "verified_results": "E:\\coinbase\\tickers\\<SYMBOL>-forward-results-v2.json",
+    "legacy_results_diagnostic_only": "E:\\coinbase\\tickers\\<SYMBOL>-settled-results.json",
     "wallet_reset_backup": "E:\\coinbase\\wallet-reset-backups\\",
-    "do_not_use_as_truth": ["stale generated HTML", "stale live JSON", "current flipped map for historical rows", "spot quote represented as OHLC", "requested stake represented as executed stake", "model one-unit move represented as wallet P/L"]
+    "do_not_use_as_truth": ["stale generated HTML", "historical table reconstruction", "legacy settled-results rows", "stale live JSON", "current flipped map for historical rows", "spot quote represented as OHLC", "requested stake represented as executed stake", "model directional edge represented as wallet P/L", "portfolio P/L represented as strategy alpha"]
   },
   "verification_plan": [
     "Run php -l E:\\coinbase\\index.php.",
+    "Run php -l E:\\coinbase\\wsl_portfolio_cron.php.",
     "Validate E:\\coinbase\\strategy-spec.json with JSON parsing.",
+    "Verify every cngn-forward-results-v2 row has forecast_created_at strictly earlier than target_open and evidence_class=VERIFIED_FORWARD_ONLY.",
+    "Verify historical_diagnostic rows and legacy settled-results rows cannot enter accuracy, confidence, inversion, sizing, or execution.",
+    "Verify the live JSON declares evidenceSchema=cngn-forward-results-v2 and verifiedForwardOnly=true, with excluded legacy and unverified counts.",
+    "Verify crypto OHLC comes from Coinbase Exchange under normal operation and any Yahoo fallback is explicitly labeled.",
     "Verify a 3.8% BUY card displays 96.2% effective confidence and raw 3.8% history.",
     "Verify an inverted branch changes future execution but never rewrites resolved rows.",
     "Verify the chart's displayed candle action and RIGHT/WRONG label agree.",
@@ -235,25 +300,49 @@
     "Verify modelAction, selectedExecutionAction, executionAction, and the current paper event are explicitly distinguishable.",
     "Verify raw and effective confidence values and counts are shown together after inversion.",
     "Verify Gaussian evidence is 0% at 50% RIGHT, grows symmetrically toward 100% in either tail, and uses the declared sample count.",
-    "Verify fewer than 12 samples or less than 50% centered bell evidence produces HOLD and a zero stake multiplier.",
+    "Verify any scored below-50% percentage card displays OBS INVERT and effective 100-minus-raw confidence, even below the execution sample gate.",
+    "Verify fewer than 6 samples or less than 50% centered bell evidence produces execution HOLD and a zero stake multiplier.",
+    "Verify 6 RIGHT out of 13 observations displays historical 46.1538%, effective 53.8462%, OBS INVERT, and EXEC HOLD when its bell evidence is below the execution floor.",
     "Verify an eligible below-50% source applies exactly one future inversion while an eligible above-50% source keeps the source direction.",
-    "Verify execution evidence priority is quarter, then family plus agreement, then all history, with no double flip.",
+    "Verify execution evidence priority is current verified BUY/SELL alternation branch, then quarter, then family plus agreement, then all history, with no double flip.",
     "Verify requested stake equals average commitment X regime count X side multiplier X Gaussian stake multiplier, with aggressive scaling applied only once.",
     "Verify RLE entropy counts the full 12-part window rather than only the tail.",
     "Verify a loss-protected SELL records a blocked event and does not mutate wallet balances.",
     "Verify every nonexecuted event has zero amount, zero reservation, zero cash delta, zero asset-unit delta, kitty_unchanged=true, and allocation_consumed=false.",
     "Verify a blocked request does not consume phase/hour allocation and can retry at the next five-minute boundary.",
     "Verify a second opposite call at the same boundary leaves the original event, trade count, cash, units, and cost basis unchanged.",
+    "Verify the same asset, boundary, forecast fingerprint, evidence source, orientation, action, and gate state always generate the same execution idempotency key.",
+    "Verify executing, blocking, holding, or changing the P&L of a paper trade cannot change forecast-observation RIGHT, WRONG, TOTAL, orientation, or effective accuracy.",
+    "Verify the Model card shows observation RIGHT/WRONG and latest forecast observation while wallet trade outcomes are labeled PROFIT/LOSS.",
+    "Verify changing any one idempotency input generates a different key, but changing metrics on a refresh cannot replace the boundary's already persisted key or event.",
+    "Verify a consumed key with a missing event blocks execution instead of repeating cash or asset transfer.",
     "Verify a new regime executes immediately, then cannot execute again until the next top-of-hour.",
+    "Verify an unscored or ineligible four-call BUY/SELL alternation HOLDs unless at least 50% compression supports its selected direction.",
+    "Verify compressed-token influence above 60% can select the dominant BUY or SELL family, exposes compressionTokenTakeoverActive/action/score/threshold in live JSON, and does not fabricate live Coinbase orders.",
+    "Verify an eligible alternating branch below 50% raw accuracy selects ALTERNATION once, flips the future action, and does not stack another inversion.",
+    "Verify an eligible winning alternating branch KEEPs the future action and every alternation card preserves raw counts.",
     "Verify a 12-hour regime uses X12 and never exceeds the 12-hour cap.",
     "Verify SELL over holdings sells all available value and reports shortfall.",
-    "Verify BUY is cash-capped and never below $2.00.",
+    "Verify BUY is cash-capped and never below the active exchange minimum, with executed BUY amount equal to total fee-inclusive cash consumed.",
+    "Verify Coinbase crypto BUY and SELL requests, fills, blocked labels, phase sizing, and table request display all use the product minimum funds, not a private wallet or hard-coded $2.00 floor.",
+    "Verify SELL executed amount is gross sold notional, cash_delta is net of fee, and realized P&L uses net proceeds.",
+    "Verify current crypto BUY fills at ask plus adverse slippage and SELL fills at bid minus adverse slippage.",
+    "Verify replay fills use candle-open reference plus fallback half-spread and adverse slippage without look-ahead.",
+    "Verify base and quote increments and product minimum funds are respected.",
+    "Verify wallet cash, event cash_delta, gross notional, fee, units, and cost basis reconcile exactly after both BUY and SELL.",
+    "Verify dashboard portfolio P&L equals equity minus starting pot while strategy alpha equals equity minus the passive 50/50 benchmark.",
+    "Verify each asset pauses independently for every declared spiral trigger and creates a nonexecuted event with zero cash and asset deltas.",
+    "Verify a paused asset cannot BUY, SELL, force-rebuy, or consume a phase/hour allocation.",
+    "Verify recovery cannot occur before two distinct top-of-hour confirmations with 6 verified samples, at least 60% effective confidence, at least 55% combined compression, and a stabilized equity step.",
     "Verify four alternating calls HOLD.",
     "Verify every scored hourly prediction has exactly 12 guess marks and 12 actual marks.",
     "Verify every directional mark uses the current average move as its elasticity step while retaining its original stored change.",
+    "Verify globalWrongMarkBranches includes only same-hour 12-mark positions with at least 3 tracked assets wrong, returns at most 4 entries, and copies the same list to autoBreakTrader.global_wrong_mark_branches.",
     "Verify +,-,+ closes at the same resting level as its first + mark and that the 12-symbol direction sequence drives the displayed candle.",
     "Verify a completed zero-net 12-mark path is a flat/HOLD prediction and receives a completed result rather than UNRESOLVED.",
-    "Verify full page refresh updates all dashboard innerText and tracked assets."
+    "Verify full page refresh updates all dashboard innerText and tracked assets.",
+    "Verify an Analyze page removes run_analysis from browser history before automatic reload and that subsequent browser refreshes cannot create or mutate a paper-wallet event.",
+    "Verify a second portfolio worker exits with OVERLAP_LOCK_ACTIVE before making target requests."
   ],
-  "maintenance_rule": "For every future strategy question, update this plan and the matching implementation together. Preserve immutable historical truth, dynamic future inversion, hourly regime timing, paper-only execution, and the complete dashboard refresh contract."
+  "maintenance_rule": "For every future strategy question, update this plan and the matching implementation together. Preserve CNGN unchanged, strict forward-only evidence, explicit legacy exclusion, one selected inversion source including alternation, deterministic per-boundary execution idempotency, per-asset spiral-down pauses, hourly regime timing, Coinbase-aware costed paper execution, passive-benchmark attribution, and the complete dashboard refresh contract."
 }

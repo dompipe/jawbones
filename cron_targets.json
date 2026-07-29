@@ -4,13 +4,13 @@
             "market_type": "crypto",
             "symbol": "BTC-USD",
             "base_url": "http://localhost:8081/index.php",
-            "buy_multiplier": 0.9,
-            "sell_multiplier": 0.8,
-            "trust_percent": 90,
+            "buy_multiplier": 0.5,
+            "sell_multiplier": 0.4,
+            "trust_percent": 50,
             "break_buy": "0.50",
             "break_gain": "0.50",
             "break_loss": "0.50",
-            "updated_at": "2026-07-29T02:33:40Z"
+            "updated_at": "2026-07-29T17:01:11Z"
         },
         {
             "market_type": "crypto",
@@ -22,43 +22,43 @@
             "break_buy": "0.50",
             "break_gain": "0.50",
             "break_loss": "0.50",
-            "updated_at": "2026-07-29T02:33:44Z"
+            "updated_at": "2026-07-29T17:01:44Z"
         },
         {
             "market_type": "stock",
             "symbol": "AAPL",
-            "base_url": "http://127.0.0.1:8765/index.php",
+            "base_url": "http://localhost:8081/index.php",
             "buy_multiplier": 0.5,
             "sell_multiplier": 0.4,
             "trust_percent": 50,
             "break_buy": "0.50",
             "break_gain": "0.50",
             "break_loss": "0.50",
-            "updated_at": "2026-07-28T23:41:09Z"
+            "updated_at": "2026-07-29T17:01:09Z"
         },
         {
             "market_type": "stock",
             "symbol": "GM",
-            "base_url": "http://127.0.0.1:8765/index.php",
+            "base_url": "http://localhost:8081/index.php",
             "buy_multiplier": 0.5,
             "sell_multiplier": 0.4,
             "trust_percent": 50,
             "break_buy": "0.50",
             "break_gain": "0.50",
             "break_loss": "0.50",
-            "updated_at": "2026-07-28T23:41:10Z"
+            "updated_at": "2026-07-29T17:01:13Z"
         },
         {
             "market_type": "stock",
             "symbol": "TSLA",
-            "base_url": "http://127.0.0.1:8765/index.php",
+            "base_url": "http://localhost:8081/index.php",
             "buy_multiplier": 0.5,
             "sell_multiplier": 0.4,
             "trust_percent": 50,
             "break_buy": "0.50",
             "break_gain": "0.50",
             "break_loss": "0.50",
-            "updated_at": "2026-07-28T23:41:12Z"
+            "updated_at": "2026-07-29T17:02:09Z"
         }
     ]
 }
