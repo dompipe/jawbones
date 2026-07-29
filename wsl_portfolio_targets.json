@@ -4,13 +4,13 @@
             "market_type": "crypto",
             "symbol": "BTC-USD",
             "base_url": "http://localhost:8081/index.php",
-            "buy_multiplier": 0.5,
-            "sell_multiplier": 0.4,
-            "trust_percent": "50.00",
+            "buy_multiplier": 0.9,
+            "sell_multiplier": 0.8,
+            "trust_percent": "90.00",
             "break_buy": "0.50",
             "break_gain": "0.50",
             "break_loss": "0.50",
-            "updated_at": "2026-07-28T23:44:18Z"
+            "updated_at": "2026-07-29T02:15:10Z"
         },
         {
             "market_type": "crypto",
@@ -22,19 +22,7 @@
             "break_buy": "0.50",
             "break_gain": "0.50",
             "break_loss": "0.50",
-            "updated_at": "2026-07-28T23:43:44Z"
-        },
-        {
-            "market_type": "crypto",
-            "symbol": "LTC-USD",
-            "base_url": "http://127.0.0.1:8765/index.php",
-            "buy_multiplier": 0.5,
-            "sell_multiplier": 0.4,
-            "trust_percent": "50.00",
-            "break_buy": "0.50",
-            "break_gain": "0.50",
-            "break_loss": "0.50",
-            "updated_at": "2026-07-28T23:41:08Z"
+            "updated_at": "2026-07-29T02:15:08Z"
         },
         {
             "market_type": "stock",
