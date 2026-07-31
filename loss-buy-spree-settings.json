@@ -1,0 +1,10 @@
+{
+    "crypto:BTC-USD": {
+        "percent": 9,
+        "updated_at": "2026-07-31T17:53:42Z"
+    },
+    "crypto:ETH-USD": {
+        "percent": 9,
+        "updated_at": "2026-07-31T17:21:07Z"
+    }
+}

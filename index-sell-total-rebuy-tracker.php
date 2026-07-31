@@ -1074,15 +1074,6 @@ if (!preg_match('/^[A-Z0-9.\-^]{1,12}$/', $ticker)) {
     $ticker = 'TSLA';
 }
 
-$loss_buy_spree_settings_path = __DIR__ . '/loss-buy-spree-settings.json';
-$loss_buy_spree_settings = loadLocalJsonArray($loss_buy_spree_settings_path);
-$loss_buy_spree_key = strtolower($market_type) . ':' . strtoupper($ticker);
-$loss_buy_spree_saved = is_numeric($loss_buy_spree_settings[$loss_buy_spree_key]['percent'] ?? null)
-    ? (int)$loss_buy_spree_settings[$loss_buy_spree_key]['percent'] : 10;
-$loss_buy_spree_percent = isset($request_params['loss_buy_spree_percent']) && is_numeric($request_params['loss_buy_spree_percent'])
-    ? max(1, min(50, (int)round((float)$request_params['loss_buy_spree_percent'])))
-    : max(1, min(50, $loss_buy_spree_saved));
-
 function cpanelCronRegistryPath(): string
 {
     return __DIR__ . '/cron_targets.json';
@@ -1401,34 +1392,9 @@ function resolvePaperOrSandboxFill(
     $fill['broker_order_id'] = (string)($broker['order_id'] ?? '');
     $fill['broker_status'] = (string)($broker['status'] ?? '');
     $fill['broker_message'] = (string)($broker['message'] ?? '');
-    // Preserve the complete locally calculated fill before applying broker policy.
-    // FIFO and lot accounting must never receive zero units merely because a
-    // broker request failed; broker rejection is a broker gate, not a lot error.
-    $fill['proposed_executed_amount'] = (float)($fill['executed_amount'] ?? 0.0);
-    $fill['proposed_gross_notional'] = (float)($fill['gross_notional'] ?? 0.0);
-    $fill['proposed_fee_amount'] = (float)($fill['fee_amount'] ?? 0.0);
-    $fill['proposed_net_cash_amount'] = (float)($fill['net_cash_amount'] ?? 0.0);
-    $fill['proposed_cash_delta'] = (float)($fill['cash_delta'] ?? 0.0);
-    $fill['proposed_units'] = (float)($fill['units'] ?? 0.0);
-    $fill['proposed_asset_units_delta'] = (float)($fill['asset_units_delta'] ?? 0.0);
-
-    // Alpaca paper is stateful, so acceptance remains required by default.
-    // Coinbase Advanced Trade's public sandbox is static/mock; it is contacted
-    // and recorded, but local paper accounting may continue unless explicitly
-    // configured to require a successful static response.
-    $provider = strtoupper(trim((string)($broker['provider'] ?? '')));
-    $globalRequired = strtolower(trim(localEnvironmentValue('BROKER_SANDBOX_REQUIRED') ?: ''));
-    if ($globalRequired === '0') {
-        $requireSandbox = false;
-    } elseif ($globalRequired === '1') {
-        $requireSandbox = true;
-    } elseif ($provider === 'COINBASE') {
-        $requireSandbox = strtolower(trim(localEnvironmentValue('COINBASE_SANDBOX_REQUIRED') ?: '0')) !== '0';
-    } else {
-        $requireSandbox = strtolower(trim(localEnvironmentValue('ALPACA_PAPER_REQUIRED') ?: '1')) !== '0';
-    }
-    $fill['broker_acceptance_required'] = $requireSandbox;
-
+    // Sandbox interaction is required when explicitly enabled. A rejected or
+    // unreachable sandbox order must not be represented as an executed trade.
+    $requireSandbox = strtolower(trim(localEnvironmentValue('BROKER_SANDBOX_REQUIRED') ?: '1')) !== '0';
     if ($requireSandbox && (($broker['accepted'] ?? false) !== true)) {
         $fill['eligible'] = false;
         $fill['executed_amount'] = 0.0;
@@ -1439,12 +1405,9 @@ function resolvePaperOrSandboxFill(
         $fill['cash_delta'] = 0.0;
         $fill['units'] = 0.0;
         $fill['asset_units_delta'] = 0.0;
-        $fill['shortfall'] = round(max(0.0, $requestedAmount - $availableAmount), 8);
-        $fill['blocked_amount'] = round(min(max(0.0, $requestedAmount), max(0.0, $availableAmount)), 8);
-        $fill['blocked_reason'] = 'BROKER_ORDER_NOT_ACCEPTED';
-    } elseif (($broker['accepted'] ?? false) !== true) {
-        $fill['execution_source'] = trim((string)($fill['execution_source'] ?? 'PAPER_ASSUMPTION')) . ' + BROKER SANDBOX ATTEMPT';
-        $fill['broker_nonblocking'] = true;
+        $fill['shortfall'] = 0.0;
+        $fill['blocked_amount'] = round(max(0.0, $requestedAmount), 8);
+        $fill['blocked_reason'] = 'SANDBOX_ORDER_NOT_ACCEPTED';
     }
     return $fill;
 }
@@ -2011,13 +1974,9 @@ function buildTrackedDashboardCards(
             $wallet = markPaperWalletToMarket($wallet, (float)$price);
             $liveTrader = markPaperWalletToMarket($liveTrader, (float)$price);
         }
-        // Global canonical equity: rebuild every status/API value from
-        // spendable cash, live holding value, and the non-spendable kitty.
-        $walletEquity = paperWalletTotalEquity($wallet);
-        $liveTraderEquity = paperWalletTotalEquity($liveTrader);
-        $equity = $walletEquity > 0.0 ? $walletEquity : ($liveTraderEquity > 0.0 ? $liveTraderEquity : null);
-        $wallet['equity_value'] = $walletEquity;
-        $liveTrader['equity_value'] = $liveTraderEquity;
+        $equity = is_numeric($wallet['equity_value'] ?? null)
+            ? (float)$wallet['equity_value']
+            : (is_numeric($liveTrader['equity_value'] ?? null) ? (float)$liveTrader['equity_value'] : null);
         $netPnl = is_numeric($wallet['net_pnl'] ?? null)
             ? (float)$wallet['net_pnl']
             : (is_numeric($liveTrader['net_pnl'] ?? null)
@@ -2026,16 +1985,6 @@ function buildTrackedDashboardCards(
         $strategyAlpha = is_numeric($wallet['strategy_alpha'] ?? null)
             ? (float)$wallet['strategy_alpha']
             : (is_numeric($liveTrader['strategy_alpha'] ?? null) ? (float)$liveTrader['strategy_alpha'] : null);
-
-        // Per-symbol output total: signed P&L plus only SELL proceeds that
-        // remain reserved and have not yet been reinvested into the asset.
-        $trackedStateForOutput = $walletEquity > 0.0 ? $wallet : $liveTrader;
-        $trackedSoldCumulative = paperWalletSoldIntoCashKittyTotal($trackedStateForOutput);
-        $trackedSoldUnreinvested = min(
-            max(0.0, (float)$trackedSoldCumulative),
-            max(0.0, (float)($trackedStateForOutput['pending_rebuy_total'] ?? 0.0))
-        );
-        $trackedOutputTotal = (is_numeric($netPnl) ? (float)$netPnl : 0.0) + $trackedSoldUnreinvested;
         $position = strtoupper(trim((string)($wallet['position'] ?? ($liveTrader['position'] ?? 'flat'))));
         if ($position === '') $position = 'FLAT';
         $signal = trim((string)($wallet['display_action'] ?? ($liveTrader['display_action'] ?? 'WATCHING')));
@@ -2088,9 +2037,6 @@ function buildTrackedDashboardCards(
                 : '—',
             'net_value' => $netPnl,
             'net_class' => is_numeric($netPnl) ? ((float)$netPnl >= 0 ? 'good' : 'low') : 'medium',
-            'sold_unreinvested_value' => round($trackedSoldUnreinvested, 6),
-            'output_total_value' => round($trackedOutputTotal, 6),
-            'output_total_label' => ($trackedOutputTotal >= 0.0 ? '+' : '-') . '$' . number_format(abs($trackedOutputTotal), 2),
             'alpha_label' => is_numeric($strategyAlpha)
                 ? (((float)$strategyAlpha >= 0 ? '+' : '-') . '$' . number_format(abs((float)$strategyAlpha), 2))
                 : '—',
@@ -2128,9 +2074,6 @@ function aggregateTrackedDashboardPortfolio(array $trackedDashboardCards, ?array
     $netCount = 0;
     $strategyAlpha = 0.0;
     $strategyAlphaCount = 0;
-    $outputTotal = 0.0;
-    $outputCount = 0;
-    $unreinvestedSoldTotal = 0.0;
     foreach ($trackedDashboardCards as $card) {
         if (!is_array($card)) continue;
         if (is_numeric($card['net_value'] ?? null)) {
@@ -2140,13 +2083,6 @@ function aggregateTrackedDashboardPortfolio(array $trackedDashboardCards, ?array
         if (is_numeric($card['alpha_value'] ?? null)) {
             $strategyAlpha += (float)$card['alpha_value'];
             $strategyAlphaCount++;
-        }
-        if (is_numeric($card['output_total_value'] ?? null)) {
-            $outputTotal += (float)$card['output_total_value'];
-            $outputCount++;
-        }
-        if (is_numeric($card['sold_unreinvested_value'] ?? null)) {
-            $unreinvestedSoldTotal += max(0.0, (float)$card['sold_unreinvested_value']);
         }
     }
     $globalEffective = is_array($globalObservationState) && is_numeric($globalObservationState['effective_percent'] ?? null)
@@ -2171,10 +2107,6 @@ function aggregateTrackedDashboardPortfolio(array $trackedDashboardCards, ?array
         'strategy_alpha' => round($strategyAlpha, 6),
         'strategy_alpha_count' => $strategyAlphaCount,
         'strategy_alpha_label' => ($strategyAlpha >= 0.0 ? '+' : '-') . '$' . number_format(abs($strategyAlpha), 2),
-        'output_total' => round($outputTotal, 6),
-        'output_count' => $outputCount,
-        'output_total_label' => ($outputTotal >= 0.0 ? '+' : '-') . '$' . number_format(abs($outputTotal), 2),
-        'unreinvested_sold_total' => round($unreinvestedSoldTotal, 6),
         'global_accuracy_effective' => $globalEffective,
         'global_accuracy_historical' => $globalHistorical,
         'global_accuracy_flipped' => $globalFlipped,
@@ -2450,12 +2382,6 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (string)($request_params
     $savedBreakBuy = max(0.01, min(25.0, is_numeric($request_params['break_buy'] ?? null) ? (float)$request_params['break_buy'] : 0.50));
     $savedBreakGain = max(0.01, min(25.0, is_numeric($request_params['break_gain'] ?? null) ? (float)$request_params['break_gain'] : 0.50));
     $savedBreakLoss = max(0.01, min(25.0, is_numeric($request_params['break_loss'] ?? null) ? (float)$request_params['break_loss'] : 0.50));
-    $savedLossBuySpreePercent = max(1, min(50, is_numeric($request_params['loss_buy_spree_percent'] ?? null)
-        ? (int)round((float)$request_params['loss_buy_spree_percent']) : 10));
-    $savedLossSpreeState = loadLocalJsonArray(__DIR__ . '/loss-buy-spree-settings.json');
-    $savedLossSpreeKey = strtolower($savedMarketType) . ':' . strtoupper($savedSymbol);
-    $savedLossSpreeState[$savedLossSpreeKey] = ['percent' => $savedLossBuySpreePercent, 'updated_at' => gmdate('Y-m-d\TH:i:s\Z')];
-    saveLocalJsonArray(__DIR__ . '/loss-buy-spree-settings.json', $savedLossSpreeState);
 
     $baseUrl = detectedIndexBaseUrl();
     upsertTrackedIndexTarget(
@@ -2497,7 +2423,6 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (string)($request_params
             'break_buy' => $savedBreakBuy,
             'break_gain' => $savedBreakGain,
             'break_loss' => $savedBreakLoss,
-            'loss_buy_spree_percent' => $savedLossBuySpreePercent,
         ],
     ], JSON_UNESCAPED_SLASHES);
     exit;
@@ -2711,7 +2636,7 @@ function paperWalletOpenLots(array $state): array
             ? max(0.0, (float)$state['entry_price'])
             : ($legacyUnits > 0.0 ? ($legacyCost / $legacyUnits) : 0.0);
         if ($legacyUnits > 0.0 && $legacyEntry > 0.0) {
-            $legacyPct = min(25.0, max(0.01, (float)($state['configured_sell_gain_percent'] ?? 0.50)));
+            $legacyPct = adaptiveBreakPercentFromPrice($legacyEntry);
             $lots[] = [
                 'id' => 'legacy-' . substr(hash('sha256', $legacyEntry . '|' . $legacyUnits . '|' . $legacyCost), 0, 12),
                 'units' => $legacyUnits,
@@ -2731,59 +2656,34 @@ function paperWalletOpenLots(array $state): array
         $units = max(0.0, (float)($lot['units'] ?? 0.0));
         $entry = max(0.0, (float)($lot['entry_price'] ?? 0.0));
         if ($units <= 0.0 || $entry <= 0.0) continue;
-        // GLOBAL SELL BREAK: every open BUY lot uses the current configured
-        // gain break, including lots created under older settings.
-        $pct = min(25.0, max(0.01, (float)($state['configured_sell_gain_percent'] ?? 0.50)));
-        $lotId = (string)($lot['id'] ?? substr(hash('sha256', $entry . '|' . $units), 0, 12));
+        $pct = is_numeric($lot['break_percent'] ?? null) ? max(0.001, (float)$lot['break_percent']) : adaptiveBreakPercentFromPrice($entry);
         $out[] = [
-            'id' => $lotId,
-            'cycle_id' => (string)($lot['cycle_id'] ?? ('cycle-' . $lotId)),
-            'source_sell_id' => isset($lot['source_sell_id']) ? (string)$lot['source_sell_id'] : null,
+            'id' => (string)($lot['id'] ?? substr(hash('sha256', $entry . '|' . $units), 0, 12)),
             'units' => $units,
             'entry_price' => $entry,
             'cost_basis' => max(0.0, (float)($lot['cost_basis'] ?? ($units * $entry))),
             'break_percent' => $pct,
-            'take_gain_percent' => $pct,
-            'buy_drop_percent' => min(25.0, max(0.01, (float)($state['configured_buy_break_percent'] ?? 0.50))),
-            'sell_target_price' => round($entry * (1.0 + ($pct / 100.0)), 12),
+            'take_gain_percent' => is_numeric($lot['take_gain_percent'] ?? null) ? max(0.001, (float)$lot['take_gain_percent']) : $pct,
             'stop_loss_percent' => is_numeric($lot['stop_loss_percent'] ?? null) ? max(0.001, (float)$lot['stop_loss_percent']) : $pct,
             'bought_at' => (string)($lot['bought_at'] ?? ''),
-            'status' => (string)($lot['status'] ?? 'OPEN_WAITING_FOR_SELL_BREAK'),
             'session_high_at_buy' => max($entry, (float)($lot['session_high_at_buy'] ?? $entry)),
         ];
     }
     return $out;
 }
 
-function paperWalletRecordBuyLot(
-    array $state,
-    float $units,
-    float $entryPrice,
-    float $costBasis,
-    string $boughtAt,
-    float $sessionHigh = 0.0,
-    ?string $sourceSellId = null
-): array
+function paperWalletRecordBuyLot(array $state, float $units, float $entryPrice, float $costBasis, string $boughtAt, float $sessionHigh = 0.0): array
 {
     $units = max(0.0, $units); $entryPrice = max(0.0, $entryPrice);
     if ($units <= 0.0 || $entryPrice <= 0.0) return $state;
-    $gainPct = min(25.0, max(0.01, (float)($state['configured_sell_gain_percent'] ?? 0.50)));
-    $buyDropPct = min(25.0, max(0.01, (float)($state['configured_buy_break_percent'] ?? 0.50)));
-    $lotId = substr(hash('sha256', $boughtAt . '|' . $entryPrice . '|' . $units . '|' . microtime(true)), 0, 12);
+    $pct = adaptiveBreakPercentFromPrice($entryPrice);
     $lots = paperWalletOpenLots($state);
     $lots[] = [
-        'id' => $lotId,
-        'cycle_id' => $sourceSellId !== null && $sourceSellId !== '' ? ('cycle-' . $sourceSellId) : ('cycle-' . $lotId),
-        'source_sell_id' => $sourceSellId,
+        'id' => substr(hash('sha256', $boughtAt . '|' . $entryPrice . '|' . $units . '|' . microtime(true)), 0, 12),
         'units' => $units, 'entry_price' => $entryPrice,
         'cost_basis' => max(0.0, $costBasis > 0.0 ? $costBasis : $units * $entryPrice),
-        'break_percent' => $gainPct,
-        'take_gain_percent' => $gainPct,
-        'buy_drop_percent' => $buyDropPct,
-        'sell_target_price' => round($entryPrice * (1.0 + ($gainPct / 100.0)), 12),
-        'stop_loss_percent' => max(0.001, (float)($state['stop_loss_percent'] ?? $gainPct)),
+        'break_percent' => $pct, 'take_gain_percent' => $pct, 'stop_loss_percent' => $pct,
         'bought_at' => $boughtAt, 'session_high_at_buy' => max($entryPrice, $sessionHigh),
-        'status' => 'OPEN_WAITING_FOR_SELL_BREAK',
     ];
     $state['open_lots'] = $lots;
     $state['open_lot_count'] = count($lots);
@@ -2793,113 +2693,45 @@ function paperWalletRecordBuyLot(
 function paperWalletLotsEligibleToSell(array $state, float $currentPrice): array
 {
     $currentPrice = max(0.0, $currentPrice);
-    $lots = paperWalletOpenLots($state);
-    $eligible = [];
-    $reasons = [];
-    $units = 0.0;
+    $eligible = []; $reasons = []; $units = 0.0;
+    foreach (paperWalletOpenLots($state) as $lot) {
+        $entry = (float)$lot['entry_price'];
+        if ($entry <= 0.0 || $currentPrice <= 0.0) continue;
+        $movePct = (($currentPrice - $entry) / $entry) * 100.0;
+        $breakPct = max(0.001, (float)$lot['take_gain_percent']);
+        $requiredPrice = $entry * (1.0 + ($breakPct / 100.0));
 
-    // GLOBAL SELL BREAK: evaluate the complete open BUY inventory as one
-    // concurrent position. This is the authoritative LOT-voter test.
-    $totalUnits = 0.0;
-    $totalCost = 0.0;
-    foreach ($lots as $lot) {
-        $lotUnits = max(0.0, (float)($lot['units'] ?? 0.0));
-        $lotCost = max(0.0, (float)($lot['cost_basis'] ?? 0.0));
-        $lotEntry = max(0.0, (float)($lot['entry_price'] ?? 0.0));
-        if ($lotUnits <= 1.0e-12 || $lotEntry <= 0.0) continue;
-        if ($lotCost <= 0.0) $lotCost = $lotUnits * $lotEntry;
-        $totalUnits += $lotUnits;
-        $totalCost += $lotCost;
-    }
-
-    // Fall back to the aggregate wallet position when legacy state has units
-    // but no complete lot ledger.
-    if ($totalUnits <= 1.0e-12) {
-        $totalUnits = max(0.0, (float)($state['asset_units'] ?? 0.0));
-        $totalCost = max(0.0, (float)($state['asset_cost_basis'] ?? 0.0));
-    }
-
-    $globalBreakPct = min(25.0, max(0.01, (float)($state['configured_sell_gain_percent'] ?? 0.50)));
-    $averageEntry = $totalUnits > 1.0e-12 ? ($totalCost / $totalUnits) : 0.0;
-    $globalTarget = $averageEntry > 0.0
-        ? $averageEntry * (1.0 + ($globalBreakPct / 100.0))
-        : 0.0;
-    $globalMovePct = ($averageEntry > 0.0 && $currentPrice > 0.0)
-        ? (($currentPrice - $averageEntry) / $averageEntry) * 100.0
-        : 0.0;
-    $globalBreakMet = $totalUnits > 1.0e-12
-        && $globalTarget > 0.0
-        && ($currentPrice + 1.0e-12 >= $globalTarget);
-
-    if ($globalBreakMet) {
-        // Once the global inventory break is met, every open lot participates
-        // concurrently in FIFO sizing. This makes the break global to all sales.
-        $eligible = $lots;
-        $units = $totalUnits;
-        foreach ($lots as $lot) {
+        // A lot is never released by a loss/stop event. It remains open until
+        // the market reaches or exceeds that lot's own break requirement.
+        if ($currentPrice + 1.0e-12 >= $requiredPrice) {
+            $eligible[] = $lot;
+            $units += (float)$lot['units'];
             $reasons[] = [
-                'id' => (string)($lot['id'] ?? ''),
-                'entry_price' => round((float)($lot['entry_price'] ?? 0.0), 12),
-                'required_price' => round($globalTarget, 12),
-                'move_percent' => round($globalMovePct, 6),
-                'reason' => 'GLOBAL_BREAK_MET',
-                'threshold_percent' => $globalBreakPct,
-                'cycle_id' => (string)($lot['cycle_id'] ?? ('cycle-' . ($lot['id'] ?? ''))),
-                'matched_buy_lot_id' => (string)($lot['id'] ?? ''),
+                'id' => $lot['id'],
+                'entry_price' => $entry,
+                'required_price' => round($requiredPrice, 12),
+                'move_percent' => round($movePct, 4),
+                'reason' => 'BREAK_MET_OR_BEAT',
+                'threshold_percent' => $breakPct,
             ];
         }
     }
-
-    return [
-        'eligible_lots' => $eligible,
-        'eligible_units' => $units,
-        'reasons' => $reasons,
-        'global_break_percent' => $globalBreakPct,
-        'global_break_met' => $globalBreakMet,
-        'global_average_entry' => round($averageEntry, 12),
-        'global_target_price' => round($globalTarget, 12),
-        'global_current_price' => round($currentPrice, 12),
-        'global_move_percent' => round($globalMovePct, 6),
-        'global_open_units' => round($totalUnits, 12),
-    ];
+    return ['eligible_lots' => $eligible, 'eligible_units' => $units, 'reasons' => $reasons];
 }
 
 /** Preview the exact FIFO eligible lots that would fund a sell. */
-function paperWalletPreviewSellLots(array $state, float $sellUnits, float $currentPrice, bool $allowAnyOpenLot = false): array
+function paperWalletPreviewSellLots(array $state, float $sellUnits, float $currentPrice): array
 {
     $remaining = max(0.0, $sellUnits);
     $eligibility = paperWalletLotsEligibleToSell($state, $currentPrice);
     $eligibleIds = [];
     foreach ($eligibility['eligible_lots'] as $lot) $eligibleIds[(string)$lot['id']] = true;
 
-    $openLots = paperWalletOpenLots($state);
-    // Full-circle fallback: an older wallet may have aggregate holdings but no
-    // complete per-lot ledger. Once the frozen 2-of-3 room approves the SELL,
-    // represent that aggregate position as one legacy FIFO lot so sizing,
-    // execution, reservation, and the later rebuy all see the same units.
-    if ($allowAnyOpenLot && count($openLots) === 0) {
-        $aggregateUnits = max(0.0, (float)($state['asset_units'] ?? 0.0));
-        $aggregateCost = max(0.0, (float)($state['asset_cost_basis'] ?? 0.0));
-        if ($aggregateUnits > 1.0e-12) {
-            $aggregateEntry = $aggregateCost > 0.0
-                ? $aggregateCost / $aggregateUnits
-                : max(0.0, (float)($state['entry_price'] ?? $currentPrice));
-            $openLots[] = [
-                'id' => 'legacy-aggregate',
-                'units' => $aggregateUnits,
-                'entry_price' => $aggregateEntry,
-                'cost_basis' => $aggregateCost,
-                'break_percent' => 0.0,
-                'take_gain_percent' => 0.0,
-            ];
-        }
-    }
-
     $sold = 0.0; $costPortion = 0.0; $lotResults = [];
-    foreach ($openLots as $lot) {
+    foreach (paperWalletOpenLots($state) as $lot) {
         if ($remaining <= 1.0e-12) break;
         $id = (string)$lot['id'];
-        if (!$allowAnyOpenLot && empty($eligibleIds[$id])) continue;
+        if (empty($eligibleIds[$id])) continue;
         $lotUnits = max(0.0, (float)$lot['units']);
         $take = min($lotUnits, $remaining);
         if ($take <= 0.0) continue;
@@ -2907,8 +2739,6 @@ function paperWalletPreviewSellLots(array $state, float $sellUnits, float $curre
         $costPortion += $lotCost; $sold += $take; $remaining -= $take;
         $lotResults[] = [
             'id' => $id,
-            'cycle_id' => (string)($lot['cycle_id'] ?? ('cycle-' . $id)),
-            'matched_buy_lot_id' => $id,
             'sold_units' => $take,
             'entry_price' => (float)$lot['entry_price'],
             'break_percent' => (float)$lot['take_gain_percent'],
@@ -2918,41 +2748,24 @@ function paperWalletPreviewSellLots(array $state, float $sellUnits, float $curre
     return ['sold_units' => $sold, 'cost_portion' => $costPortion, 'lot_results' => $lotResults];
 }
 
-function paperWalletConsumeSellLots(array $state, float $sellUnits, float $currentPrice, bool $allowAnyOpenLot = false): array
+function paperWalletConsumeSellLots(array $state, float $sellUnits, float $currentPrice): array
 {
     $sellUnits = max(0.0, $sellUnits);
     $lots = paperWalletOpenLots($state);
-    if ($allowAnyOpenLot && count($lots) === 0) {
-        $aggregateUnits = max(0.0, (float)($state['asset_units'] ?? 0.0));
-        $aggregateCost = max(0.0, (float)($state['asset_cost_basis'] ?? 0.0));
-        if ($aggregateUnits > 1.0e-12) {
-            $aggregateEntry = $aggregateCost > 0.0
-                ? $aggregateCost / $aggregateUnits
-                : max(0.0, (float)($state['entry_price'] ?? $currentPrice));
-            $lots[] = [
-                'id' => 'legacy-aggregate',
-                'units' => $aggregateUnits,
-                'entry_price' => $aggregateEntry,
-                'cost_basis' => $aggregateCost,
-                'break_percent' => 0.0,
-                'take_gain_percent' => 0.0,
-            ];
-        }
-    }
     $eligibility = paperWalletLotsEligibleToSell($state, $currentPrice);
     $eligibleIds = [];
     foreach ($eligibility['eligible_lots'] as $lot) $eligibleIds[(string)$lot['id']] = true;
     $remaining = $sellUnits; $costPortion = 0.0; $sold = 0.0; $lotResults = []; $newLots = [];
     foreach ($lots as $lot) {
         $id = (string)$lot['id']; $lotUnits = (float)$lot['units'];
-        if ($remaining <= 1e-12 || (!$allowAnyOpenLot && empty($eligibleIds[$id]))) {
+        if ($remaining <= 1e-12 || empty($eligibleIds[$id])) {
             if ($lotUnits > 1e-12) $newLots[] = $lot;
             continue;
         }
         $take = min($lotUnits, $remaining);
         $lotCost = $lotUnits > 0.0 ? ((float)$lot['cost_basis'] * ($take / $lotUnits)) : 0.0;
         $costPortion += $lotCost; $sold += $take; $remaining -= $take;
-        $lotResults[] = ['id' => $id, 'cycle_id' => (string)($lot['cycle_id'] ?? ('cycle-' . $id)), 'matched_buy_lot_id' => $id, 'sold_units' => $take, 'entry_price' => (float)$lot['entry_price'], 'break_percent' => (float)$lot['break_percent'], 'cost_portion' => $lotCost];
+        $lotResults[] = ['id' => $id, 'sold_units' => $take, 'entry_price' => (float)$lot['entry_price'], 'break_percent' => (float)$lot['break_percent'], 'cost_portion' => $lotCost];
         $left = $lotUnits - $take;
         if ($left > 1e-12) {
             $lot['units'] = $left;
@@ -2973,18 +2786,12 @@ function paperWalletPendingRebuys(array $state): array
     foreach ($rows as $row) {
         if (!is_array($row)) continue;
         $remaining = max(0.0, (float)($row['remaining_amount'] ?? $row['sell_net_amount'] ?? 0.0));
-        $sellPrice = max(0.0, (float)($row['sell_price'] ?? 0.0));
-        if ($remaining <= 0.00000001 || $sellPrice <= 0.0) continue;
-        // GLOBAL BUY BREAK: every pending SELL reserve uses the current
-        // configured buy break concurrently, including older reserves.
-        $globalBuyBreak = min(25.0, max(0.01, (float)($state['configured_buy_break_percent'] ?? 0.50)));
-        $target = round($sellPrice * (1.0 - ($globalBuyBreak / 100.0)), 12);
+        $target = max(0.0, (float)($row['target_price'] ?? 0.0));
+        if ($remaining <= 0.00000001 || $target <= 0.0) continue;
         $out[] = array_merge($row, [
             'id' => (string)($row['id'] ?? substr(hash('sha256', json_encode($row)), 0, 12)),
             'remaining_amount' => round($remaining, 8),
-            'buy_break_percent' => $globalBuyBreak,
             'target_price' => $target,
-            'target_basis' => 'GLOBAL_SELL_FILL_MINUS_CURRENT_BUY_BREAK',
             'status' => 'PENDING',
         ]);
     }
@@ -2997,8 +2804,7 @@ function paperWalletRecordSellFundedRebuy(
     array $sellFill,
     array $lotResults,
     float $buyMultiplier,
-    string $soldAt,
-    ?float $buyBreakPercent = null
+    string $soldAt
 ): array {
     $net = max(0.0, (float)($sellFill['net_cash_amount'] ?? $sellFill['executed_amount'] ?? 0.0));
     $sellPrice = max(0.0, (float)($sellFill['fill_price'] ?? 0.0));
@@ -3015,10 +2821,9 @@ function paperWalletRecordSellFundedRebuy(
     }
     $referenceBuyPrice = $weightedUnits > 0.0 ? ($weightedEntry / $weightedUnits) : $sellPrice;
     $multiplier = max(0.10, min(5.00, $buyMultiplier));
-    $dropPct = min(25.0, max(0.01, $buyBreakPercent ?? (float)($state['configured_buy_break_percent'] ?? 0.50)));
-    // Matched-cycle target: the configured BUY break is the exact percentage
-    // below this SELL fill where its reserved proceeds may buy back.
-    $targetPrice = $sellPrice * (1.0 - ($dropPct / 100.0));
+    // The multiplier is applied to the source lot's buy price. Never chase above
+    // the sell fill: the rebuy must pick the asset up at that price or lower.
+    $targetPrice = min($sellPrice, $referenceBuyPrice * $multiplier);
 
     $queue = paperWalletPendingRebuys($state);
     $queue[] = [
@@ -3027,11 +2832,7 @@ function paperWalletRecordSellFundedRebuy(
         'sell_price' => round($sellPrice, 12),
         'source_buy_price' => round($referenceBuyPrice, 12),
         'buy_multiplier' => $multiplier,
-        'buy_break_percent' => $dropPct,
         'target_price' => round($targetPrice, 12),
-        'target_basis' => 'SELL_FILL_MINUS_CONFIGURED_BUY_BREAK',
-        'matched_buy_lot_ids' => array_values(array_unique(array_filter(array_map(static fn($lot) => is_array($lot) ? (string)($lot['matched_buy_lot_id'] ?? $lot['id'] ?? '') : '', $lotResults)))),
-        'cycle_ids' => array_values(array_unique(array_filter(array_map(static fn($lot) => is_array($lot) ? (string)($lot['cycle_id'] ?? '') : '', $lotResults)))),
         'sell_net_amount' => round($net, 8),
         'remaining_amount' => round($net, 8),
         'status' => 'PENDING',
@@ -3047,61 +2848,10 @@ function paperWalletEligibleRebuy(array $state, float $currentPrice): ?array
 {
     $price = max(0.0, $currentPrice);
     if ($price <= 0.0) return null;
-
-    $eligibleRows = [];
-    $totalAmount = 0.0;
-    $weightedSellValue = 0.0;
-    $ids = [];
-    $targets = [];
     foreach (paperWalletPendingRebuys($state) as $row) {
-        if ($price > (float)$row['target_price'] + 1.0e-12) continue;
-        $amount = max(0.0, (float)$row['remaining_amount']);
-        if ($amount <= 0.00000001) continue;
-        $eligibleRows[] = $row;
-        $totalAmount += $amount;
-        $weightedSellValue += max(0.0, (float)($row['sell_price'] ?? 0.0)) * $amount;
-        $ids[] = (string)$row['id'];
-        $targets[] = (float)$row['target_price'];
+        if ($price <= (float)$row['target_price'] + 1.0e-12) return $row;
     }
-    if (!$eligibleRows || $totalAmount <= 0.00000001) return null;
-
-    return [
-        'id' => implode(',', $ids),
-        'ids' => $ids,
-        'eligible_rows' => $eligibleRows,
-        'remaining_amount' => round($totalAmount, 8),
-        'sell_price' => $totalAmount > 0.0 ? ($weightedSellValue / $totalAmount) : 0.0,
-        'target_price' => $targets ? max($targets) : 0.0,
-        'target_prices' => $targets,
-        'buy_break_percent' => min(25.0, max(0.01, (float)($state['configured_buy_break_percent'] ?? 0.50))),
-        'concurrent_count' => count($eligibleRows),
-        'status' => 'CONCURRENT_ELIGIBLE',
-    ];
-}
-
-/** Consume only concurrently eligible reserves named by the aggregate match. */
-function paperWalletConsumeEligibleRebuyReserves(array $state, array $eligibleIds, float $usedAmount): array
-{
-    $remainingUse = max(0.0, $usedAmount);
-    $allowed = array_fill_keys(array_map('strval', $eligibleIds), true);
-    $new = [];
-    foreach (paperWalletPendingRebuys($state) as $row) {
-        $left = max(0.0, (float)$row['remaining_amount']);
-        $id = (string)($row['id'] ?? '');
-        if ($remainingUse > 0.00000001 && isset($allowed[$id])) {
-            $take = min($left, $remainingUse);
-            $left -= $take;
-            $remainingUse -= $take;
-        }
-        if ($left > 0.00000001) {
-            $row['remaining_amount'] = round($left, 8);
-            $new[] = $row;
-        }
-    }
-    $state['pending_rebuys'] = $new;
-    $state['pending_rebuy_total'] = round(array_sum(array_column($new, 'remaining_amount')), 8);
-    $state['rebuy_pending'] = count($new) > 0;
-    return $state;
+    return null;
 }
 
 /** Consume only the reserved sell totals actually used by the matching buy. */
@@ -4659,31 +4409,6 @@ function isStrictForwardForecast(array $guess, string $targetTime): bool
     return $createdEpoch < $targetEpoch;
 }
 
-function isResolvedGuessResult(array $result, string $targetTime): bool
-{
-    $targetEpoch = yahooTimestamp($targetTime);
-    if ($targetEpoch === null) return false;
-
-    $predicted = (string)($result['predicted'] ?? '');
-    $actual = (string)($result['actual'] ?? '');
-    $right = $result['right'] ?? null;
-
-    // The dashboard Guess % must describe the same resolved rows shown in the
-    // audit. Forward-verification metadata remains available separately, but it
-    // must not make a visibly resolved RIGHT/WRONG row disappear from 12-row
-    // accuracy accounting.
-    if ($predicted !== '+' && $predicted !== '-') return false;
-    if ($actual !== '+' && $actual !== '-') return false;
-    if (!is_bool($right)) return false;
-
-    $savedTarget = trim((string)($result['target_open'] ?? ''));
-    if ($savedTarget !== '') {
-        $savedTargetEpoch = yahooTimestamp($savedTarget);
-        if ($savedTargetEpoch !== null && $savedTargetEpoch !== $targetEpoch) return false;
-    }
-    return true;
-}
-
 function isStrictForwardResult(array $result, string $targetTime): bool
 {
     $targetEpoch = yahooTimestamp($targetTime);
@@ -4873,136 +4598,6 @@ function freezeForecastGuesses(string $statePath, array $guessesByTime): array
     flock($handle, LOCK_UN);
     fclose($handle);
     return $state['forecasts'];
-}
-
-
-/**
- * At/after :05, freeze the current clock-hour forecast geometry from the
- * completed adjusted audit. Direction and candle depth are then timestamp-owned
- * for the rest of the hour. Completed marks are never rewritten.
- */
-function lockHourlyAuditDepthProfile(
-    string $statePath,
-    int $boundaryEpoch,
-    array $auditSummary
-): array {
-    $minute = (int)gmdate('i', $boundaryEpoch);
-    if ($minute < 5) return [];
-
-    $rows = is_array($auditSummary['rows'] ?? null) ? array_values($auditSummary['rows']) : [];
-    if (count($rows) < 1) return [];
-
-    // Use up to twelve completed audit candles, oldest first.  Each historical
-    // mark contributes its real body and wick depth to the corresponding mark
-    // of the newly established hour.
-    $rows = array_slice($rows, -12);
-    $depthByMark = [];
-    foreach ($rows as $index => $row) {
-        $actual = is_array($row['actual'] ?? null) ? $row['actual'] : [];
-        $open = (float)($actual['open'] ?? 0.0);
-        $high = (float)($actual['high'] ?? $open);
-        $low = (float)($actual['low'] ?? $open);
-        $close = (float)($actual['close'] ?? $open);
-        if ($open <= 0.0 || $high <= 0.0 || $low <= 0.0 || $close <= 0.0) continue;
-        $body = abs($close - $open);
-        $upper = max(0.0, $high - max($open, $close));
-        $lower = max(0.0, min($open, $close) - $low);
-        $depthByMark[$index + 1] = [
-            'body' => max(0.00000001, $body),
-            'upper' => $upper,
-            'lower' => $lower,
-            'range' => max(0.00000001, $high - $low),
-            'source_time' => (string)($row['time'] ?? ''),
-        ];
-    }
-    if (!$depthByMark) return [];
-
-    $hourStart = $boundaryEpoch - ((int)gmdate('i', $boundaryEpoch) * 60) - (int)gmdate('s', $boundaryEpoch);
-    $profileHour = gmdate('Y-m-d\\TH:00:00\\Z', $hourStart);
-    $profileFingerprint = hash('sha256', json_encode([$profileHour, $depthByMark]));
-
-    $handle = @fopen($statePath, 'c+');
-    if ($handle === false) return [];
-    flock($handle, LOCK_EX);
-    rewind($handle);
-    $raw = stream_get_contents($handle);
-    $decoded = is_string($raw) && $raw !== '' ? json_decode($raw, true) : null;
-    $state = is_array($decoded) ? $decoded : [];
-    $state['forecasts'] = is_array($state['forecasts'] ?? null) ? $state['forecasts'] : [];
-
-    // Mark 2 (:05) is established first because every remaining mark derives
-    // its side from that timestamp-owned reference.
-    $referenceTime = gmdate('Y-m-d\\TH:i:s\\Z', $hourStart + 300);
-    $referenceGuess = is_array($state['forecasts'][$referenceTime] ?? null)
-        ? $state['forecasts'][$referenceTime]
-        : null;
-    if (!is_array($referenceGuess)) {
-        flock($handle, LOCK_UN);
-        fclose($handle);
-        return $state['forecasts'];
-    }
-
-    $working = $state['forecasts'];
-    $referenceGuess = applyHourlyLockedFlipTemplate($referenceGuess, $referenceTime, $working);
-    if (is_array($referenceGuess)) {
-        $working[$referenceTime] = $referenceGuess;
-    }
-
-    for ($mark = 2; $mark <= 12; $mark++) {
-        $targetEpoch = $hourStart + (($mark - 1) * 300);
-        $targetTime = gmdate('Y-m-d\\TH:i:s\\Z', $targetEpoch);
-        if (!is_array($working[$targetTime] ?? null)) continue;
-
-        $guess = $working[$targetTime];
-        // Do not rewrite a completed mark. The setup is meant to be established
-        // at :05 and carried forward, not revised with hindsight afterward.
-        if ($targetEpoch < $boundaryEpoch && empty($guess['audit_depth_profile_locked'])) continue;
-
-        $guess = applyHourlyLockedFlipTemplate($guess, $targetTime, $working);
-        if (!is_array($guess)) continue;
-        $depth = $depthByMark[$mark] ?? $depthByMark[(($mark - 1) % count($depthByMark)) + 1] ?? null;
-        if (!is_array($depth)) continue;
-
-        // A profile already frozen for this hour is immutable.
-        if (!empty($guess['audit_depth_profile_locked'])
-            && (string)($guess['audit_depth_profile_hour'] ?? '') === $profileHour
-        ) {
-            $working[$targetTime] = $guess;
-            continue;
-        }
-
-        $guess['change'] = (float)$depth['body'];
-        $guess['audit_body_depth'] = (float)$depth['body'];
-        $guess['audit_upper_wick_depth'] = (float)$depth['upper'];
-        $guess['audit_lower_wick_depth'] = (float)$depth['lower'];
-        $guess['audit_total_range_depth'] = (float)$depth['range'];
-        $guess['audit_depth_source_time'] = (string)$depth['source_time'];
-        $guess['audit_depth_profile_hour'] = $profileHour;
-        $guess['audit_depth_profile_fingerprint'] = $profileFingerprint;
-        $guess['audit_depth_profile_locked'] = true;
-        $guess['audit_depth_setup_mark'] = 2;
-        $guess['audit_depth_setup_time'] = $referenceTime;
-        $working[$targetTime] = $guess;
-    }
-
-    $state['forecasts'] = $working;
-    $state['hourly_audit_depth_profiles'] = is_array($state['hourly_audit_depth_profiles'] ?? null)
-        ? $state['hourly_audit_depth_profiles'] : [];
-    $state['hourly_audit_depth_profiles'][$profileHour] = [
-        'setup_time' => $referenceTime,
-        'fingerprint' => $profileFingerprint,
-        'depth_by_mark' => $depthByMark,
-        'locked_at' => gmdate('Y-m-d\\TH:i:s\\Z'),
-    ];
-    $state['updated_at'] = gmdate('Y-m-d\\TH:i:s\\Z');
-
-    rewind($handle);
-    ftruncate($handle, 0);
-    fwrite($handle, json_encode($state, JSON_PRETTY_PRINT));
-    fflush($handle);
-    flock($handle, LOCK_UN);
-    fclose($handle);
-    return $working;
 }
 
 /** Return every numeric OHLC row in CSV-candle shape. */
@@ -5262,157 +4857,6 @@ function latestCompletedFiveMinuteCandles(array $candles, int $count = 12): arra
     return array_slice($completed, -max(1, $count));
 }
 
-
-/**
- * Find a cumulative completed-candle open-to-close move that reaches a global
- * trading break. The newest close is compared with each earlier completed
- * candle open, up to the requested lookback. The shortest qualifying suffix
- * wins, so a one-candle move acts immediately and a slower multi-candle move
- * acts as soon as its cumulative percentage reaches the configured threshold.
- */
-
-
-/**
- * When a dense run of recent SELL guesses is followed by a material decline,
- * create a staged BUY accumulation signal. This converts repeated defensive
- * SELL positioning into an explicit lower-price pickup rule.
- */
-function sellDensityAccumulationTrigger(
-    array $guessByTime,
-    array $candles,
-    float $buyDropPercent,
-    int $minimumSellSignals = 8,
-    int $lookbackCandles = 12
-): array {
-    $completed = latestCompletedFiveMinuteCandles($candles, $lookbackCandles);
-    if (!$completed) {
-        return ['triggered' => false, 'action' => 'NO TRADE', 'reason' => 'NO COMPLETED CANDLES'];
-    }
-    $times = [];
-    foreach ($completed as $candle) {
-        $time = trim((string)($candle['time'] ?? ''));
-        if ($time !== '') $times[] = $time;
-    }
-    $sellCount = 0;
-    $buyCount = 0;
-    foreach ($times as $time) {
-        $guess = is_array($guessByTime[$time] ?? null) ? $guessByTime[$time] : [];
-        $action = strtoupper(trim((string)($guess['action'] ?? $guess['guessAction'] ?? '')));
-        if ($action === '') {
-            $direction = (string)($guess['direction'] ?? '');
-            $action = $direction === '-' ? 'SELL' : ($direction === '+' ? 'BUY' : 'NO TRADE');
-        }
-        if ($action === 'SELL') $sellCount++;
-        if ($action === 'BUY') $buyCount++;
-    }
-    $first = $completed[0];
-    $last = $completed[array_key_last($completed)];
-    $startOpen = max(0.000000000001, (float)($first['open'] ?? 0.0));
-    $latestClose = (float)($last['close'] ?? 0.0);
-    $movePercent = (($latestClose - $startOpen) / $startOpen) * 100.0;
-    $buyDropPercent = min(25.0, max(0.01, $buyDropPercent));
-    $density = count($times) > 0 ? ($sellCount / count($times)) * 100.0 : 0.0;
-    $triggered = $sellCount >= max(1, $minimumSellSignals) && $movePercent <= -$buyDropPercent;
-    $stageMultiplier = $triggered
-        ? min(4.0, max(1.0, 1.0 + (($sellCount - $minimumSellSignals) * 0.35) + (abs($movePercent) / max($buyDropPercent, 0.01) - 1.0) * 0.25))
-        : 1.0;
-    return [
-        'triggered' => $triggered,
-        'action' => $triggered ? 'BUY' : 'NO TRADE',
-        'sell_count' => $sellCount,
-        'buy_count' => $buyCount,
-        'sample_count' => count($times),
-        'sell_density_percent' => round($density, 4),
-        'minimum_sell_signals' => max(1, $minimumSellSignals),
-        'required_sell_density_percent' => round((max(1, $minimumSellSignals) / max(1, count($times))) * 100.0, 4),
-        'move_percent' => round($movePercent, 8),
-        'threshold_percent' => round($buyDropPercent, 8),
-        'stage_multiplier' => round($stageMultiplier, 4),
-        'start_open' => round($startOpen, 12),
-        'latest_close' => round($latestClose, 12),
-        'reason' => $triggered
-            ? ('SELL-DENSITY PICKUP · ' . $sellCount . '/' . count($times) . ' SELLS (' . number_format($density, 2, '.', '') . '%)'
-                . ' MARKS · PRICE ' . number_format($movePercent, 4, '.', '')
-                . '% · BUY STAGE ×' . number_format($stageMultiplier, 2, '.', ''))
-            : ('SELL-DENSITY WAIT · ' . $sellCount . '/' . max(1, $minimumSellSignals) . ' REQUIRED'
-                . ' SELLS · PRICE ' . number_format($movePercent, 4, '.', '')
-                . '% · NEED -' . number_format($buyDropPercent, 4, '.', '') . '%'),
-    ];
-}
-function cumulativeOpenCloseMoveTrigger(
-    array $candles,
-    float $sellGainPercent,
-    float $buyDropPercent,
-    int $maxCandles = 12
-): array {
-    $completed = array_values(array_filter($candles, static function ($candle): bool {
-        return is_array($candle)
-            && (($candle['forming'] ?? false) !== true)
-            && is_numeric($candle['open'] ?? null)
-            && is_numeric($candle['close'] ?? null)
-            && (float)$candle['open'] > 0.0;
-    }));
-    if (!$completed) {
-        return ['triggered' => false, 'action' => 'NO TRADE', 'reason' => 'NO COMPLETED CANDLES'];
-    }
-
-    $completed = array_slice($completed, -max(1, $maxCandles));
-    $latest = $completed[array_key_last($completed)];
-    $latestClose = (float)$latest['close'];
-    $sellGainPercent = min(25.0, max(0.01, $sellGainPercent));
-    $buyDropPercent = min(25.0, max(0.01, $buyDropPercent));
-
-    for ($length = 1; $length <= count($completed); $length++) {
-        $startIndex = count($completed) - $length;
-        $start = $completed[$startIndex];
-        $startOpen = (float)$start['open'];
-        if ($startOpen <= 0.0) continue;
-        $movePercent = (($latestClose - $startOpen) / $startOpen) * 100.0;
-        $action = 'NO TRADE';
-        $threshold = 0.0;
-        if ($movePercent + 1.0e-12 >= $sellGainPercent) {
-            $action = 'SELL';
-            $threshold = $sellGainPercent;
-        } elseif ($movePercent - 1.0e-12 <= -$buyDropPercent) {
-            $action = 'BUY';
-            $threshold = $buyDropPercent;
-        }
-        if ($action !== 'NO TRADE') {
-            return [
-                'triggered' => true,
-                'action' => $action,
-                'candle_count' => $length,
-                'start_time' => (string)($start['time'] ?? ''),
-                'end_time' => (string)($latest['time'] ?? ''),
-                'start_open' => round($startOpen, 12),
-                'latest_close' => round($latestClose, 12),
-                'move_percent' => round($movePercent, 8),
-                'threshold_percent' => round($threshold, 8),
-                'reason' => 'CUMULATIVE OPEN→CLOSE ' . ($movePercent >= 0.0 ? '+' : '')
-                    . number_format($movePercent, 4, '.', '') . '% OVER ' . $length
-                    . ' COMPLETED CANDLE' . ($length === 1 ? '' : 'S'),
-            ];
-        }
-    }
-
-    $first = $completed[0];
-    $firstOpen = max(0.000000000001, (float)$first['open']);
-    $netPercent = (($latestClose - $firstOpen) / $firstOpen) * 100.0;
-    return [
-        'triggered' => false,
-        'action' => 'NO TRADE',
-        'candle_count' => count($completed),
-        'start_time' => (string)($first['time'] ?? ''),
-        'end_time' => (string)($latest['time'] ?? ''),
-        'start_open' => round($firstOpen, 12),
-        'latest_close' => round($latestClose, 12),
-        'move_percent' => round($netPercent, 8),
-        'sell_threshold_percent' => round($sellGainPercent, 8),
-        'buy_threshold_percent' => round($buyDropPercent, 8),
-        'reason' => 'CUMULATIVE OPEN→CLOSE BREAK NOT REACHED',
-    ];
-}
-
 /** Prefer frozen forecast guesses, then historical locked guesses, for a given candle window. */
 function cachedGuessesForHour(array $candles, array $forecastByTime, array $guessByTime): array
 {
@@ -5431,10 +4875,6 @@ function scoreHourAuditRow(array $candle, ?array $guess): array
 {
     $open = is_numeric($candle['open'] ?? null) ? (float)$candle['open'] : 0.0;
     $close = is_numeric($candle['close'] ?? null) ? (float)$candle['close'] : 0.0;
-    $high = is_numeric($candle['high'] ?? null) ? (float)$candle['high'] : max($open, $close);
-    $low = is_numeric($candle['low'] ?? null) ? (float)$candle['low'] : min($open, $close);
-    $high = max($high, $open, $close);
-    $low = min($low, $open, $close);
     $move = $close - $open;
     $actualDirection = $move > 0.0 ? '+' : ($move < 0.0 ? '-' : '0');
     $pair = guessPairLabel($guess);
@@ -5462,12 +4902,8 @@ function scoreHourAuditRow(array $candle, ?array $guess): array
         ],
         'actual' => [
             'open' => $open,
-            'high' => $high,
-            'low' => $low,
             'close' => $close,
             'move' => $move,
-            'range' => max(0.0, $high - $low),
-            'body' => abs($close - $open),
             'direction' => $actualDirection,
             'settled' => true,
         ],
@@ -5525,7 +4961,6 @@ function buildHourAuditSummary(string $symbol, array $candles, array $cachedGues
     $downCandleStreak = 0;
     $maxSellSignalStreak = 0;
     $maxDownCandleStreak = 0;
-    $maxCandleRange = 0.0;
 
     foreach ($candles as $candle) {
         $time = (string)($candle['time'] ?? '');
@@ -5539,7 +4974,6 @@ function buildHourAuditSummary(string $symbol, array $candles, array $cachedGues
         $maxDownCandleStreak = max($maxDownCandleStreak, $downCandleStreak);
         $row['sell_signal_streak'] = $sellSignalStreak;
         $row['down_candle_streak'] = $downCandleStreak;
-        $maxCandleRange = max($maxCandleRange, (float)($row['actual']['range'] ?? 0.0));
         $rows[] = $row;
 
         if ($row['guess_right'] === true) $guessRight++;
@@ -5569,7 +5003,6 @@ function buildHourAuditSummary(string $symbol, array $candles, array $cachedGues
         'window_start' => $rows ? (string)$rows[0]['time'] : '',
         'window_end' => $rows ? (string)$rows[count($rows) - 1]['time'] : '',
         'rows' => $rows,
-        'max_candle_range' => $maxCandleRange,
         'guess_accuracy' => [
             'right' => $guessRight,
             'wrong' => $guessWrong,
@@ -5604,321 +5037,11 @@ function buildHourAuditSummary(string $symbol, array $candles, array $cachedGues
     ];
 }
 
-/** Draw one completed audit candle from its real OHLC values.
- * Wick height is scaled against the largest five-minute range in the audit hour.
- * Body position and height are calculated from this candle's own high/low marks.
- */
-function renderAuditOhlcCandle(array $actual, float $hourMaxRange): string
-{
-    $open = (float)($actual['open'] ?? 0.0);
-    $high = (float)($actual['high'] ?? max($open, (float)($actual['close'] ?? 0.0)));
-    $low = (float)($actual['low'] ?? min($open, (float)($actual['close'] ?? 0.0)));
-    $close = (float)($actual['close'] ?? 0.0);
-    $high = max($high, $open, $close);
-    $low = min($low, $open, $close);
-    $range = max(0.0, $high - $low);
-    $maxRange = max($range, $hourMaxRange, 0.000000000001);
-
-    // A zero-range candle stays visible as a short flat mark.
-    $wickHeight = $range > 0.0 ? max(8.0, min(42.0, 42.0 * ($range / $maxRange))) : 4.0;
-    $top = (48.0 - $wickHeight) / 2.0;
-    $bottom = $top + $wickHeight;
-    $priceToY = static function (float $price) use ($high, $range, $top, $wickHeight): float {
-        if ($range <= 0.0) return $top + ($wickHeight / 2.0);
-        return $top + (($high - $price) / $range) * $wickHeight;
-    };
-    $openY = $priceToY($open);
-    $closeY = $priceToY($close);
-    $bodyTop = min($openY, $closeY);
-    $bodyHeight = max(2.0, abs($closeY - $openY));
-    if ($bodyTop + $bodyHeight > $bottom) $bodyTop = max($top, $bottom - $bodyHeight);
-    $directionClass = $close > $open ? 'audit-candle-up' : ($close < $open ? 'audit-candle-down' : 'audit-candle-flat');
-    $aria = 'OHLC candle open ' . number_format($open, 8, '.', '')
-        . ', high ' . number_format($high, 8, '.', '')
-        . ', low ' . number_format($low, 8, '.', '')
-        . ', close ' . number_format($close, 8, '.', '');
-
-    return '<span class="audit-ohlc-wrap" title="' . htmlspecialchars($aria, ENT_QUOTES) . '">'
-        . '<svg class="audit-ohlc ' . $directionClass . '" viewBox="0 0 28 48" role="img" aria-label="' . htmlspecialchars($aria, ENT_QUOTES) . '">'
-        . '<line class="audit-ohlc-wick" x1="14" y1="' . number_format($top, 2, '.', '') . '" x2="14" y2="' . number_format($bottom, 2, '.', '') . '"></line>'
-        . '<rect class="audit-ohlc-body" x="8" y="' . number_format($bodyTop, 2, '.', '') . '" width="12" height="' . number_format($bodyHeight, 2, '.', '') . '"></rect>'
-        . '</svg></span>';
-}
-
 /** Render the one-hour audit as a compact table. */
-
-/** Attach executable-position context to each audit guess.
- *
- * Directional edge remains a one-unit hindsight measurement.  This layer adds:
- * - the exact units from a real event when available;
- * - otherwise a conservative planned unit estimate from that event's request;
- * - gross edge on those units;
- * - actual realized P/L/support capture only when the ledger contains a fill.
- *
- * It deliberately does not call a hindsight gross edge "profit".
- */
-function attachGuessPositioningToHourAudit(array $auditSummary, array &$state): array
-{
-    $events = is_array($state['events_by_time'] ?? null) ? $state['events_by_time'] : [];
-    $currentAssetUnits = max(0.0, (float)($state['asset_units'] ?? 0.0));
-    $currentCash = max(0.0, (float)($state['cash_left'] ?? 0.0));
-    $fallbackTradeAmount = max(0.0, (float)($state['fixed_trade_amount'] ?? 0.0));
-
-    // Wrong audit calls do not become profit by declaration. They create a
-    // quantified recovery obligation. Later *realized* gains pay that balance
-    // down first; only gains above the remaining balance are net strategy profit.
-    $recovery = is_array($state['audit_recovery_ledger'] ?? null)
-        ? $state['audit_recovery_ledger']
-        : [];
-    $recovery['balance'] = max(0.0, (float)($recovery['balance'] ?? 0.0));
-    $recovery['total_wrong_obligation'] = max(0.0, (float)($recovery['total_wrong_obligation'] ?? 0.0));
-    $recovery['total_realized_losses'] = max(0.0, (float)($recovery['total_realized_losses'] ?? 0.0));
-    $recovery['total_recovered'] = max(0.0, (float)($recovery['total_recovered'] ?? 0.0));
-    $recovery['net_profit_after_recovery'] = max(0.0, (float)($recovery['net_profit_after_recovery'] ?? 0.0));
-    // Net gains are accumulated for a kitty sweep.  They are only moved out of
-    // spendable cash after recovery is paid, the pending gain reaches $50, and
-    // the live asset position remains strictly above the $5,000 floor.
-    $recovery['gain_kitty_pending'] = max(0.0, (float)($recovery['gain_kitty_pending'] ?? 0.0));
-    $recovery['gain_kitty_total'] = max(0.0, (float)($recovery['gain_kitty_total'] ?? 0.0));
-    $recovery['processed_wrong'] = is_array($recovery['processed_wrong'] ?? null) ? $recovery['processed_wrong'] : [];
-    $recovery['processed_realized'] = is_array($recovery['processed_realized'] ?? null) ? $recovery['processed_realized'] : [];
-    $recovery['entries'] = is_array($recovery['entries'] ?? null) ? $recovery['entries'] : [];
-
-    foreach ($auditSummary['rows'] ?? [] as $index => $row) {
-        if (!is_array($row)) continue;
-        $time = (string)($row['time'] ?? '');
-        $action = strtoupper(trim((string)($row['guess']['action'] ?? 'NO TRADE')));
-        $open = max(0.0, (float)($row['actual']['open'] ?? 0.0));
-        $strategyEdgePerUnit = (float)($row['strategy']['pnl'] ?? 0.0);
-        $event = is_array($events[$time] ?? null) ? $events[$time] : [];
-
-        // Canonical event reconciliation: an executed trade is authoritative even
-        // when events_by_time was not populated by an older execution path.
-        // Match by normalized five-minute timestamp and side so eligible realized
-        // gains cannot disappear from kitty accounting.
-        $eventTimeTs = strtotime($time);
-        $eventMarkTs = $eventTimeTs !== false ? (int)(floor($eventTimeTs / 300) * 300) : 0;
-        $eventExecuted = (($event['executed'] ?? false) === true);
-        if (!$eventExecuted) {
-            foreach (array_reverse((array)($state['trades'] ?? [])) as $tradeCandidate) {
-                if (!is_array($tradeCandidate) || (($tradeCandidate['executed'] ?? false) !== true)) continue;
-                $tradeSide = strtoupper(trim((string)($tradeCandidate['side'] ?? $tradeCandidate['trade_side'] ?? $tradeCandidate['action'] ?? '')));
-                if (strpos($tradeSide, $action) === false) continue;
-                $tradeTimeRaw = (string)($tradeCandidate['time'] ?? $tradeCandidate['timestamp'] ?? '');
-                $tradeTimeTs = strtotime($tradeTimeRaw);
-                $tradeMarkTs = $tradeTimeTs !== false ? (int)(floor($tradeTimeTs / 300) * 300) : 0;
-                if ($eventMarkTs > 0 && $tradeMarkTs === $eventMarkTs) {
-                    $event = array_merge($tradeCandidate, $event);
-                    $event['executed'] = true;
-                    break;
-                }
-            }
-        }
-
-        $eventAction = strtoupper(trim((string)($event['action'] ?? $event['side'] ?? $event['trade_side'] ?? '')));
-        $sameAction = strpos($eventAction, $action) !== false;
-        $executed = $sameAction && (($event['executed'] ?? false) === true);
-        $requested = $sameAction
-            ? max(0.0, (float)($event['requested_amount'] ?? $event['amount'] ?? 0.0))
-            : 0.0;
-        if ($requested <= 0.0) $requested = $fallbackTradeAmount;
-
-        $units = $executed ? max(0.0, (float)($event['units'] ?? 0.0)) : 0.0;
-        $unitSource = $executed && $units > 0.0 ? 'EXECUTED FILL' : 'PLANNED';
-        if ($units <= 0.0 && $open > 0.0 && ($action === 'BUY' || $action === 'SELL')) {
-            if ($action === 'BUY') {
-                $budget = min($requested, $currentCash);
-                $units = $budget / $open;
-            } else {
-                $requestedUnits = $requested / $open;
-                $units = min($currentAssetUnits, $requestedUnits);
-            }
-        }
-
-        $grossEdge = $strategyEdgePerUnit * $units;
-        $realized = null;
-        $realizedLabel = 'NOT REALIZED';
-        if ($executed) {
-            if (is_numeric($event['captured_support_edge'] ?? null) && (float)$event['captured_support_edge'] > 0.0) {
-                $realized = (float)$event['captured_support_edge'];
-                $realizedLabel = 'SUPPORT CAPTURE';
-            } elseif (is_numeric($event['realized_pnl'] ?? null)) {
-                $realized = (float)$event['realized_pnl'];
-                $realizedLabel = 'REALIZED P/L';
-            } else {
-                $realizedLabel = $action === 'BUY' ? 'OPEN BUY POSITION' : 'SELL FILLED · REBUY PENDING';
-            }
-        } elseif ($sameAction && $event) {
-            $realizedLabel = 'NOT EXECUTED';
-        }
-
-        $auditSummary['rows'][$index]['positioning'] = [
-            'action' => $action,
-            'units' => max(0.0, $units),
-            'unit_source' => $unitSource,
-            'requested_amount' => $requested,
-            'entry_reference' => $executed
-                ? max(0.0, (float)($event['fill_price'] ?? $event['entry_price'] ?? $open))
-                : $open,
-            'exit_reference' => max(0.0, (float)($row['actual']['close'] ?? 0.0)),
-            'gross_edge' => $grossEdge,
-            'realized_net' => $realized,
-            'realized_label' => $realizedLabel,
-            'executed' => $executed,
-            'event_label' => (string)($event['label'] ?? ''),
-        ];
-
-        $recoveryEffect = 0.0;
-        $recoveryLabel = 'NO CHANGE';
-        $wrongKey = hash('sha256', $time . '|' . $action . '|' . number_format((float)($row['actual']['close'] ?? 0.0), 8, '.', ''));
-        $isWrong = (($row['guess_right'] ?? null) === false);
-        if ($isWrong && empty($recovery['processed_wrong'][$wrongKey])) {
-            $obligation = abs(min(0.0, $grossEdge));
-            if ($obligation > 0.0) {
-                $recovery['balance'] += $obligation;
-                $recovery['total_wrong_obligation'] += $obligation;
-                $recoveryEffect -= $obligation;
-                $recoveryLabel = 'WRONG CALL · RECOVERY DUE +' . number_format($obligation, 8, '.', '');
-                $recovery['entries'][] = [
-                    'time' => $time,
-                    'type' => 'WRONG_CALL_OBLIGATION',
-                    'amount' => $obligation,
-                    'action' => $action,
-                    'units' => $units,
-                    'edge_per_unit' => $strategyEdgePerUnit,
-                    'balance_after' => $recovery['balance'],
-                ];
-            }
-            $recovery['processed_wrong'][$wrongKey] = true;
-        }
-
-        if (is_numeric($realized)) {
-            $realizedAmount = (float)$realized;
-            $eventIdentity = (string)($event['id'] ?? $event['event_id'] ?? $event['order_id'] ?? $time);
-            $realizedKey = hash('sha256', $eventIdentity . '|' . number_format($realizedAmount, 8, '.', ''));
-            if (empty($recovery['processed_realized'][$realizedKey])) {
-                if ($realizedAmount < 0.0) {
-                    $loss = abs($realizedAmount);
-                    $recovery['balance'] += $loss;
-                    $recovery['total_realized_losses'] += $loss;
-                    $recoveryEffect -= $loss;
-                    $recoveryLabel = 'REALIZED LOSS · RECOVERY DUE +' . number_format($loss, 8, '.', '');
-                } elseif ($realizedAmount > 0.0) {
-                    $paid = min($recovery['balance'], $realizedAmount);
-                    $excess = max(0.0, $realizedAmount - $paid);
-                    $recovery['balance'] = max(0.0, $recovery['balance'] - $paid);
-                    $recovery['total_recovered'] += $paid;
-                    $recovery['net_profit_after_recovery'] += $excess;
-                    $recovery['gain_kitty_pending'] += $excess;
-                    $recoveryEffect += $paid;
-                    $recoveryLabel = $paid > 0.0
-                        ? ('REALIZED GAIN · RECOVERED ' . number_format($paid, 8, '.', '')
-                            . ($excess > 0.0 ? ' · NET PROFIT ' . number_format($excess, 8, '.', '') : ''))
-                        : 'REALIZED GAIN · NET PROFIT ' . number_format($excess, 8, '.', '');
-                }
-                $recovery['entries'][] = [
-                    'time' => $time,
-                    'type' => $realizedAmount < 0.0 ? 'REALIZED_LOSS' : 'REALIZED_GAIN',
-                    'amount' => abs($realizedAmount),
-                    'recovery_applied' => $realizedAmount > 0.0 ? min($recoveryEffect, $realizedAmount) : 0.0,
-                    'balance_after' => $recovery['balance'],
-                ];
-                $recovery['processed_realized'][$realizedKey] = true;
-            }
-        }
-
-        $auditSummary['rows'][$index]['recovery'] = [
-            'effect' => $recoveryEffect,
-            'label' => $recoveryLabel,
-            'balance_after' => $recovery['balance'],
-            'recovered_total' => $recovery['total_recovered'],
-            'net_profit_after_recovery' => $recovery['net_profit_after_recovery'],
-        ];
-    }
-
-    // Sweep accumulated post-recovery profit into the non-spendable kitty.
-    // The sweep is intentionally conservative: both the BTC/asset side and the
-    // active cash reserve must remain above their $5,000 floors.  This prevents a
-    // reported gain from hollowing out either side of the wallet.
-    $latestAuditPrice = 0.0;
-    foreach (array_reverse($auditSummary['rows'] ?? []) as $auditRowForPrice) {
-        if (!is_array($auditRowForPrice)) continue;
-        $candidatePrice = max(0.0, (float)($auditRowForPrice['actual']['close'] ?? 0.0));
-        if ($candidatePrice > 0.0) { $latestAuditPrice = $candidatePrice; break; }
-    }
-    if ($latestAuditPrice <= 0.0) {
-        $latestAuditPrice = max(0.0, (float)($state['current_price'] ?? $state['price'] ?? 0.0));
-    }
-    $assetFloor = 5000.0;
-    $cashFloor = max(5000.0, (float)($state['cash_out_cash_kitty_reserve'] ?? 5000.0));
-    $assetValueNow = $latestAuditPrice > 0.0
-        ? max(0.0, (float)($state['asset_units'] ?? 0.0)) * $latestAuditPrice
-        : max(0.0, (float)($state['holding_value'] ?? 0.0));
-    $activeCashNow = max(0.0, (float)($state['cash_left'] ?? 0.0));
-    $cashAboveFloor = max(0.0, $activeCashNow - $cashFloor);
-    $pendingGain = max(0.0, (float)$recovery['gain_kitty_pending']);
-    $kittySweep = 0.0;
-    // A gain is kitty-eligible only after it is present as a realized executed
-    // fill, recovery has been paid, the accumulated eligible amount is at least
-    // $50, and moving it will preserve both wallet floors. Once eligible, sweep
-    // the full amount that can safely be removed now.
-    $kittyEligible = $pendingGain >= 50.0 && $assetValueNow > $assetFloor && $cashAboveFloor > 0.0;
-    if ($kittyEligible) {
-        $kittySweep = min($pendingGain, $cashAboveFloor);
-        if ($kittySweep > 0.0) {
-            $state['cash_left'] = round(max(0.0, $activeCashNow - $kittySweep), 8);
-            $state['cash_out_withdrawn_total'] = round(
-                max(0.0, (float)($state['cash_out_withdrawn_total'] ?? 0.0)) + $kittySweep,
-                8
-            );
-            $recovery['gain_kitty_pending'] = max(0.0, $pendingGain - $kittySweep);
-            $recovery['gain_kitty_total'] += $kittySweep;
-            $recovery['entries'][] = [
-                'time' => gmdate('c'),
-                'type' => 'REALIZED_GAIN_TO_KITTY',
-                'amount' => $kittySweep,
-                'asset_value_at_sweep' => $assetValueNow,
-                'asset_floor' => $assetFloor,
-                'cash_floor' => $cashFloor,
-                'pending_after' => $recovery['gain_kitty_pending'],
-            ];
-        }
-    }
-    $state['gain_kitty_pending'] = round((float)$recovery['gain_kitty_pending'], 8);
-    $state['gain_kitty_total'] = round((float)$recovery['gain_kitty_total'], 8);
-    $state['gain_kitty_last_sweep'] = round($kittySweep, 8);
-    $state['gain_kitty_asset_floor_met'] = $assetValueNow > $assetFloor;
-    $state['gain_kitty_asset_value'] = round($assetValueNow, 8);
-    $state['gain_kitty_eligible'] = $kittyEligible;
-    $state['gain_kitty_cash_above_floor'] = round($cashAboveFloor, 8);
-    $state['gain_kitty_threshold'] = 50.0;
-    $state['gain_kitty_status'] = $kittySweep > 0.0
-        ? ('SWEPT $' . number_format($kittySweep, 2, '.', ','))
-        : ($pendingGain < 50.0
-            ? ('PENDING $' . number_format($pendingGain, 2, '.', ',') . ' · NEEDS $50.00')
-            : ($assetValueNow <= $assetFloor
-                ? ('WAITING · ASSET MUST STAY ABOVE $' . number_format($assetFloor, 2, '.', ','))
-                : ($cashAboveFloor <= 0.0
-                    ? ('WAITING · CASH MUST STAY ABOVE $' . number_format($cashFloor, 2, '.', ','))
-                    : 'ELIGIBLE')));
-
-    if (count($recovery['entries']) > 500) $recovery['entries'] = array_slice($recovery['entries'], -500);
-    if (count($recovery['processed_wrong']) > 1000) $recovery['processed_wrong'] = array_slice($recovery['processed_wrong'], -1000, null, true);
-    if (count($recovery['processed_realized']) > 1000) $recovery['processed_realized'] = array_slice($recovery['processed_realized'], -1000, null, true);
-    $recovery['updated_at'] = gmdate('c');
-    $state['audit_recovery_ledger'] = $recovery;
-    $state['audit_recovery_balance'] = $recovery['balance'];
-    $state['audit_recovery_total_recovered'] = $recovery['total_recovered'];
-    $state['audit_net_profit_after_recovery'] = $recovery['net_profit_after_recovery'];
-    $auditSummary['recovery'] = $recovery;
-    return $auditSummary;
-}
-
 function renderHourAuditTable(array $auditSummary): string
 {
     $rows = $auditSummary['rows'] ?? [];
-    $hourMaxRange = max(0.0, (float)($auditSummary['max_candle_range'] ?? 0.0));
-    $html = '<tr><td>Time</td><td>Predicted candle</td><td>What candle did</td><td>Result</td><td>What happened</td><td>SELL run</td><td>DOWN run</td><td>Directional edge (1 unit)</td><td>Position units</td><td>Your gross edge</td><td>Realized net</td><td>Recovery accounting</td><td>Recovery balance</td><td>Long</td><td>Short</td><td>Best</td></tr>';
+    $html = '<tr><td>Time</td><td>Predicted candle</td><td>What candle did</td><td>Result</td><td>What happened</td><td>SELL run</td><td>DOWN run</td><td>Directional edge (1 unit)</td><td>Long</td><td>Short</td><td>Best</td></tr>';
     foreach ($rows as $row) {
         if (!is_array($row)) continue;
         $time = (string)($row['time'] ?? '');
@@ -5932,8 +5055,6 @@ function renderHourAuditTable(array $auditSummary): string
         $long = is_array($row['long'] ?? null) ? $row['long'] : [];
         $short = is_array($row['short'] ?? null) ? $row['short'] : [];
         $best = is_array($row['best_side'] ?? null) ? $row['best_side'] : [];
-        $positioning = is_array($row['positioning'] ?? null) ? $row['positioning'] : [];
-        $recoveryRow = is_array($row['recovery'] ?? null) ? $row['recovery'] : [];
 
         $move = (float)($actual['move'] ?? 0.0);
         $actualOpen = (float)($actual['open'] ?? 0.0);
@@ -5948,11 +5069,6 @@ function renderHourAuditTable(array $auditSummary): string
         }
         $actualDirection = (string)($actual['direction'] ?? '?');
         $actualLabel = ($actualDirection === '+' ? 'UP / green' : ($actualDirection === '-' ? 'DOWN / red' : 'FLAT / gray')) . ' · ' . $moveLabel;
-        $actualCandleHtml = renderAuditOhlcCandle($actual, $hourMaxRange);
-        $ohlcLabel = 'O ' . number_format((float)($actual['open'] ?? 0.0), 2)
-            . ' · H ' . number_format((float)($actual['high'] ?? 0.0), 2)
-            . ' · L ' . number_format((float)($actual['low'] ?? 0.0), 2)
-            . ' · C ' . number_format((float)($actual['close'] ?? 0.0), 2);
         $guessResult = strtoupper(trim((string)($row['guess_result'] ?? '')));
         if (!in_array($guessResult, ['RIGHT', 'WRONG', 'FLAT', 'UNRESOLVED'], true)) {
             $guessResult = ($row['guess_right'] ?? null) === true
@@ -5987,42 +5103,16 @@ function renderHourAuditTable(array $auditSummary): string
         $happenedClass = !empty($strategy['model_call'])
             ? $strategyClass
             : 'result-neutral-cell';
-        $positionUnits = max(0.0, (float)($positioning['units'] ?? 0.0));
-        $grossPositionEdge = (float)($positioning['gross_edge'] ?? 0.0);
-        $grossPositionClass = abs($grossPositionEdge) <= 0.00000001
-            ? 'result-neutral-cell'
-            : ($grossPositionEdge > 0.0 ? 'result-gain-cell' : 'result-loss-cell');
-        $positionUnitsLabel = $positionUnits > 0.0
-            ? number_format($positionUnits, 8, '.', '') . ' (' . (string)($positioning['unit_source'] ?? 'PLANNED') . ')'
-            : '—';
-        $realizedNet = $positioning['realized_net'] ?? null;
-        $realizedNetLabel = is_numeric($realizedNet)
-            ? ((string)($positioning['realized_label'] ?? 'REALIZED') . ' ' . formatSignedMoney((float)$realizedNet, 8))
-            : (string)($positioning['realized_label'] ?? 'NOT REALIZED');
-        $realizedNetClass = !is_numeric($realizedNet) || abs((float)$realizedNet) <= 0.00000001
-            ? 'result-neutral-cell'
-            : ((float)$realizedNet > 0.0 ? 'result-gain-cell' : 'result-loss-cell');
-        $recoveryEffect = (float)($recoveryRow['effect'] ?? 0.0);
-        $recoveryBalance = max(0.0, (float)($recoveryRow['balance_after'] ?? 0.0));
-        $recoveryLabel = (string)($recoveryRow['label'] ?? 'NO CHANGE');
-        $recoveryClass = $recoveryEffect > 0.0 ? 'result-gain-cell' : ($recoveryEffect < 0.0 ? 'result-loss-cell' : 'result-neutral-cell');
 
         $html .= '<tr>'
             . '<td' . ($epoch !== null ? ' data-epoch="' . ($epoch * 1000) . '"' : '') . '>' . htmlspecialchars($timeLabel) . '</td>'
             . '<td class="' . $guessClass . '">' . htmlspecialchars($predictedLabel) . '</td>'
-            . '<td class="audit-actual-candle-cell">' . $actualCandleHtml
-            . '<span class="audit-candle-text">' . htmlspecialchars($actualLabel)
-            . '<small>' . htmlspecialchars($ohlcLabel) . '</small></span></td>'
+            . '<td>' . htmlspecialchars($actualLabel) . '</td>'
             . '<td class="' . $resultClass . '">' . htmlspecialchars($guessResult) . '</td>'
             . '<td class="' . $happenedClass . '">' . htmlspecialchars($happenedLabel) . '</td>'
             . '<td>' . ($sellRun > 0 ? htmlspecialchars((string)$sellRun . ' SELL' . ($sellRun === 1 ? '' : 'S')) : '—') . '</td>'
             . '<td>' . ($downRun > 0 ? htmlspecialchars((string)$downRun . ' DOWN' . ($downRun === 1 ? '' : 'S')) : '—') . '</td>'
             . '<td class="' . $strategyClass . '">' . htmlspecialchars(formatSignedMoney($strategyPnl, 8)) . '</td>'
-            . '<td>' . htmlspecialchars($positionUnitsLabel) . '</td>'
-            . '<td class="' . $grossPositionClass . '">' . htmlspecialchars(formatSignedMoney($grossPositionEdge, 8)) . '</td>'
-            . '<td class="' . $realizedNetClass . '">' . htmlspecialchars($realizedNetLabel) . '</td>'
-            . '<td class="' . $recoveryClass . '">' . htmlspecialchars($recoveryLabel) . '</td>'
-            . '<td class="' . ($recoveryBalance > 0.0 ? 'result-loss-cell' : 'result-gain-cell') . '">' . htmlspecialchars('$' . number_format($recoveryBalance, 8, '.', '')) . '</td>'
             . '<td class="' . $longClass . '">' . htmlspecialchars(formatSignedMoney($longPnl, 8)) . '</td>'
             . '<td class="' . $shortClass . '">' . htmlspecialchars(formatSignedMoney($shortPnl, 8)) . '</td>'
             . '<td class="result-gain-cell">' . htmlspecialchars((string)($best['side'] ?? '—') . ' ' . formatSignedMoney($bestPnl, 8)) . '</td>'
@@ -6505,322 +5595,6 @@ function guessStoredAction(?array $guess): string
     return $direction === '+' ? 'BUY' : ($direction === '-' ? 'SELL' : 'NO TRADE');
 }
 
-
-/** Return the one-based five-minute mark inside its own clock hour. */
-function hourlyFiveMinuteMark(string $time): int
-{
-    $timestamp = yahooTimestamp($time);
-    if ($timestamp === null) return 0;
-    return (int)floor(((int)gmdate('i', $timestamp)) / 5) + 1;
-}
-
-/**
- * Apply the selected-mark clock-hour direction template.
- *
- *   mark 1  (:00)                         => preserve its own locked answer
- *   mark 2  (:05)                         => flip its raw answer once; this is the FINAL reference
- *   marks 4, 6, 8 and 11                  => exactly match mark 2
- *   marks 3, 5, 7, 9, 10 and 12           => preserve their own original answers
- *
- * Only the selected template marks are rewritten. Odd marks are not inverted,
- * and non-template marks retain the direction produced by the underlying model.
- */
-function applyHourlyLockedFlipTemplate(?array $guess, string $time, array $forecastsByTime = []): ?array
-{
-    if (!is_array($guess)) return null;
-
-    $mark = hourlyFiveMinuteMark($time);
-    $direction = (string)($guess['direction'] ?? '');
-    if ($direction !== '+' && $direction !== '-') {
-        $direction = newGuessDirectionFromPair(guessPairLabel($guess));
-    }
-
-    // Preserve an answer already finalized by this exact template version.
-    if (!empty($guess['hourly_template_mark2_selected_v5'])) {
-        return $guess;
-    }
-
-    if ($mark < 1 || $mark > 12 || ($direction !== '+' && $direction !== '-')) {
-        return $guess;
-    }
-
-    $selectedMatchingMarks = [2, 4, 6, 8, 11];
-
-    // Mark 1 and every non-template mark keep their own model answer.
-    if ($mark === 1 || !in_array($mark, $selectedMatchingMarks, true)) {
-        $guess['hourly_template_original_direction'] = $direction;
-        $guess['direction'] = $direction;
-        $guess['action'] = $direction === '+' ? 'BUY' : 'SELL';
-        $guess['hourly_template_mark'] = $mark;
-        $guess['hourly_template_role'] = $mark === 1
-            ? 'HOUR_ANCHOR_UNCHANGED'
-            : 'MODEL_DIRECTION_UNCHANGED';
-        $guess['hourly_template_flipped'] = false;
-        $guess['hourly_template_mark2_selected_v5'] = true;
-        $guess['execution_symbol_locked'] = true;
-        $guess['execution_lock_time'] = $time;
-        return $guess;
-    }
-
-    $timestamp = yahooTimestamp($time);
-    $referenceKey = $timestamp !== null
-        ? gmdate('Y-m-d\\TH:05:00\\Z', $timestamp)
-        : '';
-    $referenceGuess = $referenceKey !== '' && is_array($forecastsByTime[$referenceKey] ?? null)
-        ? $forecastsByTime[$referenceKey]
-        : null;
-
-    if ($mark === 2) {
-        // Mark 2 is flipped exactly once from the model's unmodified answer.
-        $originalDirection = (string)($guess['hourly_template_original_direction'] ?? $direction);
-        if ($originalDirection !== '+' && $originalDirection !== '-') {
-            $originalDirection = $direction;
-        }
-        $referenceDirection = $originalDirection === '+' ? '-' : '+';
-    } else {
-        // Selected later marks use mark 2's final stored direction.
-        $referenceDirection = is_array($referenceGuess)
-            ? (string)($referenceGuess['direction'] ?? '')
-            : '';
-
-        if ($referenceDirection !== '+' && $referenceDirection !== '-') {
-            $referenceRawDirection = is_array($referenceGuess)
-                ? (string)($referenceGuess['hourly_template_original_direction'] ?? '')
-                : '';
-            if ($referenceRawDirection !== '+' && $referenceRawDirection !== '-') {
-                $referenceRawDirection = is_array($referenceGuess)
-                    ? newGuessDirectionFromPair(guessPairLabel($referenceGuess))
-                    : '';
-            }
-            if ($referenceRawDirection === '+' || $referenceRawDirection === '-') {
-                $referenceDirection = $referenceRawDirection === '+' ? '-' : '+';
-            }
-        }
-
-        // Safe fallback when :05 is temporarily unavailable: do not invent an
-        // opposite direction. Keep this mark's model answer until :05 is present.
-        if ($referenceDirection !== '+' && $referenceDirection !== '-') {
-            $referenceDirection = $direction;
-        }
-    }
-
-    $guess['hourly_template_original_direction'] = $direction;
-    $guess['direction'] = $referenceDirection;
-    $guess['action'] = $referenceDirection === '+' ? 'BUY' : 'SELL';
-    $guess['hourly_template_mark'] = $mark;
-    $guess['hourly_template_reference_time'] = $referenceKey;
-    $guess['hourly_template_reference_direction'] = $referenceDirection;
-    $guess['hourly_template_role'] = $mark === 2
-        ? 'MARK_2_REFERENCE_FLIPPED'
-        : 'MATCH_MARK_2';
-    $guess['hourly_template_flipped'] = $referenceDirection !== $direction;
-    $guess['hourly_template_mark2_selected_v5'] = true;
-    $guess['execution_symbol_locked'] = true;
-    $guess['execution_lock_time'] = $time;
-
-    return $guess;
-}
-
-
-/**
- * Latest-12 numerator momentum controller for the current clock hour.
- *
- * - 80% remains the accuracy target.
- * - 66% is the control line.
- * - While the live RIGHT numerator rises, the hourly template is left alone.
- * - After a rise has armed the controller, a later numerator decline while the
- *   live ratio is below 66% toggles every unresolved current/future mark once.
- * - Repeated refreshes at the same numerator cannot double-flip.
- * - The numerator must rise again before another later decline can act.
- * - Completed marks are immutable.
- */
-function applyConfidenceControlledHourRemainder(
-    string $statePath,
-    array $forecastsByTime,
-    int $boundaryEpoch,
-    float $effectiveConfidence,
-    float $threshold = 66.0,
-    bool $persist = true,
-    int $liveRight = 0,
-    int $liveTotal = 12
-): array {
-    $threshold = max(0.0, min(100.0, $threshold));
-    $target = 80.0;
-    $liveRight = max(0, $liveRight);
-    $liveTotal = max(1, $liveTotal);
-    $effectiveConfidence = max(0.0, min(100.0, $effectiveConfidence));
-    $hourStart = $boundaryEpoch
-        - ((int)gmdate('i', $boundaryEpoch) * 60)
-        - (int)gmdate('s', $boundaryEpoch);
-    $hourKey = gmdate('Y-m-d\\TH:00:00\\Z', $hourStart);
-    $hourEnd = $hourStart + (55 * 60);
-
-    $state = [];
-    if ($persist) {
-        $state = loadLocalJsonArray($statePath);
-        $saved = is_array($state['forecasts'] ?? null) ? $state['forecasts'] : [];
-        foreach ($saved as $time => $guess) {
-            if (!isset($forecastsByTime[$time]) && is_array($guess)) {
-                $forecastsByTime[$time] = $guess;
-            }
-        }
-    }
-
-    $control = is_array($state['confidence_hour_control'] ?? null)
-        ? $state['confidence_hour_control'] : [];
-    $prior = is_array($control[$hourKey] ?? null) ? $control[$hourKey] : [];
-    $priorRight = array_key_exists('live_right', $prior)
-        ? max(0, (int)$prior['live_right'])
-        : null;
-
-    $trend = 'INITIAL';
-    if ($priorRight !== null) {
-        if ($liveRight > $priorRight) $trend = 'RISING';
-        elseif ($liveRight < $priorRight) $trend = 'FALLING';
-        else $trend = 'FLAT';
-    }
-
-    $armed = (($prior['armed_for_break'] ?? false) === true);
-    if ($trend === 'RISING') {
-        $armed = true;
-    }
-
-    $breakCount = max(0, (int)($prior['numerator_break_count'] ?? 0));
-    $belowControl = $effectiveConfidence + 1.0e-12 < $threshold;
-    $numeratorBroke = $trend === 'FALLING' && $armed && $belowControl;
-    $changed = false;
-    $flippedCount = 0;
-    $crossingId = '';
-
-    if ($numeratorBroke) {
-        $breakCount++;
-        $crossingId = $hourKey . '#NUMERATOR-DROP-' . $breakCount
-            . '-' . $priorRight . '-TO-' . $liveRight;
-
-        foreach ($forecastsByTime as $time => $guess) {
-            if (!is_array($guess)) continue;
-            $epoch = yahooTimestamp((string)$time);
-            if ($epoch === null
-                || $epoch < $boundaryEpoch
-                || $epoch < $hourStart
-                || $epoch > $hourEnd
-            ) continue;
-
-            if ((string)($guess['confidence_control_last_crossing_id'] ?? '') === $crossingId) {
-                continue;
-            }
-
-            $direction = (string)($guess['direction'] ?? '');
-            if ($direction !== '+' && $direction !== '-') {
-                $direction = newGuessDirectionFromPair(guessPairLabel($guess));
-            }
-            if ($direction !== '+' && $direction !== '-') continue;
-
-            $guess['confidence_control_pre_flip_direction'] = $direction;
-            $guess['direction'] = $direction === '+' ? '-' : '+';
-            $guess['action'] = $guess['direction'] === '+' ? 'BUY' : 'SELL';
-            $guess['confidence_control_last_crossing_id'] = $crossingId;
-            $guess['confidence_control_hour'] = $hourKey;
-            $guess['confidence_control_line'] = $threshold;
-            $guess['confidence_accuracy_target'] = $target;
-            $guess['confidence_at_crossing'] = round($effectiveConfidence, 4);
-            $guess['confidence_numerator_before'] = $priorRight;
-            $guess['confidence_numerator_after'] = $liveRight;
-            $guess['confidence_live_total'] = $liveTotal;
-            $guess['confidence_control_flip_count'] = max(
-                0,
-                (int)($guess['confidence_control_flip_count'] ?? 0)
-            ) + 1;
-            $guess['confidence_control_reason'] = 'LIVE RIGHT COUNT BROKE '
-                . $priorRight . '→' . $liveRight
-                . ' WHILE BELOW ' . number_format($threshold, 1, '.', '')
-                . '% · UNRESOLVED REMAINDER TOGGLED'
-                . ' · TARGET ' . number_format($target, 1, '.', '') . '%';
-            $guess['execution_symbol_locked'] = true;
-            $guess['execution_lock_time'] = (string)$time;
-            $forecastsByTime[$time] = $guess;
-            $changed = true;
-            $flippedCount++;
-        }
-
-        // A new rise is required before another later decline can act.
-        $armed = false;
-    }
-
-    if ($trend === 'RISING') {
-        $decision = 'RIGHT COUNT RISING ' . $priorRight . '→' . $liveRight
-            . ' · TEMPLATE KEPT · BREAK CONTROLLER ARMED';
-    } elseif ($numeratorBroke) {
-        $decision = $flippedCount > 0
-            ? 'RIGHT COUNT BROKE ' . $priorRight . '→' . $liveRight
-                . ' BELOW 66% · UNRESOLVED REMAINDER TOGGLED ONCE'
-            : 'RIGHT COUNT BROKE BELOW 66% · NO UNRESOLVED MARKS TO TOGGLE';
-    } elseif ($trend === 'FALLING') {
-        $decision = $belowControl
-            ? 'RIGHT COUNT FALLING · NO NEW RISE SINCE LAST FLIP · HELD'
-            : 'RIGHT COUNT FALLING BUT STILL AT/ABOVE 66% · TEMPLATE KEPT';
-    } elseif ($trend === 'FLAT') {
-        $decision = 'RIGHT COUNT FLAT AT ' . $liveRight . '/' . $liveTotal
-            . ' · TEMPLATE KEPT';
-    } else {
-        $decision = 'INITIAL LIVE SCORE ' . $liveRight . '/' . $liveTotal
-            . ' · WAITING FOR NUMERATOR MOVEMENT';
-    }
-
-    $newControl = [
-        'target' => round($target, 4),
-        'threshold' => round($threshold, 4),
-        'confidence' => round($effectiveConfidence, 4),
-        'target_met' => $effectiveConfidence + 1.0e-12 >= $target,
-        'live_right' => $liveRight,
-        'live_total' => $liveTotal,
-        'previous_live_right' => $priorRight,
-        'numerator_trend' => $trend,
-        'below_control' => $belowControl,
-        'armed_for_break' => $armed,
-        'numerator_break_count' => $breakCount,
-        'last_crossing_id' => $crossingId !== ''
-            ? $crossingId
-            : (string)($prior['last_crossing_id'] ?? ''),
-        'last_crossing_flipped_marks' => $numeratorBroke ? $flippedCount
-            : (int)($prior['last_crossing_flipped_marks'] ?? 0),
-        'remaining_flipped' => ($breakCount % 2) === 1,
-        'decision' => $decision,
-        'updated_at' => gmdate('Y-m-d\\TH:i:s\\Z'),
-    ];
-
-    $controlChanged = $newControl != $prior;
-    $control[$hourKey] = $newControl;
-
-    if ($persist && ($changed || $controlChanged)) {
-        $state['forecasts'] = $forecastsByTime;
-        $state['confidence_hour_control'] = $control;
-        saveLocalJsonArray($statePath, $state);
-    }
-
-    return [
-        'forecasts' => $forecastsByTime,
-        'hour' => $hourKey,
-        'target' => $target,
-        'threshold' => $threshold,
-        'confidence' => $effectiveConfidence,
-        'target_met' => $effectiveConfidence + 1.0e-12 >= $target,
-        'live_right' => $liveRight,
-        'live_total' => $liveTotal,
-        'previous_live_right' => $priorRight,
-        'numerator_trend' => $trend,
-        'below_control' => $belowControl,
-        'armed_for_break' => $armed,
-        'numerator_break_count' => $breakCount,
-        'crossed_down' => $numeratorBroke,
-        'crossing_id' => $crossingId,
-        'flipped_count' => $flippedCount,
-        'changed' => $changed,
-        'decision' => $decision,
-    ];
-}
-
-
 /**
  * Find a high-confidence transition after a run of identical pair calls.
  * Example: -+, -+, -+, ++.  The transition is eligible when the same
@@ -7079,16 +5853,10 @@ function buildForecastObservationState(array $resolvedResultsByTime): array
     $verified = array_filter(
         $resolvedResultsByTime,
         static fn($result, $time): bool => is_array($result)
-            && isResolvedGuessResult($result, (string)$time),
+            && isStrictForwardResult($result, (string)$time),
         ARRAY_FILTER_USE_BOTH
     );
     uksort($verified, static fn(string $left, string $right): int => strcmp($left, $right));
-
-    // Guess percentage is a strict rolling window: only the newest 12
-    // resolved, timestamp-locked guesses are allowed to influence it.
-    if (count($verified) > ONE_HOUR_CANDLE_COUNT) {
-        $verified = array_slice($verified, -ONE_HOUR_CANDLE_COUNT, null, true);
-    }
 
     $right = 0;
     foreach ($verified as $result) {
@@ -7096,7 +5864,6 @@ function buildForecastObservationState(array $resolvedResultsByTime): array
     }
     $total = count($verified);
     $wrong = max(0, $total - $right);
-    $rawPercent = $total > 0 ? round(($right / $total) * 100.0, 4) : null;
     $bellCurve = gaussianHistoricalEvidence($right, $total);
     $latest = null;
     if ($verified) {
@@ -7114,20 +5881,17 @@ function buildForecastObservationState(array $resolvedResultsByTime): array
 
     return [
         'schema' => 'forecast-observation-v1',
-        'source' => 'latest-visible-resolved-results',
+        'source' => 'cngn-forward-results-v2',
         'independent_of_execution' => true,
         'trade_events_consulted' => false,
         'scored' => $total > 0,
         'right' => $right,
         'wrong' => $wrong,
         'total' => $total,
-        'historical_percent' => $rawPercent,
-        // No nominal/bell weighting: the displayed and executable guess %
-        // is exactly RIGHT / TOTAL for the latest 12 resolved guesses.
-        'effective_percent' => $rawPercent,
-        'window_size' => ONE_HOUR_CANDLE_COUNT,
-        'window_rule' => 'LATEST_12_VISIBLE_RESOLVED_ONLY',
-        'audit_reflection_mode' => 'SINGLE_PERSISTENT_CONFIDENCE_CONTROLLER',
+        'historical_percent' => $total > 0 ? round(($right / $total) * 100.0, 4) : null,
+        'effective_percent' => $total > 0
+            ? round((float)($bellCurve['effective_percent'] ?? 0.0), 4)
+            : null,
         'flipped' => ($bellCurve['observation_flipped'] ?? false) === true,
         'eligible' => ($bellCurve['observation_eligible'] ?? false) === true,
         'orientation' => (string)($bellCurve['observation_orientation'] ?? 'HOLD'),
@@ -7139,10 +5903,9 @@ function buildForecastObservationState(array $resolvedResultsByTime): array
 }
 
 /**
- * Audit-only late-wrong observation: after the most recent strict-forward
- * five-minute forecast resolves WRONG and the delay expires, report whether
- * the observed direction confirms or suggests the opposite of the locked
- * executable action. This function never changes the executable action.
+ * Execution-only guard: when the most recent strict-forward five-minute
+ * forecast resolves WRONG, wait until one minute after that candle closes,
+ * then flip the current execution direction to the observed direction.
  */
 function buildLateWrongMarkFlipState(array $forecastObservationState, int $nowEpoch): array
 {
@@ -7194,7 +5957,10 @@ function buildLateWrongMarkFlipState(array $forecastObservationState, int $nowEp
 
 function buildTrackedForecastObservationState(array $trackedIndexTargets, string $tickerDirectory): array
 {
-    $rows = [];
+    $right = 0;
+    $total = 0;
+    $latest = null;
+    $latestEpoch = null;
     foreach ($trackedIndexTargets as $trackedTarget) {
         if (!is_array($trackedTarget)) continue;
         $trackedMarketType = strtolower(trim((string)($trackedTarget['market_type'] ?? '')));
@@ -7205,46 +5971,26 @@ function buildTrackedForecastObservationState(array $trackedIndexTargets, string
         $results = is_array($state['results'] ?? null) ? $state['results'] : [];
         foreach ($results as $time => $result) {
             if (!is_array($result) || !isStrictForwardResult($result, (string)$time)) continue;
+            $total++;
+            if (($result['right'] ?? false) === true) $right++;
             $epoch = yahooTimestamp((string)$time) ?? 0;
-            $rows[] = [
-                'epoch' => $epoch,
-                'time' => (string)$time,
-                'right' => (($result['right'] ?? false) === true),
-                'pair' => (string)($result['pair'] ?? ''),
-                'predicted' => (string)($result['predicted'] ?? ''),
-                'actual' => (string)($result['actual'] ?? ''),
-                'forecast_fingerprint' => (string)($result['forecast_fingerprint'] ?? ''),
-                'market_type' => $trackedMarketType,
-                'symbol' => $trackedSymbol,
-            ];
+            if ($latestEpoch === null || $epoch >= $latestEpoch) {
+                $latestEpoch = $epoch;
+                $latest = [
+                    'time' => (string)$time,
+                    'pair' => (string)($result['pair'] ?? ''),
+                    'predicted' => (string)($result['predicted'] ?? ''),
+                    'actual' => (string)($result['actual'] ?? ''),
+                    'result' => (($result['right'] ?? false) === true) ? 'RIGHT' : 'WRONG',
+                    'forecast_fingerprint' => (string)($result['forecast_fingerprint'] ?? ''),
+                    'market_type' => $trackedMarketType,
+                    'symbol' => $trackedSymbol,
+                ];
+            }
         }
     }
-
-    usort($rows, static fn(array $left, array $right): int => ((int)$left['epoch']) <=> ((int)$right['epoch']));
-    if (count($rows) > ONE_HOUR_CANDLE_COUNT) {
-        $rows = array_slice($rows, -ONE_HOUR_CANDLE_COUNT);
-    }
-
-    $total = count($rows);
-    $right = 0;
-    foreach ($rows as $row) {
-        if (($row['right'] ?? false) === true) $right++;
-    }
     $wrong = max(0, $total - $right);
-    $rawPercent = $total > 0 ? round(($right / $total) * 100.0, 4) : null;
     $bellCurve = gaussianHistoricalEvidence($right, $total);
-    $latestRow = $rows ? $rows[array_key_last($rows)] : null;
-    $latest = is_array($latestRow) ? [
-        'time' => (string)($latestRow['time'] ?? ''),
-        'pair' => (string)($latestRow['pair'] ?? ''),
-        'predicted' => (string)($latestRow['predicted'] ?? ''),
-        'actual' => (string)($latestRow['actual'] ?? ''),
-        'result' => (($latestRow['right'] ?? false) === true) ? 'RIGHT' : 'WRONG',
-        'forecast_fingerprint' => (string)($latestRow['forecast_fingerprint'] ?? ''),
-        'market_type' => (string)($latestRow['market_type'] ?? ''),
-        'symbol' => (string)($latestRow['symbol'] ?? ''),
-    ] : null;
-
     return [
         'schema' => 'global-forecast-observation-v1',
         'source' => 'global-cngn-forward-results-v2',
@@ -7256,15 +6002,15 @@ function buildTrackedForecastObservationState(array $trackedIndexTargets, string
         'right' => $right,
         'wrong' => $wrong,
         'total' => $total,
-        'historical_percent' => $rawPercent,
-        'effective_percent' => $rawPercent,
-        'window_size' => ONE_HOUR_CANDLE_COUNT,
-        'window_rule' => 'LATEST_12_RESOLVED_ONLY',
-        'flipped' => false,
-        'eligible' => $total > 0,
-        'orientation' => 'HOLD',
-        'execution_eligible' => $total > 0,
-        'execution_orientation' => 'HOLD',
+        'historical_percent' => $total > 0 ? round(($right / $total) * 100.0, 4) : null,
+        'effective_percent' => $total > 0
+            ? round((float)($bellCurve['effective_percent'] ?? 0.0), 4)
+            : null,
+        'flipped' => ($bellCurve['observation_flipped'] ?? false) === true,
+        'eligible' => ($bellCurve['observation_eligible'] ?? false) === true,
+        'orientation' => (string)($bellCurve['observation_orientation'] ?? 'HOLD'),
+        'execution_eligible' => ($bellCurve['eligible'] ?? false) === true,
+        'execution_orientation' => (string)($bellCurve['orientation'] ?? 'HOLD'),
         'bell_curve' => $bellCurve,
         'latest' => $latest,
     ];
@@ -7366,26 +6112,6 @@ function recomputeRealizedPnlFromTrades(array $trades): float
         $realized += (float)$trade['realized_pnl'];
     }
     return $realized;
-}
-
-function minimumRealizedProfitAmount(): float
-{
-    return 50.0;
-}
-
-function realizedProfitBelowMinimum(float $realizedPnl): bool
-{
-    $minimum = minimumRealizedProfitAmount();
-    return $realizedPnl > 0.00000001 && $realizedPnl + 1.0e-8 < $minimum;
-}
-
-function minimumRealizedProfitLabel(float $previewPnl): string
-{
-    $minimum = minimumRealizedProfitAmount();
-    $needed = max(0.0, $minimum - max(0.0, $previewPnl));
-    return 'WAITING · NET PROFIT $' . number_format(max(0.0, $previewPnl), 2)
-        . ' · NEEDS $' . number_format($needed, 2)
-        . ' MORE TO REACH $' . number_format($minimum, 2);
 }
 
 function sellLossExceedsHardLimit(float $realizedPnl): bool
@@ -7575,9 +6301,7 @@ function cashOutAndRebalancePaperWallet(
     $state['asset_units'] = round($unitsAfter, 12);
     $state['asset_cost_basis'] = round($costAfter, 8);
     $state['holding_value'] = round($holdingAfter, 8);
-    $state['external_kitty_total'] = round($withdrawnAfter, 8);
-    $state['active_wallet_value'] = round($cashAfter + $holdingAfter, 8);
-    $state['equity_value'] = round(paperWalletTotalEquity($state, $cashAfter, $holdingAfter), 8);
+    $state['equity_value'] = round($cashAfter + $holdingAfter, 8);
     $state['last_trade'] = $sellEvent;
     $state['last_trade_pnl'] = round($realizedPnl, 8);
     $state['trades'] = $trades;
@@ -7790,104 +6514,6 @@ function attachCashOutRejoinFeeEstimate(array $state, float $currentPrice, array
 }
 
 /** Separate passive 50/50 market movement from the strategy's incremental result. */
-
-function paperWalletSoldIntoCashKittyTotal(array $state): float
-{
-    $stored = is_numeric($state['sold_into_cash_kitty_total'] ?? null)
-        ? max(0.0, (float)$state['sold_into_cash_kitty_total'])
-        : 0.0;
-
-    $derived = 0.0;
-    foreach ((array)($state['trades'] ?? []) as $trade) {
-        if (!is_array($trade)) continue;
-        $action = strtoupper(trim((string)($trade['action'] ?? '')));
-        if (preg_match('/\bSELL\b/', $action) !== 1) continue;
-        if (($trade['to_kitty'] ?? false) === true || stripos((string)($trade['label'] ?? ''), 'CASH OUT') !== false) continue;
-        $amount = is_numeric($trade['net_cash_amount'] ?? null)
-            ? (float)$trade['net_cash_amount']
-            : (is_numeric($trade['amount'] ?? null) ? (float)$trade['amount'] : 0.0);
-        $derived += max(0.0, $amount);
-    }
-
-    return max($stored, $derived);
-}
-
-function paperWalletPrincipalSelloffCashedOutTotal(array $state): float
-{
-    $total = 0.0;
-    foreach ((array)($state['trades'] ?? []) as $trade) {
-        if (!is_array($trade) || ($trade['executed'] ?? false) !== true) continue;
-        $reason = strtoupper(trim((string)($trade['reason'] ?? '')));
-        $label = strtoupper(trim((string)($trade['label'] ?? '')));
-        $isPrincipalSelloff = $reason === 'PRINCIPAL_INCOME_LOCK'
-            || $label === 'PRINCIPAL GAIN SELL-OFF';
-        if (!$isPrincipalSelloff) continue;
-
-        $amount = is_numeric($trade['income_locked'] ?? null)
-            ? (float)$trade['income_locked']
-            : (is_numeric($trade['net_cash_amount'] ?? null)
-                ? (float)$trade['net_cash_amount']
-                : 0.0);
-        // These are the $50+ gain-removal trades. Allow a tiny tolerance for
-        // fee/increment rounding around the configured $50 threshold.
-        if ($amount + 0.01 < 50.0) continue;
-        $total += max(0.0, $amount);
-    }
-
-    // Preserve the persisted accumulator for wallets whose older trade history
-    // was compacted, but never substitute ordinary SELL proceeds.
-    $persisted = is_numeric($state['principal_income_locked_total'] ?? null)
-        ? max(0.0, (float)$state['principal_income_locked_total'])
-        : 0.0;
-    return max($total, $persisted);
-}
-
-function paperWalletExternalKittyTotal(array $state): float
-{
-    $direct = is_numeric($state['cash_out_withdrawn_total'] ?? null)
-        ? max(0.0, (float)$state['cash_out_withdrawn_total'])
-        : 0.0;
-    $explicit = is_numeric($state['external_kitty_total'] ?? null)
-        ? max(0.0, (float)$state['external_kitty_total'])
-        : 0.0;
-    $summary = is_array($state['cash_out_summary'] ?? null) ? $state['cash_out_summary'] : [];
-    $summaryTotal = is_numeric($summary['withdrawn_total'] ?? null)
-        ? max(0.0, (float)$summary['withdrawn_total'])
-        : 0.0;
-    return max($direct, $summaryTotal, $explicit);
-}
-
-function paperWalletTotalEquity(array $state, ?float $cash = null, ?float $holdingValue = null): float
-{
-    $activeCash = $cash !== null ? max(0.0, $cash) : max(0.0, (float)($state['cash_left'] ?? 0.0));
-    $activeHolding = $holdingValue !== null
-        ? max(0.0, $holdingValue)
-        : max(0.0, (float)($state['holding_value'] ?? 0.0));
-    return $activeCash + $activeHolding + paperWalletExternalKittyTotal($state);
-}
-
-/** Normalize all wallet totals from the real component pools. */
-function normalizePaperWalletTotals(array $state, ?float $currentPrice = null): array
-{
-    if ($currentPrice !== null && is_finite($currentPrice) && $currentPrice >= 0.0) {
-        $state['current_price'] = $currentPrice;
-        $state['holding_value'] = max(0.0, (float)($state['asset_units'] ?? 0.0)) * $currentPrice;
-    } else {
-        $state['holding_value'] = max(0.0, (float)($state['holding_value'] ?? 0.0));
-    }
-    $state['cash_left'] = max(0.0, (float)($state['cash_left'] ?? 0.0));
-    $state['external_kitty_total'] = paperWalletExternalKittyTotal($state);
-    $state['sold_into_cash_kitty_total'] = paperWalletSoldIntoCashKittyTotal($state);
-    $state['active_wallet_value'] = $state['cash_left'] + $state['holding_value'];
-    $state['equity_value'] = $state['active_wallet_value'] + $state['external_kitty_total'];
-    $state['total_portfolio_value'] = $state['equity_value'];
-    $state['pot_value'] = $state['equity_value'];
-    if (is_numeric($state['starting_pot'] ?? null)) {
-        $state['net_pnl'] = $state['equity_value'] - (float)$state['starting_pot'];
-    }
-    return $state;
-}
-
 function applyPortfolioBenchmark(array $state, ?float $currentPrice = null): array
 {
     $price = is_numeric($currentPrice)
@@ -7908,12 +6534,9 @@ function applyPortfolioBenchmark(array $state, ?float $currentPrice = null): arr
     $benchmarkEquity = $bootstrapPrice > 0.0 && $price > 0.0
         ? $cashNeutralBaseline + ($benchmarkUnits * $price)
         : $portfolioPnlBaseline;
-    // Benchmarks and alpha use the same canonical wallet total as execution.
-    $equity = paperWalletTotalEquity($state);
-    if ($equity <= 0.0 && $portfolioPnlBaseline > 0.0) {
-        $equity = $portfolioPnlBaseline;
-    }
-    $state['equity_value'] = $equity;
+    $equity = is_numeric($state['equity_value'] ?? null)
+        ? (float)$state['equity_value']
+        : $portfolioPnlBaseline;
     $portfolioPnl = $equity - $portfolioPnlBaseline;
     $benchmarkPnl = $benchmarkEquity - $portfolioPnlBaseline;
     $strategyAlpha = $equity - $benchmarkEquity;
@@ -8055,11 +6678,10 @@ function applySpiralDownCircuitBreaker(
     );
     $guard['thresholds'] = $defaultGuard['thresholds'];
 
-    // Risk uses the canonical total, marked at the supplied live price.
-    $riskHoldingValue = max(0.0, (float)($state['asset_units'] ?? 0.0)) * max(0.0, $currentPrice);
-    $currentEquity = paperWalletTotalEquity($state, null, $riskHoldingValue);
-    $state['holding_value'] = $riskHoldingValue;
-    $state['equity_value'] = $currentEquity;
+    $currentEquity = is_numeric($state['equity_value'] ?? null)
+        ? max(0.0, (float)$state['equity_value'])
+        : max(0.0, (float)($state['cash_left'] ?? 0.0)
+            + (max(0.0, (float)($state['asset_units'] ?? 0.0)) * max(0.0, $currentPrice)));
     $strategyAlphaPercent = is_numeric($state['strategy_alpha_percent'] ?? null)
         ? (float)$state['strategy_alpha_percent']
         : 0.0;
@@ -8250,17 +6872,13 @@ function markPaperWalletToMarket(array $state, float $currentPrice): array
     $state['current_price'] = $currentPrice;
     $state['holding_value'] = max(0.0, (float)$state['asset_units']) * $currentPrice;
     $state['open_pnl'] = (float)$state['holding_value'] - max(0.0, (float)($state['asset_cost_basis'] ?? 0.0));
-    $state['active_wallet_value'] = max(0.0, (float)$state['cash_left']) + (float)$state['holding_value'];
-    $state['external_kitty_total'] = paperWalletExternalKittyTotal($state);
-    $state = normalizePaperWalletTotals($state);
-    return finalizeCanonicalTradingState($state, $currentPrice);
+    $state['equity_value'] = max(0.0, (float)$state['cash_left']) + (float)$state['holding_value'];
+    return applyPortfolioBenchmark($state, $currentPrice);
 }
 
 /** Normalize wallet display state fields that should always be derivable from trades. */
 function normalizeTraderDisplayState(array $state): array
 {
-    $state['minimum_realized_profit'] = minimumRealizedProfitAmount();
-    $state['minimum_realized_profit_policy'] = 'PROFITABLE EXITS WAIT UNTIL PREVIEW NET IS AT LEAST $50; EMERGENCY LOSS SAFEGUARDS REMAIN SEPARATE';
     $state['trades'] = is_array($state['trades'] ?? null) ? $state['trades'] : [];
     $state['open_lots'] = function_exists('paperWalletOpenLots') ? paperWalletOpenLots($state) : [];
     $state['open_lot_count'] = count($state['open_lots']);
@@ -8289,8 +6907,7 @@ function normalizeTraderDisplayState(array $state): array
     }
     $state['accuracy_source'] = 'FORECAST_OBSERVATION';
     $state['accuracy_independent_of_execution'] = true;
-    $state = normalizePaperWalletTotals($state);
-    if (is_numeric($state['starting_pot'] ?? null)) {
+    if (is_numeric($state['equity_value'] ?? null) && is_numeric($state['starting_pot'] ?? null)) {
         $state['net_pnl'] = (float)$state['equity_value'] - (float)$state['starting_pot'];
         $state['sim_net_move'] = (float)$state['net_pnl'];
     }
@@ -8846,220 +7463,6 @@ function formatSignedMoney(float $amount, int $precision = 4): string
 }
 
 /** Mark a partially realized phase with #fraction or #count. */
-
-/**
- * Build one definitive three-voter decision room.
- *
- * Strategy approval happens exactly once here. Downstream code may apply only
- * operational hard gates (funds, duplicate key, circuit breaker, broker fill),
- * never a new hidden strategy veto.
- */
-function buildThreeVoterDecisionRoom(
-    string $proposedAction,
-    float $eligibleLotUnits,
-    array $riskMetricContext,
-    array $context = []
-): array {
-    $action = strtoupper(trim($proposedAction));
-    if ($action !== 'BUY' && $action !== 'SELL') $action = 'NO TRADE';
-
-    $compressionAction = strtoupper(trim((string)($riskMetricContext['compression_candle_branch_action'] ?? 'NO TRADE')));
-    $evidenceOrientation = strtoupper(trim((string)($riskMetricContext['evidence_orientation'] ?? 'HOLD')));
-    $alternationEligible = (($riskMetricContext['alternation_eligible'] ?? false) === true);
-    $compressionAlternation = (($riskMetricContext['compression_allows_alternation'] ?? false) === true);
-    $lockedAction = strtoupper(trim((string)($context['locked_action'] ?? $action)));
-
-    $cumulativeMoveAction = strtoupper(trim((string)($riskMetricContext['cumulative_open_close_action'] ?? 'NO TRADE')));
-    $cumulativeMoveTriggered = (($riskMetricContext['cumulative_open_close_triggered'] ?? false) === true);
-    $sellDensityTriggered = (($riskMetricContext['sell_density_accumulation_triggered'] ?? false) === true);
-    $sellDensityAction = strtoupper(trim((string)($riskMetricContext['sell_density_accumulation_action'] ?? 'NO TRADE')));
-    $sellDensityOverride = $sellDensityTriggered && $sellDensityAction === 'BUY';
-
-    // SELL-DENSITY OVERRIDE: sufficient recent SELL concentration plus the
-    // configured decline is an explicit accumulation authority. It owns the
-    // executable action for this boundary even when the ordinary template,
-    // compression branch, or previous proposed action says SELL/HOLD.
-    if ($sellDensityOverride) {
-        $action = 'BUY';
-        $lockedAction = 'BUY';
-    }
-
-    $auditSupportsAction = $action !== 'NO TRADE' && (
-        ($sellDensityTriggered && $sellDensityAction === $action)
-        || ($cumulativeMoveTriggered && $cumulativeMoveAction === $action)
-        || $compressionAction === $action
-        || ($action === 'SELL' && ($alternationEligible || $compressionAlternation))
-        || $evidenceOrientation === 'KEEP'
-    );
-
-    $voters = [
-        'signal' => [
-            'name' => 'SIGNAL',
-            'yes' => $action !== 'NO TRADE' && $lockedAction === $action,
-            'reason' => $sellDensityOverride
-                ? 'sell-density override locked executable action to BUY'
-                : ($action !== 'NO TRADE' && $lockedAction === $action
-                    ? 'locked five-minute model action is ' . $action
-                    : 'no matching locked model action'),
-            'details' => [
-                'proposed_action' => $action,
-                'locked_action' => $lockedAction,
-                'sell_density_override' => $sellDensityOverride,
-            ],
-        ],
-        'lot' => [
-            'name' => 'LOT',
-            'yes' => $action === 'BUY' ? true : ($action === 'SELL' && $eligibleLotUnits > 1.0e-12),
-            'reason' => $action === 'BUY'
-                ? 'buy does not require a sell-lot break'
-                : ($eligibleLotUnits > 1.0e-12
-                    ? 'global sell break reached across open BUY inventory'
-                    : ('global sell break not reached · current $'
-                        . number_format((float)($context['lot_current_price'] ?? 0.0), 2, '.', ',')
-                        . ' · target $' . number_format((float)($context['lot_target_price'] ?? 0.0), 2, '.', ',')
-                        . ' · break ' . number_format((float)($context['lot_break_percent'] ?? 0.0), 3, '.', '') . '%')),
-            'details' => [
-                'eligible_units' => round(max(0.0, $eligibleLotUnits), 12),
-                'open_lot_count' => (int)($context['open_lot_count'] ?? 0),
-                'holding_value' => round(max(0.0, (float)($context['holding_value'] ?? 0.0)), 8),
-                'global_break_percent' => round(max(0.0, (float)($context['lot_break_percent'] ?? 0.0)), 6),
-                'global_average_entry' => round(max(0.0, (float)($context['lot_average_entry'] ?? 0.0)), 8),
-                'global_target_price' => round(max(0.0, (float)($context['lot_target_price'] ?? 0.0)), 8),
-                'global_current_price' => round(max(0.0, (float)($context['lot_current_price'] ?? 0.0)), 8),
-                'global_move_percent' => round((float)($context['lot_move_percent'] ?? 0.0), 6),
-            ],
-        ],
-        'audit' => [
-            'name' => 'AUDIT',
-            'yes' => $auditSupportsAction,
-            'reason' => $auditSupportsAction
-                ? 'audit/compression evidence supports ' . $action
-                : 'audit/compression evidence does not support ' . $action,
-            'details' => [
-                'compression_action' => $compressionAction,
-                'evidence_orientation' => $evidenceOrientation,
-                'alternation_eligible' => $alternationEligible,
-                'compression_override' => $compressionAlternation,
-                'sell_density_accumulation_triggered' => $sellDensityTriggered,
-                'sell_density_accumulation_action' => $sellDensityAction,
-                'sell_density_sell_count' => (int)($riskMetricContext['sell_density_sell_count'] ?? 0),
-                'sell_density_sample_count' => (int)($riskMetricContext['sell_density_sample_count'] ?? 0),
-                'sell_density_percent' => round((float)($riskMetricContext['sell_density_percent'] ?? 0.0), 4),
-                'sell_density_move_percent' => round((float)($riskMetricContext['sell_density_move_percent'] ?? 0.0), 8),
-                'sell_density_threshold_percent' => round((float)($riskMetricContext['sell_density_threshold_percent'] ?? 0.0), 8),
-                'sell_density_stage_multiplier' => round((float)($riskMetricContext['sell_density_stage_multiplier'] ?? 1.0), 4),
-                'sell_density_reason' => (string)($riskMetricContext['sell_density_reason'] ?? ''),
-                'cumulative_open_close_triggered' => $cumulativeMoveTriggered,
-                'cumulative_open_close_action' => $cumulativeMoveAction,
-                'cumulative_open_close_move_percent' => round((float)($riskMetricContext['cumulative_open_close_move_percent'] ?? 0.0), 8),
-                'cumulative_open_close_candle_count' => (int)($riskMetricContext['cumulative_open_close_candle_count'] ?? 0),
-                'cumulative_open_close_reason' => (string)($riskMetricContext['cumulative_open_close_reason'] ?? ''),
-            ],
-        ],
-    ];
-
-    $yesVotes = 0;
-    foreach ($voters as $voter) {
-        if (($voter['yes'] ?? false) === true) $yesVotes++;
-    }
-    $requiredVotes = 2;
-    $approved = $action !== 'NO TRADE' && $yesVotes >= $requiredVotes;
-
-    $parts = [];
-    foreach ($voters as $voter) {
-        $parts[] = $voter['name'] . ' ' . (($voter['yes'] ?? false) ? 'YES' : 'NO')
-            . ' (' . $voter['reason'] . ')';
-    }
-
-    return [
-        'schema' => 'three-voter-decision-room-v1',
-        'action' => $action,
-        'approved' => $approved,
-        'override_active' => $sellDensityOverride,
-        'override_source' => $sellDensityOverride ? 'SELL_DENSITY_ACCUMULATION' : '',
-        'override_reason' => $sellDensityOverride
-            ? (string)($riskMetricContext['sell_density_reason'] ?? 'SELL-DENSITY PICKUP OVERRIDE')
-            : '',
-        'yes_votes' => $yesVotes,
-        'total_voters' => count($voters),
-        'required_votes' => $requiredVotes,
-        'voters' => $voters,
-        'summary' => 'VOTERS ' . $yesVotes . '/' . count($voters)
-            . ' · REQUIRED ' . $requiredVotes
-            . ' · ' . ($approved ? $action . ' APPROVED' : $action . ' DECLINED'),
-        'explanation' => implode(' · ', $parts),
-        'final_reason' => $approved
-            ? 'at least two independent voters approved the same locked action'
-            : 'fewer than two independent voters approved the same locked action',
-        'frozen_at' => gmdate('Y-m-d\\TH:i:s\\Z'),
-    ];
-}
-
-function threeVoterDecisionRoomLabel(array $room, bool $includeDetails = true): string
-{
-    $summary = trim((string)($room['summary'] ?? 'VOTERS UNSCORED'));
-    if (!$includeDetails) return $summary;
-    $explanation = trim((string)($room['explanation'] ?? ''));
-    return $summary . ($explanation !== '' ? ' · ' . $explanation : '');
-}
-
-
-/**
- * Read the frozen decision-room authority without depending on mutable helper flags.
- * This is the only strategy-approval lookup downstream execution code may use.
- */
-function threeVoterDecisionApprovesAction(array $state, string $action, ?array $room = null): bool
-{
-    $action = strtoupper(trim($action));
-    if ($action !== 'BUY' && $action !== 'SELL') return false;
-    $room = is_array($room) ? $room : (is_array($state['trade_decision_room'] ?? null) ? $state['trade_decision_room'] : []);
-    if ($room) {
-        return (($room['approved'] ?? false) === true)
-            && strtoupper(trim((string)($room['action'] ?? ''))) === $action
-            && (int)($room['yes_votes'] ?? 0) >= (int)($room['required_votes'] ?? 2);
-    }
-    return (($state['trade_decision_approved'] ?? false) === true)
-        && strtoupper(trim((string)($state['trade_decision_action'] ?? ''))) === $action
-        && (int)($state['trade_decision_yes_votes'] ?? 0) >= (int)($state['trade_decision_required_votes'] ?? 2);
-}
-
-/** Build one canonical blocked event with truthful shortage versus strategy-blocked accounting. */
-function canonicalBlockedTradeEvent(
-    string $action,
-    string $label,
-    float $requested,
-    float $available,
-    array $extra = []
-): array {
-    $requested = max(0.0, $requested);
-    $available = max(0.0, $available);
-    $shortfall = max(0.0, $requested - $available);
-    $blocked = min($requested, $available);
-    return array_merge([
-        'action' => strtoupper(trim($action)),
-        'label' => $label,
-        'class' => 'result-neutral-cell',
-        'executed' => false,
-        'amount' => 0.0,
-        'realized_pnl' => null,
-        'requested_amount' => round($requested, 8),
-        'available_amount' => round($available, 8),
-        'shortfall' => round($shortfall, 8),
-        'blocked_amount' => round($blocked, 8),
-        'operational_gate' => $label,
-    ], $extra);
-}
-
-/**
- * A two-vote decision is executable strategy authority. This helper intentionally
- * excludes operational conditions; those are checked only by sizing, duplicate,
- * minimum, risk-limit, and broker layers after this returns true.
- */
-function twoVoteExecutionAuthority(array $state, string $action, ?array $room = null): bool
-{
-    return threeVoterDecisionApprovesAction($state, $action, $room);
-}
-
 function formatPhaseRealizationLabel(string $label): string
 {
     return preg_replace('/\bx(?=\d)/i', '#', $label) ?? $label;
@@ -9290,18 +7693,14 @@ function paperExecutionFill(
         $gross = $units * $fillPrice;
         $fee = $gross * $feeRate;
         $cashSpent = $gross + $fee;
-        // Preserve the unspendable increment remainder as cash. Never inflate
-        // the fee merely to consume the full requested budget.
-        $cashRemainder = max(0.0, $cashBudget - $cashSpent);
+        if ($units > 0.0 && $cashSpent < $cashBudget) {
+            $fee += ($cashBudget - $cashSpent);
+            $cashSpent = $cashBudget;
+        }
         if ($cashSpent < $minimumFunds || $units <= 0.0) return $result;
         $result['gross_notional'] = round($gross, 8);
         $result['fee_amount'] = round($fee, 8);
         $result['net_cash_amount'] = round($cashSpent, 8);
-        $result['cash_budget'] = round($cashBudget, 8);
-        $result['cash_remainder'] = round($cashRemainder, 8);
-        $result['unit_price_with_fee'] = $units > 0.0 ? round($cashSpent / $units, 12) : 0.0;
-        $result['units_before_increment'] = $fillPrice > 0.0 ? round($grossBudget / $fillPrice, 12) : 0.0;
-        $result['units_after_increment'] = round($units, 12);
         $result['cash_delta'] = round(-$cashSpent, 8);
         $result['units'] = round($units, 12);
         $result['asset_units_delta'] = round($units, 12);
@@ -9663,43 +8062,23 @@ function centeredTimelineWindow(array $records, string $focusAction, string $bou
     $focusIndex = null;
     $bestDistance = null;
 
-    // The visible window must always retain the actual current five-minute row.
-    // Previously this searched only for the requested action (and the caller
-    // hard-coded BUY), which allowed a current SELL row to disappear on refresh.
     foreach ($records as $index => $record) {
         if (!is_array($record)) continue;
-        $phase = strtolower(trim((string)($record['phase'] ?? '')));
+        $action = strtoupper(trim((string)($record['guessAction'] ?? 'NO TRADE')));
+        if ($action !== $focusAction) continue;
         $time = (string)($record['displayTime'] ?? $record['time'] ?? '');
         $epoch = yahooTimestamp($time);
-        $isExactBoundary = $boundaryEpoch !== null && $epoch !== null && $epoch === $boundaryEpoch;
-        if ($phase === 'current' || $isExactBoundary) {
+        $distance = ($boundaryEpoch !== null && $epoch !== null)
+            ? abs($epoch - $boundaryEpoch)
+            : abs($index - (int)floor($count / 2));
+        if ($focusIndex === null || $bestDistance === null || $distance < $bestDistance) {
             $focusIndex = $index;
-            $bestDistance = 0;
-            break;
-        }
-    }
-
-    // Compatibility fallback for malformed/legacy timeline records that do not
-    // carry a current phase marker.
-    if ($focusIndex === null) {
-        foreach ($records as $index => $record) {
-            if (!is_array($record)) continue;
-            $action = strtoupper(trim((string)($record['guessAction'] ?? 'NO TRADE')));
-            if ($focusAction !== '' && $action !== $focusAction) continue;
-            $time = (string)($record['displayTime'] ?? $record['time'] ?? '');
-            $epoch = yahooTimestamp($time);
-            $distance = ($boundaryEpoch !== null && $epoch !== null)
-                ? abs($epoch - $boundaryEpoch)
-                : abs($index - (int)floor($count / 2));
-            if ($focusIndex === null || $bestDistance === null || $distance < $bestDistance) {
-                $focusIndex = $index;
-                $bestDistance = $distance;
-            }
+            $bestDistance = $distance;
         }
     }
 
     if ($focusIndex === null) {
-        $focusIndex = (int)floor($count / 2);
+        return $records;
     }
 
     $half = (int)floor($windowSize / 2);
@@ -9878,12 +8257,6 @@ function updatePaperBreakTrader(
                 $state['last_trade_pnl'] = 0.0;
                 $state['sell_loss_limit_amount'] = round(abs((float)MAX_REALIZED_SELL_LOSS_AMOUNT), 2);
                 $state['sell_loss_blocked_preview_pnl'] = round($realizedPnl, 8);
-            } elseif (realizedProfitBelowMinimum($realizedPnl)) {
-                $state['display_action'] = minimumRealizedProfitLabel($realizedPnl);
-                $state['last_trade_result'] = 'WAITING_FOR_MINIMUM_PROFIT';
-                $state['last_trade_pnl'] = 0.0;
-                $state['minimum_realized_profit'] = minimumRealizedProfitAmount();
-                $state['preview_realized_pnl'] = round($realizedPnl, 8);
             } elseif (!REALIZE_LOSS_TRADES && $realizedPnl < 0.0) {
                 $state['display_action'] = 'HOLD LONG';
             } else {
@@ -9943,69 +8316,38 @@ function updatePaperBreakTrader(
         $state['drop_from_high_percent'] = max(0.0, $dropPercent);
 
         if ($dropPercent >= $buyDropPercent && !$sameBarAction($lastTrade, $observedTime, 'BUY BREAK')) {
-            $requestedBuyAmount = min(
+            $buyAmount = min(
                 (float)$state['cash_left'],
                 (float)$state['cash_left'] * ($buyAllocationPercent / 100)
             );
-            $breakExecutionContext = [
-                'fee_bps' => 0.0,
-                'slippage_bps' => 0.0,
-                'spread_bps' => 0.0,
-                'base_increment' => 0.00000001,
-                'quote_increment' => 0.01,
-                'minimum_funds' => MIN_TRADE_AMOUNT,
-                'minimum_funds_source' => 'BREAK_TRADER_LOCAL',
-                'source' => 'BREAK_TRADER_PAPER',
-                'quote_source' => 'CURRENT_PRICE',
+            $buyUnits = $currentPrice > 0.0 ? ($buyAmount / $currentPrice) : 0.0;
+            if ($buyAmount > 0.0 && $buyUnits > 0.0) {
+            $trade = [
+                'action' => 'BUY BREAK',
+                'time' => $observedTime,
+                'price' => $currentPrice,
+                'anchor_price' => $anchorPrice,
+                'drop_percentage' => $dropPercent,
+                'amount' => $buyAmount,
+                'units' => $buyUnits,
             ];
-            $buyFill = paperExecutionFill(
-                'BUY',
-                $requestedBuyAmount,
-                (float)$state['cash_left'],
-                $currentPrice,
-                $breakExecutionContext,
-                0.0,
-                false
-            );
-            $buyAmount = (float)($buyFill['executed_amount'] ?? 0.0);
-            $buyUnits = (float)($buyFill['units'] ?? 0.0);
-            if (($buyFill['eligible'] ?? false) === true && $buyAmount > 0.0 && $buyUnits > 0.0) {
-                $trade = array_merge($buyFill, [
-                    'action' => 'BUY BREAK',
-                    'time' => $observedTime,
-                    'price' => (float)($buyFill['fill_price'] ?? $currentPrice),
-                    'anchor_price' => $anchorPrice,
-                    'drop_percentage' => $dropPercent,
-                    'amount' => $buyAmount,
-                    'units' => $buyUnits,
-                ]);
-                $state['trades'][] = $trade;
-                $state['trades'] = array_slice($state['trades'], -200);
-                $state['last_trade'] = $trade;
-                $state['position'] = 'long';
-                $state['cash_left'] = max(0.0, (float)$state['cash_left'] + (float)$buyFill['cash_delta']);
-                $state['asset_units'] = (float)$state['asset_units'] + $buyUnits;
-                $state['asset_cost_basis'] = (float)$state['asset_cost_basis'] + $buyAmount;
-                $state['entry_price'] = $state['asset_cost_basis'] / max(0.00000001, $state['asset_units']);
-                $state['entry_time'] = $observedTime;
-                $state['current_move_percent'] = 0.0;
-                $state['display_action'] = 'BUY BREAK';
+            $state['trades'][] = $trade;
+            $state['trades'] = array_slice($state['trades'], -200);
+            $state['last_trade'] = $trade;
+            $state['position'] = 'long';
+            $state['cash_left'] = max(0.0, (float)$state['cash_left'] - $buyAmount);
+            $state['asset_units'] = (float)$state['asset_units'] + $buyUnits;
+            $state['asset_cost_basis'] = (float)$state['asset_cost_basis'] + $buyAmount;
+            $state['entry_price'] = $state['asset_cost_basis'] / max(0.00000001, $state['asset_units']);
+            $state['entry_time'] = $observedTime;
+            $state['current_move_percent'] = 0.0;
+            $state['display_action'] = 'BUY BREAK';
                 $state['total_bought_units'] = (float)$state['total_bought_units'] + $buyUnits;
                 $state['total_bought_amount'] = (float)$state['total_bought_amount'] + $buyAmount;
-                if (function_exists('paperWalletRecordBuyLot')) {
-                    $state = paperWalletRecordBuyLot(
-                        $state,
-                        $buyUnits,
-                        (float)($buyFill['fill_price'] ?? $currentPrice),
-                        $buyAmount,
-                        $observedTime,
-                        max($anchorPrice, $currentPrice)
-                    );
-                }
                 if ((float)$state['first_buy_amount'] <= 0.0) {
                     $state['first_buy_amount'] = $buyAmount;
                     $state['first_buy_units'] = $buyUnits;
-                    $state['first_buy_price'] = (float)($buyFill['fill_price'] ?? $currentPrice);
+                    $state['first_buy_price'] = $currentPrice;
                 }
             }
         }
@@ -10013,9 +8355,7 @@ function updatePaperBreakTrader(
 
     $state['holding_value'] = (float)$state['asset_units'] * $currentPrice;
     $state['open_pnl'] = (float)$state['holding_value'] - (float)$state['asset_cost_basis'];
-    $state['active_wallet_value'] = max(0.0, (float)$state['cash_left']) + max(0.0, (float)$state['holding_value']);
-    $state['external_kitty_total'] = paperWalletExternalKittyTotal($state);
-    $state = normalizePaperWalletTotals($state);
+    $state['equity_value'] = (float)$state['cash_left'] + (float)$state['holding_value'];
     $state['net_pnl'] = (float)$state['equity_value'] - (float)$state['starting_pot'];
     $state['reserved_cash'] = 0.0;
     $state['reserved_asset_units'] = 0.0;
@@ -10045,206 +8385,6 @@ function updatePaperBreakTrader(
     fclose($handle);
     return $state;
 }
-
-
-/**
- * Canonical post-engine refactor layer.
- *
- * This intentionally does not alter bitcoin() or any of its mathematics.
- * It consolidates state produced by the legacy calculation sections into one
- * deterministic wallet, break, event, and ledger representation.
- */
-function canonicalConfiguredBreakPercent(array $state, string $side): float
-{
-    $side = strtoupper(trim($side));
-    $key = $side === 'BUY' ? 'configured_buy_break_percent' : 'configured_sell_gain_percent';
-    $fallback = $side === 'BUY'
-        ? ($state['settings']['buy_drop_percent'] ?? 0.50)
-        : ($state['settings']['take_gain_percent'] ?? 0.50);
-    return min(25.0, max(0.01, (float)($state[$key] ?? $fallback)));
-}
-
-function canonicalTradeAction($value): string
-{
-    $action = strtoupper(trim((string)$value));
-    if (preg_match('/\\bBUY\\b/', $action) === 1) return 'BUY';
-    if (preg_match('/\\bSELL\\b/', $action) === 1) return 'SELL';
-    return 'NO TRADE';
-}
-
-function canonicalEventBoundary(array $event, string $fallback = ''): string
-{
-    foreach (['boundary_time', 'timestamp', 'time', 'observed_time'] as $key) {
-        $value = trim((string)($event[$key] ?? ''));
-        if ($value !== '') return $value;
-    }
-    return $fallback;
-}
-
-function canonicalizeTradeLedger(array $state): array
-{
-    $trades = [];
-    $seen = [];
-    foreach ((array)($state['trades'] ?? []) as $index => $trade) {
-        if (!is_array($trade)) continue;
-        $action = canonicalTradeAction($trade['action'] ?? $trade['label'] ?? '');
-        if ($action === 'NO TRADE') continue;
-        $units = max(0.0, (float)($trade['units'] ?? $trade['executed_units'] ?? 0.0));
-        $fill = max(0.0, (float)($trade['fill_price'] ?? $trade['price'] ?? 0.0));
-        $gross = max(0.0, (float)($trade['gross_notional'] ?? $trade['executed_amount'] ?? $trade['amount'] ?? 0.0));
-        $fee = max(0.0, (float)($trade['fee_amount'] ?? 0.0));
-        if ($gross <= 0.0 && $units > 0.0 && $fill > 0.0) $gross = $units * $fill;
-        $executed = ($trade['executed'] ?? true) === true && $units > 0.0 && $fill > 0.0;
-        if (!$executed) continue;
-        $boundary = canonicalEventBoundary($trade, (string)($trade['sold_at'] ?? $trade['bought_at'] ?? ''));
-        $id = trim((string)($trade['id'] ?? $trade['execution_id'] ?? $trade['idempotency_key'] ?? ''));
-        if ($id === '') $id = substr(hash('sha256', $boundary.'|'.$action.'|'.$units.'|'.$fill.'|'.$index), 0, 16);
-        if (isset($seen[$id])) continue;
-        $seen[$id] = true;
-        $trade['id'] = $id;
-        $trade['action'] = $action;
-        $trade['units'] = round($units, 12);
-        $trade['fill_price'] = round($fill, 12);
-        $trade['gross_notional'] = round($gross, 8);
-        $trade['fee_amount'] = round($fee, 8);
-        $trade['executed_amount'] = round($action === 'BUY' ? ($gross + $fee) : max(0.0, $gross - $fee), 8);
-        $trade['executed'] = true;
-        $trade['boundary_time'] = $boundary;
-        $trades[] = $trade;
-    }
-    $state['trades'] = $trades;
-    $state['last_trade'] = $trades ? $trades[array_key_last($trades)] : null;
-    return $state;
-}
-
-function canonicalizeBreakLedgers(array $state, float $currentPrice): array
-{
-    $sellBreak = canonicalConfiguredBreakPercent($state, 'SELL');
-    $buyBreak = canonicalConfiguredBreakPercent($state, 'BUY');
-    $state['configured_sell_gain_percent'] = $sellBreak;
-    $state['configured_buy_break_percent'] = $buyBreak;
-    if (!is_array($state['settings'] ?? null)) $state['settings'] = [];
-    $state['settings']['take_gain_percent'] = $sellBreak;
-    $state['settings']['buy_drop_percent'] = $buyBreak;
-
-    $state['open_lots'] = paperWalletOpenLots($state);
-    $state['open_lot_count'] = count($state['open_lots']);
-    $state['pending_rebuys'] = paperWalletPendingRebuys($state);
-    $state['pending_rebuy_count'] = count($state['pending_rebuys']);
-    $state['reserved_cash'] = round(array_sum(array_map(
-        static fn($row) => is_array($row) ? max(0.0, (float)($row['remaining_amount'] ?? 0.0)) : 0.0,
-        $state['pending_rebuys']
-    )), 8);
-
-    $eligibility = paperWalletLotsEligibleToSell($state, $currentPrice);
-    $state['global_sell_break'] = $eligibility;
-    $state['eligible_sell_units'] = round(max(0.0, (float)($eligibility['eligible_units'] ?? 0.0)), 12);
-    return $state;
-}
-
-function canonicalizeDecisionEvents(array $state): array
-{
-    $events = [];
-    foreach ((array)($state['events_by_time'] ?? []) as $boundary => $event) {
-        if (!is_array($event)) continue;
-        $boundary = canonicalEventBoundary($event, (string)$boundary);
-        if ($boundary === '') continue;
-        $event = canonicalPaperWalletEvent($event);
-        $locked = canonicalTradeAction($event['locked_template_action'] ?? $event['model_action'] ?? $event['action'] ?? '');
-        $eventAction = canonicalTradeAction($event['action'] ?? $locked);
-        $room = is_array($event['decision_room'] ?? null) ? $event['decision_room'] : [];
-        if ($room) {
-            $roomAction = canonicalTradeAction($room['action'] ?? '');
-            // A voter room belongs only to the exact locked action on this exact boundary.
-            if ($locked !== 'NO TRADE' && $roomAction !== $locked) {
-                $event['stale_decision_room_removed'] = true;
-                $event['stale_decision_room_action'] = $roomAction;
-                unset($event['decision_room'], $event['decision_banks']);
-                $room = [];
-            }
-        }
-        if ($locked !== 'NO TRADE' && $eventAction !== $locked && (($event['executed'] ?? false) !== true)) {
-            $eventAction = $locked;
-            $event['action_corrected_to_locked_template'] = true;
-        }
-        $event['boundary_time'] = $boundary;
-        $event['action'] = $eventAction;
-        $available = max(0.0, (float)($event['available_amount'] ?? $event['available'] ?? 0.0));
-        $requested = max(0.0, (float)($event['requested_amount'] ?? 0.0));
-        $executed = max(0.0, (float)($event['executed_amount'] ?? 0.0));
-        $event['shortfall_amount'] = round(max(0.0, $requested - $available), 8);
-        $event['blocked_amount'] = round((($event['executed'] ?? false) === true) ? 0.0 : max(0.0, min($requested, $available) - $executed), 8);
-        $events[$boundary] = $event;
-    }
-    ksort($events);
-    $state['events_by_time'] = $events;
-    return $state;
-}
-
-function canonicalizeExecutionKeys(array $state): array
-{
-    $keys = [];
-    foreach ((array)($state['execution_idempotency_keys'] ?? []) as $key => $row) {
-        if (!is_array($row)) continue;
-        $boundary = trim((string)($row['boundary'] ?? ''));
-        $action = canonicalTradeAction($row['action'] ?? '');
-        if ($boundary === '' || $action === 'NO TRADE') continue;
-        $canonicalKey = $boundary.'|'.$action;
-        if (!isset($keys[$canonicalKey]) || (($row['executed'] ?? false) === true)) $keys[$canonicalKey] = $row;
-    }
-    $state['execution_idempotency_keys'] = $keys;
-    return $state;
-}
-
-function canonicalTradingInvariantReport(array $state): array
-{
-    $cash = max(0.0, (float)($state['cash_left'] ?? 0.0));
-    $units = max(0.0, (float)($state['asset_units'] ?? 0.0));
-    $holding = max(0.0, (float)($state['holding_value'] ?? 0.0));
-    $kitty = paperWalletExternalKittyTotal($state);
-    $equity = paperWalletTotalEquity($state, $cash, $holding);
-    $lotUnits = array_sum(array_map(static fn($lot) => is_array($lot) ? max(0.0, (float)($lot['units'] ?? 0.0)) : 0.0, (array)($state['open_lots'] ?? [])));
-    $issues = [];
-    if (abs($lotUnits - $units) > max(1.0e-8, $units * 1.0e-8)) $issues[] = 'OPEN_LOT_UNITS_DO_NOT_MATCH_ASSET_UNITS';
-    if (abs((float)($state['equity_value'] ?? 0.0) - $equity) > 0.01) $issues[] = 'EQUITY_NOT_CANONICAL';
-    if ($cash < 0.0 || $units < 0.0 || $holding < 0.0 || $kitty < 0.0) $issues[] = 'NEGATIVE_WALLET_COMPONENT';
-    return [
-        'ok' => !$issues,
-        'issues' => $issues,
-        'cash' => round($cash, 8),
-        'asset_units' => round($units, 12),
-        'open_lot_units' => round($lotUnits, 12),
-        'holding_value' => round($holding, 8),
-        'external_kitty' => round($kitty, 8),
-        'canonical_equity' => round($equity, 8),
-    ];
-}
-
-function finalizeCanonicalTradingState(array $state, float $currentPrice): array
-{
-    $state = canonicalizeTradeLedger($state);
-    $state = canonicalizeBreakLedgers($state, $currentPrice);
-    $state = canonicalizeDecisionEvents($state);
-    $state = canonicalizeExecutionKeys($state);
-
-    // Retired phase/hour allocation must never be an execution authority.
-    unset(
-        $state['allocated_phase_action'],
-        $state['allocated_phase_hour'],
-        $state['last_regime_trade_hour'],
-        $state['sell_bank_override_active'],
-        $state['sell_bank_override_reason']
-    );
-
-    $state = normalizePaperWalletTotals($state, $currentPrice);
-    $state = applyPortfolioBenchmark($state, $currentPrice);
-    $state = normalizePaperWalletTotals($state, $currentPrice);
-    $state['canonical_state_schema'] = 'trading-state-v2';
-    $state['canonicalized_at'] = gmdate('Y-m-d\\TH:i:s\\Z');
-    $state['invariants'] = canonicalTradingInvariantReport($state);
-    return $state;
-}
-
 
 /** Simulate the POT directly from saved BUY/SELL model actions across real candles. */
 function buildModelPaperTraderState(
@@ -10423,7 +8563,7 @@ function buildModelPaperTraderState(
             $phaseSignalHistory = array_slice($phaseSignalHistory, -4);
             $allocatedPhaseAction = 'NO TRADE';
         }
-        $phaseEntry = true; // canonical engine: every five-minute mark is independent
+        $phaseEntry = $allocatedPhaseAction !== $action;
         $unstableAlternation = count($phaseSignalHistory) === 4
             && $phaseSignalHistory[0] !== $phaseSignalHistory[1]
             && $phaseSignalHistory[1] !== $phaseSignalHistory[2]
@@ -10440,7 +8580,7 @@ function buildModelPaperTraderState(
         $lastAction = $action;
         $compressionAllowsUnstableAlternation = $unstableAlternation
             && compressionAllowsAlternation($compressionState, $action);
-        if (false) { // legacy phase/alternation throttle retired; the three-voter room owns strategy approval
+        if (!$phaseEntry || ($unstableAlternation && !$compressionAllowsUnstableAlternation)) {
             $heldRequested = requestedPaperTradeAmountForAction(
                 $action,
                 (float)($state['fixed_trade_amount'] ?? $initialTradeAmount),
@@ -10572,7 +8712,7 @@ function buildModelPaperTraderState(
                     $state['total_bought_units'] += $buyUnits;
                     $state['total_bought_amount'] += $buyAmount;
                     if (function_exists('paperWalletRecordBuyLot')) {
-                        $state = paperWalletRecordBuyLot($state, $buyUnits, (float)($buyFill['fill_price'] ?? $currentPrice), $buyAmount, isset($boundaryTime) ? (string)$boundaryTime : '', (float)($state['session_high_price'] ?? $currentPrice), ($forcedRebuy && is_array($eligibleRebuy ?? null)) ? (string)($eligibleRebuy['id'] ?? '') : null);
+                        $state = paperWalletRecordBuyLot($state, $buyUnits, (float)($buyFill['fill_price'] ?? $currentPrice), $buyAmount, isset($boundaryTime) ? (string)$boundaryTime : '', (float)($state['session_high_price'] ?? $currentPrice));
                     }
                     if ($state['first_buy_amount'] <= 0.0) {
                         $state['first_buy_amount'] = $buyAmount;
@@ -10593,14 +8733,6 @@ function buildModelPaperTraderState(
                         'realized_pnl' => null,
                         'entry_price' => (float)$buyFill['fill_price'],
                         'exit_price' => null,
-                        'decision_yes_votes' => $tradeDecisionYesVotes,
-                        'decision_required_votes' => (int)($tradeDecisionRoom['required_votes'] ?? 2),
-                        'decision_total_voters' => (int)($tradeDecisionRoom['total_voters'] ?? 3),
-                        'decision_banks' => $tradeDecisionBanks,
-                        'decision_room' => $tradeDecisionRoom,
-                        'buy_break_percent' => (float)($state['buy_break_percent'] ?? $buyPct),
-                        'buy_break_met' => (bool)($state['buy_break_met'] ?? false),
-                        'buy_break_reason' => (string)($state['buy_break_reason'] ?? ''),
                     ]);
                     $allocatedPhaseAction = 'BUY';
                 }
@@ -10650,16 +8782,12 @@ function buildModelPaperTraderState(
                 ? paperWalletLotsEligibleToSell($state, $tradePrice)
                 : ['eligible_units' => 0.0, 'reasons' => []];
             $eligibleLotUnits = max(0.0, (float)($lotEligibility['eligible_units'] ?? 0.0));
-            $bankSellOverride = threeVoterDecisionApprovesAction($state, 'SELL', is_array($tradeDecisionRoom ?? null) ? $tradeDecisionRoom : null); // A frozen 2-of-3 SELL is final strategy authority.
-            if ($bankSellOverride && $eligibleLotUnits <= 1.0e-12) {
-                $eligibleLotUnits = $unitsHeldBefore;
-            }
             $sellAvailableAmount = min($unitsHeldBefore, $eligibleLotUnits) * $tradePrice;
             $averageCost = $costBasisBefore / max(0.00000001, $unitsHeldBefore);
             $minimumSellPrice = $averageCost * (1.0 + (MIN_SELL_EDGE_PERCENT / 100.0));
             $state['lot_sell_eligible_units'] = round($eligibleLotUnits, 12);
             $state['lot_sell_reasons'] = $lotEligibility['reasons'] ?? [];
-            if ($eligibleLotUnits <= 1.0e-12 && !$bankSellOverride) {
+            if ($eligibleLotUnits <= 1.0e-12) {
                 $state['events_by_time'][$time] = [
                     'action' => 'SELL',
                     'label' => 'SELL BLOCKED · NO LOT MET BREAK',
@@ -10685,7 +8813,7 @@ function buildModelPaperTraderState(
                 $eligibleLotUnits,
                 false
             );
-            if (!$bankSellOverride && (float)$sellFill['fill_price'] < $minimumSellPrice) {
+            if ((float)$sellFill['fill_price'] < $minimumSellPrice) {
                 $blockedSellSizing = canonicalTradeSizing(
                     'SELL',
                     exchangeFloorTradeRequestAmount('SELL', $sellBaseAmount, $minimumFunds),
@@ -10713,25 +8841,16 @@ function buildModelPaperTraderState(
             $sellUnits = (float)$sellFill['units'];
             $sellAmount = (float)$sellFill['executed_amount'];
             $lotPreview = function_exists('paperWalletPreviewSellLots')
-                ? paperWalletPreviewSellLots($state, $sellUnits, $tradePrice, $bankSellOverride)
+                ? paperWalletPreviewSellLots($state, $sellUnits, $tradePrice)
                 : ['sold_units' => 0.0, 'cost_portion' => 0.0, 'lot_results' => []];
             $sellUnits = min($sellUnits, max(0.0, (float)$lotPreview['sold_units']));
             $costPortion = max(0.0, (float)$lotPreview['cost_portion']);
             $realizedPnl = (float)$sellFill['net_cash_amount'] - $costPortion;
-            $globalSellTarget = max(0.0, (float)($lotEligibility['global_target_price'] ?? 0.0));
-            $actualSellFillPrice = max(0.0, (float)($sellFill['fill_price'] ?? 0.0));
-            $fillBelowGlobalBreak = !$bankSellOverride
-                && $globalSellTarget > 0.0
-                && $actualSellFillPrice + 1.0e-12 < $globalSellTarget;
-            $netBreakBlocked = $sellUnits <= 0.0
-                || $fillBelowGlobalBreak
-                || (!$bankSellOverride && (float)$sellFill['net_cash_amount'] + 1.0e-8 < $costPortion);
+            $netBreakBlocked = $sellUnits <= 0.0 || (float)$sellFill['net_cash_amount'] + 1.0e-8 < $costPortion;
             if ($netBreakBlocked) {
                 $state['events_by_time'][$time] = [
                     'action' => 'SELL',
-                    'label' => $bankSellOverride
-                            ? 'SELL BLOCKED · NO SELLABLE LOT UNITS AFTER FIFO MAPPING'
-                            : 'SELL WAITING · FEWER THAN 2 VOTES OR GLOBAL BREAK NOT REACHED',
+                    'label' => 'SELL BLOCKED · LOT NET BELOW BREAK',
                     'class' => 'result-neutral-cell',
                     'executed' => false,
                     'amount' => 0.0,
@@ -10744,30 +8863,8 @@ function buildModelPaperTraderState(
                     'entry_price' => $sellUnits > 0.0 ? ($costPortion / $sellUnits) : null,
                     'exit_price' => (float)$sellFill['fill_price'],
                     'lot_results' => $lotPreview['lot_results'],
-                        'global_sell_target' => $globalSellTarget,
-                        'actual_fill_price' => $actualSellFillPrice,
-                        'fill_below_global_break' => $fillBelowGlobalBreak,
                 ];
-                $state['display_action'] = 'HOLD LONG · WAITING FOR MATCHED BUY LOT GAIN BREAK';
-            } elseif (realizedProfitBelowMinimum($realizedPnl)) {
-                $state['events_by_time'][$time] = [
-                    'action' => 'SELL',
-                    'label' => minimumRealizedProfitLabel($realizedPnl),
-                    'class' => 'result-neutral-cell',
-                    'executed' => false,
-                    'amount' => 0.0,
-                    'realized_pnl' => null,
-                    'preview_realized_pnl' => round($realizedPnl, 8),
-                    'minimum_realized_profit' => minimumRealizedProfitAmount(),
-                    'profit_remaining' => round(max(0.0, minimumRealizedProfitAmount() - $realizedPnl), 8),
-                    'requested_amount' => $sellFill['requested_amount'],
-                    'available_amount' => $sellFill['available_amount'],
-                    'shortfall' => 0.0,
-                    'blocked_amount' => round(min((float)$sellFill['requested_amount'], (float)$sellFill['available_amount']), 8),
-                    'entry_price' => $sellUnits > 0.0 ? ($costPortion / $sellUnits) : null,
-                    'exit_price' => (float)$sellFill['fill_price'],
-                ];
-                $state['display_action'] = minimumRealizedProfitLabel($realizedPnl);
+                $state['display_action'] = 'HOLD LONG · LOT MUST MEET BREAK AFTER FEES';
             } elseif (sellLossExceedsHardLimit($realizedPnl)) {
                 $state['events_by_time'][$time] = [
                     'action' => 'SELL',
@@ -10823,14 +8920,14 @@ function buildModelPaperTraderState(
                 $state['cash_left'] += (float)$sellFill['net_cash_amount'];
                 $soldLotResults = [];
                 if (function_exists('paperWalletConsumeSellLots')) {
-                    $lotConsumption = paperWalletConsumeSellLots($state, $sellUnits, $tradePrice, $bankSellOverride);
+                    $lotConsumption = paperWalletConsumeSellLots($state, $sellUnits, $tradePrice);
                     $state = $lotConsumption['state'];
                     $sellUnits = (float)$lotConsumption['sold_units'];
                     $costPortion = (float)$lotConsumption['cost_portion'];
                     $soldLotResults = is_array($lotConsumption['lot_results'] ?? null) ? $lotConsumption['lot_results'] : [];
                 }
                 if (function_exists('paperWalletRecordSellFundedRebuy')) {
-                    $state = paperWalletRecordSellFundedRebuy($state, $sellFill, $soldLotResults, $buyMultiplier, (string)$time, isset($break_buy_drop_pct) ? (float)$break_buy_drop_pct : null);
+                    $state = paperWalletRecordSellFundedRebuy($state, $sellFill, $soldLotResults, $buyMultiplier, (string)$time);
                 }
                 $state['asset_units'] = max(0.0, $unitsHeldBefore - $sellUnits);
                 $state['asset_cost_basis'] = max(0.0, $costBasisBefore - $costPortion);
@@ -10928,9 +9025,7 @@ function buildModelPaperTraderState(
 
     $state['holding_value'] = (float)$state['asset_units'] * $currentPrice;
     $state['open_pnl'] = (float)$state['holding_value'] - (float)$state['asset_cost_basis'];
-    $state['active_wallet_value'] = max(0.0, (float)$state['cash_left']) + max(0.0, (float)$state['holding_value']);
-    $state['external_kitty_total'] = paperWalletExternalKittyTotal($state);
-    $state = normalizePaperWalletTotals($state);
+    $state['equity_value'] = (float)$state['cash_left'] + (float)$state['holding_value'];
     $state['net_pnl'] = (float)$state['equity_value'] - (float)$state['starting_pot'];
     $decisionCount = (int)$state['wins'] + (int)$state['losses'];
     $state['trade_profit_rate'] = $decisionCount > 0
@@ -10955,131 +9050,6 @@ function buildModelPaperTraderState(
 }
 
 /** Persist one live BUY/SELL decision per five-minute boundary for the wallet card. */
-
-/**
- * Lock active-wallet income once it reaches the configured threshold above the
- * original principal. The excess is sold from the asset position and moved
- * directly into the non-spendable external kitty, so it cannot trigger again.
- */
-function applyPrincipalIncomeLock(
-    array $state,
-    float $currentPrice,
-    string $boundaryTime,
-    array $executionContext = [],
-    float $threshold = 50.0
-): array {
-    $principal = max(0.0, (float)($state['starting_pot'] ?? 10000.0));
-    $threshold = max(0.01, $threshold);
-    $cash = max(0.0, (float)($state['cash_left'] ?? 0.0));
-    $units = max(0.0, (float)($state['asset_units'] ?? 0.0));
-    $holding = $units * max(0.0, $currentPrice);
-    $active = $cash + $holding;
-    $excess = max(0.0, $active - $principal);
-
-    $state['principal_income_threshold'] = round($threshold, 2);
-    $state['principal_initial'] = round($principal, 8);
-    $state['principal_active_equity'] = round($active, 8);
-    $state['principal_active_excess'] = round($excess, 8);
-    $state['principal_next_lock_needed'] = round(max(0.0, $threshold - $excess), 8);
-    $state['principal_income_locked_total'] = max(
-        0.0,
-        (float)($state['principal_income_locked_total'] ?? $state['gain_kitty_total'] ?? 0.0)
-    );
-    $state['principal_income_last_lock'] = 0.0;
-    $state['principal_income_status'] = $excess >= $threshold
-        ? 'ELIGIBLE · PREPARING PRINCIPAL LOCK'
-        : 'WAITING · NEEDS $' . number_format(max(0.0, $threshold - $excess), 2);
-
-    if ($excess + 1.0e-8 < $threshold || $units <= 1.0e-12 || $currentPrice <= 0.0) {
-        return $state;
-    }
-
-    $eventKey = 'principal-lock|' . $boundaryTime . '|' . number_format($principal, 2, '.', '');
-    $seen = is_array($state['principal_income_lock_keys'] ?? null)
-        ? $state['principal_income_lock_keys']
-        : [];
-    if (isset($seen[$eventKey])) {
-        $state['principal_income_status'] = 'LOCK ALREADY PROCESSED FOR THIS MARK';
-        return $state;
-    }
-
-    // Request enough gross notional to externalize the complete active excess.
-    $requested = min($holding, $excess);
-    $fill = paperExecutionFill(
-        'SELL',
-        $requested,
-        $holding,
-        $currentPrice,
-        $executionContext,
-        $units,
-        true
-    );
-    $sellUnits = max(0.0, (float)($fill['units'] ?? 0.0));
-    $net = max(0.0, (float)($fill['net_cash_amount'] ?? 0.0));
-    if (($fill['eligible'] ?? false) !== true || $sellUnits <= 1.0e-12 || $net <= 0.0) {
-        $state['principal_income_status'] = 'ELIGIBLE · SELL COULD NOT FILL';
-        return $state;
-    }
-
-    $consumed = paperWalletConsumeSellLots($state, $sellUnits, $currentPrice, true);
-    $actualUnits = max(0.0, (float)($consumed['sold_units'] ?? 0.0));
-    if ($actualUnits <= 1.0e-12) {
-        $state['principal_income_status'] = 'ELIGIBLE · NO FIFO UNITS MAPPED';
-        return $state;
-    }
-    $state = is_array($consumed['state'] ?? null) ? $consumed['state'] : $state;
-    $cost = max(0.0, (float)($consumed['cost_portion'] ?? 0.0));
-    $actualNet = $sellUnits > 0.0 ? $net * ($actualUnits / $sellUnits) : 0.0;
-    $actualGross = max(0.0, (float)($fill['gross_notional'] ?? 0.0)) * ($actualUnits / max($sellUnits, 1.0e-12));
-    $actualFee = max(0.0, (float)($fill['fee_amount'] ?? 0.0)) * ($actualUnits / max($sellUnits, 1.0e-12));
-    $realized = $actualNet - $cost;
-
-    $state['asset_units'] = max(0.0, (float)($state['asset_units'] ?? 0.0) - $actualUnits);
-    $state['asset_cost_basis'] = max(0.0, (float)($state['asset_cost_basis'] ?? 0.0) - $cost);
-    $state['total_sold_units'] = max(0.0, (float)($state['total_sold_units'] ?? 0.0)) + $actualUnits;
-    $state['total_sold_amount'] = max(0.0, (float)($state['total_sold_amount'] ?? 0.0)) + $actualGross;
-    $state['total_fees'] = max(0.0, (float)($state['total_fees'] ?? 0.0)) + $actualFee;
-    $state['cash_out_withdrawn_total'] = max(0.0, (float)($state['cash_out_withdrawn_total'] ?? 0.0)) + $actualNet;
-    $state['external_kitty_total'] = paperWalletExternalKittyTotal($state);
-    $state['principal_income_locked_total'] += $actualNet;
-    $state['principal_income_last_lock'] = $actualNet;
-    $state['principal_income_status'] = 'LOCKED $' . number_format($actualNet, 2) . ' ABOVE PRINCIPAL';
-    $state['principal_income_lock_count'] = max(0, (int)($state['principal_income_lock_count'] ?? 0)) + 1;
-    $seen[$eventKey] = gmdate('c');
-    $state['principal_income_lock_keys'] = array_slice($seen, -200, 200, true);
-
-    $trade = array_merge($fill, [
-        'action' => 'SELL',
-        'executed' => true,
-        'units' => round($actualUnits, 12),
-        'executed_amount' => round($actualGross, 8),
-        'gross_notional' => round($actualGross, 8),
-        'fee_amount' => round($actualFee, 8),
-        'net_cash_amount' => round($actualNet, 8),
-        'cost_basis' => round($cost, 8),
-        'realized_pnl' => round($realized, 8),
-        'time' => $boundaryTime,
-        'reason' => 'PRINCIPAL_INCOME_LOCK',
-        'label' => 'PRINCIPAL GAIN SELL-OFF',
-        'income_locked' => round($actualNet, 8),
-        'principal' => round($principal, 8),
-        'active_excess_before' => round($excess, 8),
-    ]);
-    $state['trades'] = is_array($state['trades'] ?? null) ? $state['trades'] : [];
-    $state['trades'][] = $trade;
-    $state['last_trade'] = $trade;
-    $state['events_by_time'] = is_array($state['events_by_time'] ?? null) ? $state['events_by_time'] : [];
-    $state['events_by_time'][$boundaryTime . ' principal-lock'] = canonicalPaperWalletEvent($trade);
-
-    // Rebuild active-wallet figures after moving proceeds outside the wallet.
-    $state['holding_value'] = max(0.0, (float)$state['asset_units']) * $currentPrice;
-    $state['active_wallet_value'] = max(0.0, (float)($state['cash_left'] ?? 0.0)) + $state['holding_value'];
-    $state['principal_active_equity'] = round($state['active_wallet_value'], 8);
-    $state['principal_active_excess'] = round(max(0.0, $state['active_wallet_value'] - $principal), 8);
-    $state['principal_next_lock_needed'] = round(max(0.0, $threshold - $state['principal_active_excess']), 8);
-    return $state;
-}
-
 function updateBoundaryModelTraderState(
     string $statePath,
     string $boundaryTime,
@@ -11163,6 +9133,7 @@ function updateBoundaryModelTraderState(
         'last_signal_action' => 'NO TRADE',
         'last_executed_action' => 'NO TRADE',
         'last_executed_boundary' => null,
+        'allocated_phase_action' => 'NO TRADE',
         'allocated_phase_hour' => null,
         'signal_history' => [],
         'alternation_control' => [
@@ -11262,15 +9233,24 @@ function updateBoundaryModelTraderState(
         $state['last_executed_action'] = $latestExecutedAction;
         $state['last_executed_boundary'] = $latestExecutedTime !== '' ? $latestExecutedTime : null;
     }
-    // Retired: phase/hour allocation is incompatible with one independent
-    // action per five-minute boundary. Keep legacy keys neutral for old states.
-    $state['last_regime_trade_hour'] = null;
+    if (!array_key_exists('allocated_phase_action', $decodedState)) {
+        $lastModelAction = strtoupper(trim((string)($state['last_signal_action'] ?? 'NO TRADE')));
+        $state['allocated_phase_action'] = $latestExecutedAction === $lastModelAction
+            ? $latestExecutedAction
+            : 'NO TRADE';
+        $state['allocated_phase_hour'] = $state['allocated_phase_action'] !== 'NO TRADE' && $latestExecutedTime !== ''
+            ? substr($latestExecutedTime, 0, 13)
+            : null;
+        $state['last_regime_trade_hour'] = $state['allocated_phase_hour'];
+    }
     if ($latestExecutedTime === '' && count($state['trades']) === 0) {
         // Migrate old request-only states that incorrectly consumed an hourly
         // allocation even though no BUY or SELL ever executed.
         $state['last_executed_action'] = 'NO TRADE';
         $state['last_executed_boundary'] = null;
-                $state['last_regime_trade_hour'] = null;
+        $state['allocated_phase_action'] = 'NO TRADE';
+        $state['allocated_phase_hour'] = null;
+        $state['last_regime_trade_hour'] = null;
         foreach ($state['events_by_time'] as $eventTime => $event) {
             if (!is_array($event) || (($event['executed'] ?? false) === true)) continue;
             if (str_contains(strtoupper((string)($event['label'] ?? '')), 'ALREADY ALLOCATED')) {
@@ -11285,10 +9265,6 @@ function updateBoundaryModelTraderState(
         static fn($value): bool => $value === 'BUY' || $value === 'SELL'
     ));
     $state['rebuy_pending'] = (bool)($state['rebuy_pending'] ?? false);
-    $state['realized_support_edge'] = is_numeric($state['realized_support_edge'] ?? null)
-        ? (float)$state['realized_support_edge']
-        : 0.0;
-    $state['support_cycles_completed'] = max(0, (int)($state['support_cycles_completed'] ?? 0));
     $state['starting_pot'] = max(0.0, (float)($state['starting_pot'] ?? $startingPot));
     $state['cash_left'] = max(0.0, (float)($state['cash_left'] ?? $state['starting_pot']));
     $state['asset_units'] = max(0.0, (float)($state['asset_units'] ?? 0.0));
@@ -11302,17 +9278,6 @@ function updateBoundaryModelTraderState(
     $state['fixed_trade_amount'] = max(0.0, (float)($state['fixed_trade_amount'] ?? $initialTradeAmount));
     $state['buy_multiplier'] = max(0.0, $buyMultiplier);
     $state['sell_multiplier'] = max(0.0, $sellMultiplier);
-    // Canonical matched-cycle break contracts. These values control the exact
-    // SELL target above each BUY and the exact rebuy target below each SELL.
-    $state['configured_buy_break_percent'] = min(25.0, max(0.01, isset($break_buy_drop_pct) ? (float)$break_buy_drop_pct : 0.50));
-    $state['configured_sell_gain_percent'] = min(25.0, max(0.01, isset($break_take_gain_pct) ? (float)$break_take_gain_pct : 0.50));
-    $state['consistency_audit_schema'] = 'global-breaks-boundary-isolated-v1';
-    // Reprice every existing BUY lot and SELL-funded rebuy reserve against the
-    // current global controls before any voter, sizing, or execution check.
-    $state['open_lots'] = paperWalletOpenLots($state);
-    $state['pending_rebuys'] = paperWalletPendingRebuys($state);
-    $state['pending_rebuy_total'] = round(array_sum(array_column($state['pending_rebuys'], 'remaining_amount')), 8);
-    $state['rebuy_pending'] = count($state['pending_rebuys']) > 0;
     $state['stop_loss_percent'] = max(0.0, (float)($state['stop_loss_percent'] ?? $stopLossPercent));
     // Refresh persisted sizing so changed BUY multiplier settings are used;
     // SELL applies its own multiplier at execution time below.
@@ -11377,16 +9342,7 @@ function updateBoundaryModelTraderState(
         $existingBoundaryEvent = $boundaryTime !== '' && is_array($state['events_by_time'][$boundaryTime] ?? null)
             ? $state['events_by_time'][$boundaryTime]
             : null;
-        $existingBoundaryExecuted = is_array($existingBoundaryEvent)
-            && (float)($existingBoundaryEvent['executed_amount'] ?? 0.0) > 0.0;
-        $existingBoundaryAction = is_array($existingBoundaryEvent)
-            ? strtoupper(trim((string)($existingBoundaryEvent['action'] ?? $existingBoundaryEvent['model_action'] ?? 'NO TRADE')))
-            : 'NO TRADE';
-        $sellDensityRetryEligible = (($riskMetricContext['sell_density_accumulation_triggered'] ?? false) === true)
-            && strtoupper(trim((string)($riskMetricContext['sell_density_accumulation_action'] ?? 'NO TRADE'))) === 'BUY'
-            && !$existingBoundaryExecuted
-            && $existingBoundaryAction !== 'BUY';
-        $boundaryAlreadyDecided = is_array($existingBoundaryEvent) && !$sellDensityRetryEligible;
+        $boundaryAlreadyDecided = is_array($existingBoundaryEvent);
         $processRegimeEntryNow = $immediateRegimeEntry
             && $boundaryTime !== ''
             && !$boundaryAlreadyDecided;
@@ -11398,7 +9354,6 @@ function updateBoundaryModelTraderState(
                 'total_bought_units', 'total_bought_amount', 'total_sold_units',
                 'total_sold_amount', 'active_trade_start_wallet', 'rebuy_pending',
                 'pending_rebuys', 'pending_rebuy_total',
-                'realized_support_edge', 'support_cycles_completed',
                 'last_trade', 'last_trade_result', 'last_trade_pnl', 'realized_move',
                 'wins', 'losses', 'trades',
             ] as $accountingField) {
@@ -11457,8 +9412,8 @@ function updateBoundaryModelTraderState(
                 }
             }
             $phaseAction = ($action === 'BUY' || $action === 'SELL') ? $action : 'NO TRADE';
-            $executionGateState = ($spiralGuardPaused && $phaseAction === 'SELL')
-                ? 'SPIRAL_GUARD_SELL_PAUSED'
+            $executionGateState = $spiralGuardPaused
+                ? 'SPIRAL_GUARD_PAUSED'
                 : ($forcedStopSell
                     ? 'FORCED_STOP'
                     : ($forcedRebuy
@@ -11490,16 +9445,18 @@ function updateBoundaryModelTraderState(
                 // move or reserve anything in the wallet.
                 $allocatedPhaseAction = 'NO TRADE';
                 $allocatedPhaseHour = '';
-                                        $state['last_regime_trade_hour'] = null;
+                $state['allocated_phase_action'] = 'NO TRADE';
+                $state['allocated_phase_hour'] = null;
+                $state['last_regime_trade_hour'] = null;
             }
-            // Each five-minute boundary is its own trading opportunity.
-            // Same-direction marks may execute again on later boundaries; the
-            // boundary idempotency key prevents duplicates within one mark.
             $newRegimeHour = $regimeActive
+                && $allocatedPhaseAction === $phaseAction
                 && $regimeHourKey !== ''
                 && $allocatedPhaseHour !== $regimeHourKey;
-            $phaseAlreadyAllocated = false;
-            $phaseEntry = $phaseAction !== 'NO TRADE';
+            $phaseAlreadyAllocated = $phaseAction !== 'NO TRADE'
+                && $allocatedPhaseAction === $phaseAction
+                && (!$regimeActive || !$newRegimeHour);
+            $phaseEntry = $phaseAction !== 'NO TRADE' && !$phaseAlreadyAllocated;
             if ($forcedRebuy || ($cashOutRefillPending && $phaseAction === 'BUY')) $phaseEntry = true;
             if ($modelPhaseChanged) {
                 $state['signal_history'][] = $phaseAction;
@@ -11531,24 +9488,21 @@ function updateBoundaryModelTraderState(
                 'reason' => (string)($riskMetricContext['alternation_reason'] ?? 'UNSCORED'),
                 'forward_only' => true,
             ];
-            // Each five-minute boundary is an independent opportunity.
-            // Duplicate calls inside the same boundary are stopped by idempotency.
+            // A run is one phase: execute only on its first BUY/SELL call.
+            // Later identical calls are informational HOLDs, not duplicate trades.
             $phaseHoldReason = '';
             if ($idempotencyAlreadyConsumed) {
                 $phaseHoldReason = 'HOLD · IDEMPOTENCY KEY ALREADY SET';
                 $action = 'NO TRADE';
-            } elseif ($spiralGuardPaused && $phaseAction === 'SELL' && !$forcedStopSell) {
-                $phaseHoldReason = 'HOLD SELL · SPIRAL GUARD · '
+            } elseif ($spiralGuardPaused && ($phaseAction === 'BUY' || $phaseAction === 'SELL')) {
+                $phaseHoldReason = 'HOLD · SPIRAL GUARD · '
                     . (string)($state['spiral_guard']['reason'] ?? 'DRAWDOWN PAUSE');
                 $action = 'NO TRADE';
-            } elseif (!$forcedRebuy && !$forcedStopSell
-                && ($alternationBlocked && $phaseAction !== 'SELL')
-            ) {
-                // Alternation is evidence for the audit voter, not a hidden BUY veto.
-                // Keep the BUY selected so the frozen three-voter room can make the
-                // definitive strategy decision for this five-minute mark.
-                $state['alternation_control']['would_have_blocked_buy'] = true;
-                $state['alternation_control']['execution_policy'] = 'VOTER_EVIDENCE_ONLY';
+            } elseif (!$forcedRebuy && !$forcedStopSell && ($alternationBlocked || $phaseAlreadyAllocated)) {
+                $phaseHoldReason = $alternationBlocked
+                    ? 'HOLD · ALTERNATION UNVERIFIED'
+                    : 'HOLD · SAME PHASE ALREADY ALLOCATED';
+                $action = 'NO TRADE';
             }
             $sneakEligible = is_array($sneakProfile)
                 && (($sneakProfile['eligible'] ?? false) === true)
@@ -11559,173 +9513,11 @@ function updateBoundaryModelTraderState(
             $sneakFactor = $sneakEligible && is_numeric($sneakProfile['factor'] ?? null)
                 ? max(0.10, min(1.00, (float)$sneakProfile['factor']))
                 : 1.0;
-            $lossSpreeThreshold = max(1, min(50, (int)($riskMetricContext['loss_buy_spree_percent'] ?? 10)));
-            $lossSpreeLookback = 4;
-            $lossSpreeAverageCost = ((float)($state['asset_units'] ?? 0.0) > 1e-12)
-                ? ((float)($state['asset_cost_basis'] ?? 0.0) / (float)$state['asset_units']) : 0.0;
-            $lossSpreeAverageCostDropPercent = ($lossSpreeAverageCost > 0.0 && $currentPrice < $lossSpreeAverageCost)
-                ? (($lossSpreeAverageCost - $currentPrice) / $lossSpreeAverageCost) * 100.0 : 0.0;
-
-            // The loss BUY override now evaluates exactly four completed candles.
-            // The first completed candle open is compared with the newest completed
-            // candle close. The stronger of this four-candle decline and the
-            // inventory-average decline controls the configured integer threshold.
-            $lossSpreeCandles = is_array($riskMetricContext['loss_buy_spree_candles'] ?? null)
-                ? array_values($riskMetricContext['loss_buy_spree_candles']) : [];
-            $lossSpreeCandles = array_slice($lossSpreeCandles, -$lossSpreeLookback);
-            $lossSpreeFourOpen = is_numeric($lossSpreeCandles[0]['open'] ?? null)
-                ? (float)$lossSpreeCandles[0]['open'] : 0.0;
-            $lossSpreeFourClose = $lossSpreeCandles && is_numeric($lossSpreeCandles[count($lossSpreeCandles) - 1]['close'] ?? null)
-                ? (float)$lossSpreeCandles[count($lossSpreeCandles) - 1]['close'] : 0.0;
-            $lossSpreeFourDropPercent = ($lossSpreeFourOpen > 0.0 && $lossSpreeFourClose < $lossSpreeFourOpen)
-                ? (($lossSpreeFourOpen - $lossSpreeFourClose) / $lossSpreeFourOpen) * 100.0 : 0.0;
-            $lossSpreeDropPercent = max($lossSpreeAverageCostDropPercent, $lossSpreeFourDropPercent);
-            $lossSpreeTriggerSource = $lossSpreeFourDropPercent >= $lossSpreeAverageCostDropPercent
-                ? 'FOUR_CANDLE_OPEN_TO_CLOSE' : 'GLOBAL_AVERAGE_COST';
-            $lossSpreeTriggered = count($lossSpreeCandles) === $lossSpreeLookback
-                && $lossSpreeDropPercent + 1e-9 >= $lossSpreeThreshold;
-            $state['loss_buy_spree'] = [
-                'triggered' => $lossSpreeTriggered,
-                'threshold_percent' => $lossSpreeThreshold,
-                'lookback_candles' => $lossSpreeLookback,
-                'completed_candles_seen' => count($lossSpreeCandles),
-                'drop_percent' => round($lossSpreeDropPercent, 6),
-                'average_cost_drop_percent' => round($lossSpreeAverageCostDropPercent, 6),
-                'four_candle_drop_percent' => round($lossSpreeFourDropPercent, 6),
-                'four_candle_open' => round($lossSpreeFourOpen, 8),
-                'four_candle_close' => round($lossSpreeFourClose, 8),
-                'trigger_source' => $lossSpreeTriggerSource,
-                'average_cost' => round($lossSpreeAverageCost, 8),
-                'current_price' => round($currentPrice, 8),
-                'gain_multiplier' => round(max(0.10, (float)($riskMetricContext['loss_buy_spree_gain_multiplier'] ?? $sellMultiplier)), 4),
-                'average_trade_amount' => round(max($minimumFunds, (float)($riskMetricContext['loss_buy_spree_average_amount'] ?? $initialTradeAmount)), 8),
-            ];
-            if ($lossSpreeTriggered && !$forcedStopSell) {
-                // COMPLETE BUY AUTHORITY: once the configured integer loss threshold
-                // is reached, this BUY bypasses every strategy vote and soft BUY gate.
-                // Hard operational protections still apply at sizing/submission time.
-                $phaseAction = 'BUY';
-                $action = 'BUY';
-                $phaseEntry = true;
-                $phaseHoldReason = '';
-                $executionGateState = 'LOSS_BUY_SPREE_OVERRIDE';
-                $boundaryExecutionIdempotencyKey = paperExecutionIdempotencyKey(
-                    $riskMetricContext,
-                    $boundaryTime,
-                    'BUY',
-                    $executionGateState
-                );
-                $idempotencyAlreadyConsumed = is_array(
-                    $state['execution_idempotency_keys'][$boundaryExecutionIdempotencyKey] ?? null
-                );
-                if (!$idempotencyAlreadyConsumed) {
-                    $state['loss_buy_spree_override_active'] = true;
-                    $state['loss_buy_spree_execution_authority'] = true;
-                    $state['loss_buy_spree_strategy_vote_required'] = false;
-                    $state['loss_buy_spree_override_reason'] = 'LOSS BUY SPREE COMPLETE OVERRIDE · '
-                        . number_format($lossSpreeDropPercent, 2)
-                        . '% DROP · 4 COMPLETED CANDLES · SOURCE ' . $lossSpreeTriggerSource
-                        . ' · TRIGGER ' . $lossSpreeThreshold . '%';
-                    // A previously recorded non-fill for this same boundary must not
-                    // suppress the newly-qualified BUY override.
-                    $existingBoundaryEvent = $state['events_by_time'][$boundaryTime] ?? null;
-                    if (is_array($existingBoundaryEvent) && (($existingBoundaryEvent['executed'] ?? false) !== true)) {
-                        unset($state['events_by_time'][$boundaryTime]);
-                    }
-                } else {
-                    $phaseHoldReason = 'HOLD · LOSS BUY SPREE ALREADY EXECUTED FOR THIS MARK';
-                    $action = 'NO TRADE';
-                    $phaseEntry = false;
-                }
-            }
-
-            // Definitive strategy decision room. All strategy checks vote here once.
-            // After this point, only operational hard gates may stop an approved order.
-            $preVoteLotEligibility = function_exists('paperWalletLotsEligibleToSell')
-                ? paperWalletLotsEligibleToSell($state, $currentPrice)
-                : ['eligible_units' => (float)($state['asset_units'] ?? 0.0), 'reasons' => []];
-            $eligibleUnitsForVote = max(0.0, (float)($preVoteLotEligibility['eligible_units'] ?? 0.0));
-            // Boundary isolation: never let a previous mark's frozen room leak
-            // into this timestamp before the new room is built.
-            $state['trade_decision_room'] = null;
-            $state['trade_decision_banks'] = [];
-            $state['trade_decision_yes_votes'] = 0;
-            $state['trade_decision_total_voters'] = 3;
-            $state['trade_decision_required_votes'] = 2;
-            $state['trade_decision_approved'] = false;
-
-            $tradeDecisionRoom = buildThreeVoterDecisionRoom(
-                $phaseAction,
-                $eligibleUnitsForVote,
-                $riskMetricContext,
-                [
-                    'locked_action' => $phaseAction,
-                    'open_lot_count' => function_exists('paperWalletOpenLots') ? count(paperWalletOpenLots($state)) : 0,
-                    'holding_value' => (float)($state['asset_units'] ?? 0.0) * $currentPrice,
-                    'lot_break_percent' => (float)($preVoteLotEligibility['global_break_percent'] ?? 0.0),
-                    'lot_average_entry' => (float)($preVoteLotEligibility['global_average_entry'] ?? 0.0),
-                    'lot_target_price' => (float)($preVoteLotEligibility['global_target_price'] ?? 0.0),
-                    'lot_current_price' => (float)($preVoteLotEligibility['global_current_price'] ?? $currentPrice),
-                    'lot_move_percent' => (float)($preVoteLotEligibility['global_move_percent'] ?? 0.0),
-                ]
-            );
-            $tradeDecisionBanks = $tradeDecisionRoom['voters'];
-            $tradeDecisionYesVotes = (int)$tradeDecisionRoom['yes_votes'];
-            $tradeDecisionApproved = (($tradeDecisionRoom['approved'] ?? false) === true);
-            $state['trade_decision_room'] = $tradeDecisionRoom;
-            $state['trade_decision_banks'] = $tradeDecisionBanks;
-            $state['trade_decision_yes_votes'] = $tradeDecisionYesVotes;
-            $state['trade_decision_total_voters'] = (int)$tradeDecisionRoom['total_voters'];
-            $state['trade_decision_required_votes'] = (int)$tradeDecisionRoom['required_votes'];
-            $state['trade_decision_approved'] = $tradeDecisionApproved;
-
-            if (($state['loss_buy_spree_execution_authority'] ?? false) === true
-                && !$idempotencyAlreadyConsumed
-                && !$forcedStopSell
-            ) {
-                // The threshold itself is the authority. Preserve the room for
-                // explanation, but do not require its votes to approve this BUY.
-                $tradeDecisionApproved = true;
-                $action = 'BUY';
-                $phaseAction = 'BUY';
-                $phaseEntry = true;
-                $phaseHoldReason = '';
-                $state['trade_decision_approved'] = true;
-                $state['trade_decision_override'] = 'LOSS_BUY_SPREE';
-                $state['trade_decision_override_reason'] = (string)($state['loss_buy_spree_override_reason'] ?? 'LOSS BUY SPREE COMPLETE OVERRIDE');
-                if (is_array($state['trade_decision_room'] ?? null)) {
-                    $state['trade_decision_room']['approved'] = true;
-                    $state['trade_decision_room']['action'] = 'BUY';
-                    $state['trade_decision_room']['authority'] = 'LOSS_BUY_SPREE_COMPLETE_OVERRIDE';
-                    $state['trade_decision_room']['vote_required'] = false;
-                    $state['trade_decision_room']['final_reason'] = $state['trade_decision_override_reason'];
-                }
-            }
-
-            // FINAL STRATEGY AUTHORITY: once the frozen room has at least two YES
-            // votes for BUY or SELL, preserve that exact action through every later
-            // strategy stage. Only hard operational gates may stop submission.
-            if ($tradeDecisionApproved) {
-                $approvedRoomAction = strtoupper(trim((string)($tradeDecisionRoom['action'] ?? $phaseAction)));
-                if ($approvedRoomAction === 'BUY' || $approvedRoomAction === 'SELL') {
-                    $action = $approvedRoomAction;
-                    $phaseAction = $approvedRoomAction;
-                    $phaseEntry = true;
-                    $phaseHoldReason = '';
-                    $state['two_vote_execution_authority'] = true;
-                    $state['two_vote_execution_action'] = $approvedRoomAction;
-                    $state['two_vote_execution_reason'] = 'FROZEN 2-OF-3 APPROVAL';
-                }
-            }
-
             $saleBlockedByEdge = false;
             if (!$forcedStopSell && $action === 'SELL' && $state['position'] === 'long' && (float)$state['asset_units'] > 0.0) {
                 $averageCost = (float)$state['asset_cost_basis'] / max(0.00000001, (float)$state['asset_units']);
                 $minimumSellPrice = $averageCost * (1.0 + (MIN_SELL_EDGE_PERCENT / 100.0));
-                $belowPooledEdge = $currentPrice < $minimumSellPrice;
-                // The pooled edge is one bank, not a unilateral veto. The protected
-                // per-lot break remains mandatory below.
-                if ($belowPooledEdge && !$tradeDecisionApproved) {
+                if ($currentPrice < $minimumSellPrice) {
                     $saleBlockedByEdge = true;
                     $action = 'NO TRADE';
                 }
@@ -11736,24 +9528,12 @@ function updateBoundaryModelTraderState(
             $dropFromHighPct = ($sessionHigh > 0.0) ? max(0.0, (($sessionHigh - $currentPrice) / $sessionHigh) * 100.0) : 0.0;
             $state['drop_from_high_percent'] = $dropFromHighPct;
             if (function_exists('paperWalletOpenLots')) $state['open_lots'] = paperWalletOpenLots($state);
-            $buyPct = min(25.0, max(0.01, (float)($state['configured_buy_break_percent'] ?? (isset($break_buy_drop_pct) ? (float)$break_buy_drop_pct : 0.50))));
+            $buyPct = function_exists('adaptiveBreakPercentFromPrice') ? adaptiveBreakPercentFromPrice($currentPrice) : (isset($break_buy_drop_pct) ? (float)$break_buy_drop_pct : 0.50);
             if ($phaseAction === 'BUY' && !$forcedRebuy && !$cashOutRefillPending) {
-                $state['buy_break_percent'] = $buyPct;
-                $state['buy_drop_from_high_percent'] = $dropFromHighPct;
-                $state['buy_break_met'] = ($dropFromHighPct + 1e-9 >= $buyPct);
-                if (!$state['buy_break_met']) {
-                    // The center-down break is descriptive evidence for ordinary
-                    // signal BUYs. It remains mandatory only for a matched
-                    // sell-funded rebuy, whose own target is enforced by
-                    // paperWalletEligibleRebuy(). A 2-of-3 approved BUY must not be
-                    // silently converted to NO TRADE here.
-                    $state['buy_break_reason'] = 'CENTER-DOWN ' . number_format($dropFromHighPct, 3)
-                        . '% BELOW REQUESTED ' . number_format($buyPct, 3) . '%';
-                    if (!$tradeDecisionApproved) {
-                        $phaseHoldReason = 'HOLD · BUY VOTE NOT APPROVED · ' . $state['buy_break_reason'];
-                        $action = 'NO TRADE';
-                        $phaseEntry = false;
-                    }
+                if ($dropFromHighPct + 1e-9 < $buyPct) {
+                    $phaseHoldReason = 'HOLD · WAIT CENTER-DOWN ≥ ' . number_format($buyPct, 3) . '% (now ' . number_format($dropFromHighPct, 3) . '%)';
+                    $action = 'NO TRADE'; $phaseAction = 'NO TRADE'; $phaseEntry = false;
+                    $state['buy_blocked_by_percent'] = true;
                 }
             }
             if (function_exists('paperWalletLotsEligibleToSell')) {
@@ -11762,21 +9542,9 @@ function updateBoundaryModelTraderState(
                 $state['lot_sell_reasons'] = $lotEligibility['reasons'];
                 if ($phaseAction === 'SELL' && $state['position'] === 'long' && (float)($state['asset_units'] ?? 0.0) > 0.0) {
                     if ((float)$lotEligibility['eligible_units'] <= 1e-12) {
-                        if (!$tradeDecisionApproved) {
-                            $phaseHoldReason = 'HOLD · NO LOT MET BREAK YET (' . count(paperWalletOpenLots($state)) . ' open lots)';
-                            $action = 'NO TRADE'; $phaseAction = 'NO TRADE'; $phaseEntry = false;
-                            $state['sell_blocked_by_percent'] = true;
-                        } else {
-                            // The lot bank is the single dissenting bank. A 2-of-3
-                            // approval must remain executable instead of becoming a
-                            // hidden mandatory lot veto.
-                            $state['sell_bank_override_active'] = true;
-                            $state['sell_bank_override_reason'] = '2-OF-3 APPROVED · LOT BANK DISSENT OVERRIDDEN';
-                            $phaseHoldReason = '';
-                            $action = 'SELL';
-                            $phaseAction = 'SELL';
-                            $phaseEntry = true;
-                        }
+                        $phaseHoldReason = 'HOLD · NO LOT MET BREAK YET (' . count(paperWalletOpenLots($state)) . ' open lots)';
+                        $action = 'NO TRADE'; $phaseAction = 'NO TRADE'; $phaseEntry = false;
+                        $state['sell_blocked_by_percent'] = true;
                     }
                 }
             }
@@ -11802,13 +9570,11 @@ function updateBoundaryModelTraderState(
                 ? 'REQUEST ONLY · KITTY UNCHANGED'
                 : 'CONFIDENCE HOLD · ' . (string)($state['confidence_bell_curve']['reason'] ?? 'HOLD');
             if ($spiralGuardPaused) {
-                $state['hourly_bell_curve_status'] = $bellCurveAction === 'SELL'
-                    ? 'SELL PAUSED · SPIRAL GUARD · BUYS ENABLED · KITTY UNCHANGED'
-                    : 'SPIRAL GUARD ACTIVE · BUYS ENABLED · KITTY UNCHANGED';
+                $state['hourly_bell_curve_status'] = 'PAUSED · SPIRAL GUARD · KITTY UNCHANGED';
             }
             $state['display_action'] = $action === 'NO TRADE'
                 ? ($spiralGuardPaused
-                    ? 'SELLS PAUSED · BUYS ENABLED'
+                    ? 'PAUSED · SPIRAL GUARD'
                     : ($saleBlockedByEdge ? 'HOLD LONG · SALE BELOW EDGE' : ($state['position'] === 'long' ? 'HOLD LONG' : 'WATCHING')))
                 : ($forcedStopSell
                     ? ('STOP SELL @ -' . number_format($stopLossTriggerPercent, 2) . '%')
@@ -11881,13 +9647,7 @@ function updateBoundaryModelTraderState(
                     'realized_pnl' => null,
                     'requested_amount' => $blockedSellRequested,
                     'available_amount' => $blockedSellAvailable,
-                    'shortfall' => round(max(0.0, $blockedSellRequested - $blockedSellAvailable), 8),
-                    'blocked_amount' => round(min($blockedSellRequested, $blockedSellAvailable), 8),
-                    'decision_yes_votes' => $tradeDecisionYesVotes,
-                    'decision_required_votes' => (int)($tradeDecisionRoom['required_votes'] ?? 2),
-                    'decision_total_voters' => (int)($tradeDecisionRoom['total_voters'] ?? 3),
-                    'decision_banks' => $tradeDecisionBanks,
-                    'decision_room' => $tradeDecisionRoom,
+                    'shortfall' => $blockedSellRequested,
                     'entry_price' => $averageCost ?? null,
                     'exit_price' => $currentPrice,
                 ];
@@ -11912,13 +9672,11 @@ function updateBoundaryModelTraderState(
                 if (function_exists('paperWalletLotsEligibleToSell')) {
                     $lotEligibility = paperWalletLotsEligibleToSell($state, $currentPrice);
                     $eligibleLotUnits = max(0.0, (float)($lotEligibility['eligible_units'] ?? 0.0));
-                    $approvedSellAuthority = threeVoterDecisionApprovesAction($state, 'SELL', is_array($tradeDecisionRoom ?? null) ? $tradeDecisionRoom : null);
-                    if ($approvedSellAuthority) {
-                        $eligibleLotUnits = $unitsHeldBefore;
+                    if ($eligibleLotUnits > 0.0) {
+                        $sellAvailableAmount = min($unitsHeldBefore, $eligibleLotUnits) * $currentPrice;
+                    } else {
+                        $sellAvailableAmount = $unitsHeldBefore * $currentPrice;
                     }
-                    // With 2-of-3 approval, all held units are available to FIFO;
-                    // otherwise only globally break-eligible holdings are available.
-                    $sellAvailableAmount = min($unitsHeldBefore, $eligibleLotUnits) * $currentPrice;
                     $state['lot_sell_reasons'] = $lotEligibility['reasons'] ?? [];
                 } else {
                     $sellAvailableAmount = $unitsHeldBefore * $currentPrice;
@@ -11934,59 +9692,19 @@ function updateBoundaryModelTraderState(
                     $unitsHeldBefore,
                     true
                 );
-                $sellUnits = (float)($sellFill['units'] ?? 0.0);
-                $sellAmount = (float)($sellFill['executed_amount'] ?? 0.0);
-                $proposedSellUnits = max(0.0, (float)($sellFill['proposed_units'] ?? $sellUnits));
-                $brokerRequiredAndRejected = (($sellFill['broker_acceptance_required'] ?? false) === true)
-                    && (($sellFill['broker_accepted'] ?? false) !== true);
-                // The frozen decision room is the sole strategy authority.
-                // Do not depend on a mutable state flag that can be normalized or
-                // overwritten before execution. A 2-of-3 approved SELL explicitly
-                // authorizes FIFO lot consumption even when the lot voter dissents.
-                $bankSellOverride = threeVoterDecisionApprovesAction($state, 'SELL', is_array($tradeDecisionRoom ?? null) ? $tradeDecisionRoom : null); // A frozen 2-of-3 SELL is final strategy authority.
-                $state['sell_bank_override_active'] = $bankSellOverride;
-                if ($bankSellOverride) {
-                    $state['sell_bank_override_reason'] = 'FROZEN 2-OF-3 DECISION ROOM APPROVAL';
-                    $state['trade_circle_authority'] = 'DECISION_ROOM_FINAL';
-                    $state['trade_circle_stage'] = 'SELL_SIZING_AND_FIFO';
-                    $state['trading_engine_schema'] = 'canonical-three-voter-circle-v2';
-                }
+                $sellUnits = (float)$sellFill['units'];
+                $sellAmount = (float)$sellFill['executed_amount'];
                 $lotPreview = function_exists('paperWalletPreviewSellLots')
-                    ? paperWalletPreviewSellLots($state, $proposedSellUnits, $currentPrice, $bankSellOverride)
+                    ? paperWalletPreviewSellLots($state, $sellUnits, $currentPrice)
                     : ['sold_units' => 0.0, 'cost_portion' => 0.0, 'lot_results' => []];
                 $sellUnits = min($sellUnits, max(0.0, (float)$lotPreview['sold_units']));
                 $costPortion = max(0.0, (float)$lotPreview['cost_portion']);
                 $realizedPnl = (float)$sellFill['net_cash_amount'] - $costPortion;
-                $globalSellTarget = max(0.0, (float)($lotEligibility['global_target_price'] ?? 0.0));
-                $actualSellFillPrice = max(0.0, (float)($sellFill['fill_price'] ?? 0.0));
-                $fillBelowGlobalBreak = !$bankSellOverride
-                    && $globalSellTarget > 0.0
-                    && $actualSellFillPrice + 1.0e-12 < $globalSellTarget;
-                $netBreakBlocked = $proposedSellUnits <= 0.0
-                    || (float)($lotPreview['sold_units'] ?? 0.0) <= 0.0
-                    || $fillBelowGlobalBreak
-                    || (!$bankSellOverride && (float)($sellFill['proposed_net_cash_amount'] ?? $sellFill['net_cash_amount'] ?? 0.0) + 1.0e-8 < $costPortion);
-                if ($brokerRequiredAndRejected) {
-                    $state['events_by_time'][$boundaryTime] = canonicalBlockedTradeEvent(
-                        'SELL',
-                        'SELL BLOCKED · BROKER ORDER NOT ACCEPTED · ' . trim((string)($sellFill['broker_message'] ?? 'NO BROKER RESPONSE')),
-                        (float)($sellFill['requested_amount'] ?? 0.0),
-                        (float)($sellFill['available_amount'] ?? 0.0),
-                        [
-                            'broker_provider' => (string)($sellFill['broker_provider'] ?? ''),
-                            'broker_mode' => (string)($sellFill['broker_mode'] ?? ''),
-                            'broker_message' => (string)($sellFill['broker_message'] ?? ''),
-                            'proposed_units' => $proposedSellUnits,
-                            'lot_results' => $lotPreview['lot_results'] ?? [],
-                        ]
-                    );
-                    $state['display_action'] = 'HOLD LONG · BROKER ORDER NOT ACCEPTED';
-                } elseif ($netBreakBlocked) {
+                $netBreakBlocked = $sellUnits <= 0.0 || (float)$sellFill['net_cash_amount'] + 1.0e-8 < $costPortion;
+                if ($netBreakBlocked) {
                     $state['events_by_time'][$boundaryTime] = [
                         'action' => 'SELL',
-                        'label' => $bankSellOverride
-                            ? 'SELL BLOCKED · NO SELLABLE LOT UNITS AFTER AGGREGATE FIFO MAPPING'
-                            : 'SELL WAITING · FEWER THAN 2 VOTES OR GLOBAL BREAK NOT REACHED',
+                        'label' => 'SELL BLOCKED · LOT NET BELOW BREAK',
                         'class' => 'result-neutral-cell',
                         'executed' => false,
                         'amount' => 0.0,
@@ -11999,30 +9717,8 @@ function updateBoundaryModelTraderState(
                         'entry_price' => $sellUnits > 0.0 ? ($costPortion / $sellUnits) : null,
                         'exit_price' => (float)$sellFill['fill_price'],
                         'lot_results' => $lotPreview['lot_results'],
-                        'global_sell_target' => $globalSellTarget,
-                        'actual_fill_price' => $actualSellFillPrice,
-                        'fill_below_global_break' => $fillBelowGlobalBreak,
                     ];
                     $state['display_action'] = 'HOLD LONG · LOT MUST MEET BREAK AFTER FEES';
-                } elseif (!$forcedStopSell && realizedProfitBelowMinimum($realizedPnl)) {
-                    $state['events_by_time'][$boundaryTime] = [
-                        'action' => 'SELL',
-                        'label' => minimumRealizedProfitLabel($realizedPnl),
-                        'class' => 'result-neutral-cell',
-                        'executed' => false,
-                        'amount' => 0.0,
-                        'realized_pnl' => null,
-                        'preview_realized_pnl' => round($realizedPnl, 8),
-                        'minimum_realized_profit' => minimumRealizedProfitAmount(),
-                        'profit_remaining' => round(max(0.0, minimumRealizedProfitAmount() - $realizedPnl), 8),
-                        'requested_amount' => $sellFill['requested_amount'],
-                        'available_amount' => $sellFill['available_amount'],
-                        'shortfall' => 0.0,
-                        'blocked_amount' => round(min((float)$sellFill['requested_amount'], (float)$sellFill['available_amount']), 8),
-                        'entry_price' => $sellUnits > 0.0 ? ($costPortion / $sellUnits) : null,
-                        'exit_price' => (float)$sellFill['fill_price'],
-                    ];
-                    $state['display_action'] = minimumRealizedProfitLabel($realizedPnl);
                 } elseif (sellLossExceedsHardLimit($realizedPnl)) {
                     $state['events_by_time'][$boundaryTime] = [
                         'action' => 'SELL',
@@ -12041,7 +9737,7 @@ function updateBoundaryModelTraderState(
                         'exit_price' => (float)$sellFill['fill_price'],
                     ];
                     $state['display_action'] = 'HOLD LONG · LOSS LIMIT $' . number_format(abs((float)MAX_REALIZED_SELL_LOSS_AMOUNT), 2);
-                } elseif (!REALIZE_LOSS_TRADES && $realizedPnl < 0.0 && !$bankSellOverride) {
+                } elseif (!REALIZE_LOSS_TRADES && $realizedPnl < 0.0) {
                     $state['events_by_time'][$boundaryTime] = [
                         'action' => 'SELL',
                         'label' => 'SELL BLOCKED · LOSS PROTECTION',
@@ -12081,7 +9777,7 @@ function updateBoundaryModelTraderState(
                     $state['realized_move'] += $realizedPnl;
                     $state['cash_left'] += (float)$sellFill['net_cash_amount'];
                     if (function_exists('paperWalletConsumeSellLots')) {
-                        $lotConsumption = paperWalletConsumeSellLots($state, $sellUnits, $currentPrice, $bankSellOverride);
+                        $lotConsumption = paperWalletConsumeSellLots($state, $sellUnits, $currentPrice);
                         $state = $lotConsumption['state'];
                         $sellUnits = (float)$lotConsumption['sold_units'];
                         $costPortion = (float)$lotConsumption['cost_portion'];
@@ -12093,8 +9789,7 @@ function updateBoundaryModelTraderState(
                             $sellFill,
                             is_array($trade['lot_results'] ?? null) ? $trade['lot_results'] : [],
                             $buyMultiplier,
-                            (string)$boundaryTime,
-                            isset($break_buy_drop_pct) ? (float)$break_buy_drop_pct : null
+                            (string)$boundaryTime
                         );
                     }
                     $state['asset_units'] = max(0.0, $unitsHeldBefore - $sellUnits);
@@ -12165,14 +9860,8 @@ function updateBoundaryModelTraderState(
                     ];
                 }
             } elseif ($action === 'BUY'
-                && ($forcedRebuy
-                    ? (float)$state['cash_left']
-                    : max(0.0, (float)$state['cash_left'] - (float)($state['pending_rebuy_total'] ?? 0.0))) >= $minimumFunds
+                && $state['cash_left'] >= $minimumFunds
             ) {
-                $reservedRebuyCash = max(0.0, (float)($state['pending_rebuy_total'] ?? 0.0));
-                $buyCashAvailable = $forcedRebuy
-                    ? min((float)$state['cash_left'], max(0.0, (float)($eligibleRebuy['remaining_amount'] ?? 0.0)))
-                    : max(0.0, (float)$state['cash_left'] - $reservedRebuyCash);
                 $entryWallet = (float)$state['cash_left'] + ((float)$state['asset_units'] * $currentPrice);
                 $buyAmount = $bellCurveActive && $bellCurveBuyAmount > 0.0
                     ? $bellCurveBuyAmount
@@ -12183,26 +9872,18 @@ function updateBoundaryModelTraderState(
                             : ($state['fixed_trade_amount'] > 0.0
                                 ? (float)$state['fixed_trade_amount'] * max(0.0, $buyMultiplier)
                                 : (float)$state['cash_left'])));
-                if (($state['loss_buy_spree_override_active'] ?? false) === true) {
-                    $lossSpreeGainMultiplier = max(0.10, (float)($riskMetricContext['loss_buy_spree_gain_multiplier'] ?? $sellMultiplier));
-                    $lossSpreeAverageAmount = max($minimumFunds, (float)($riskMetricContext['loss_buy_spree_average_amount'] ?? $initialTradeAmount));
-                    $buyAmount = $lossSpreeGainMultiplier * $lossSpreeAverageAmount;
-                    $state['loss_buy_spree']['requested_amount'] = round($buyAmount, 8);
-                    $state['loss_buy_spree']['formula'] = 'gain_multiplier × average_trade_amount';
-                }
                 $buySequenceMultiplier = $regimeActive ? 1 : ($sequenceEnabled ? max(1, (int)($sequenceSignal['trade_count'] ?? 1)) : 1);
                 $buyAmount *= $buySequenceMultiplier;
                 if ($sneakEligible) {
                     $buyAmount *= $sneakFactor;
                 }
                 $buyAmount = exchangeFloorTradeRequestAmount('BUY', $buyAmount, $minimumFunds);
-                $buyAmount = min($buyAmount, $buyCashAvailable);
-                $buySizing = canonicalTradeSizing('BUY', $buyAmount, $buyCashAvailable, $minimumFunds, $minimumFundsSource);
+                $buySizing = canonicalTradeSizing('BUY', $buyAmount, (float)$state['cash_left'], $minimumFunds, $minimumFundsSource);
                 $buySizing['phase_step_multiplier'] = $buySequenceMultiplier;
                 $buyFill = resolvePaperOrSandboxFill(
                     'BUY',
                     (float)$buySizing['requested_amount'],
-                    $buyCashAvailable,
+                    (float)$state['cash_left'],
                     $currentPrice,
                     $executionContext,
                     0.0,
@@ -12212,9 +9893,7 @@ function updateBoundaryModelTraderState(
                 $buyUnits = (float)$buyFill['units'];
                 if (($buyFill['eligible'] ?? false) === true && $buyUnits > 0.0) {
                     $trade = array_merge($buyFill, [
-                        'action' => (($state['loss_buy_spree_execution_authority'] ?? false) === true
-                            ? 'LOSS BUY SPREE OVERRIDE'
-                            : ($sneakEligible ? 'SNEAK BUY' : 'BUY ENTERED')) . ($sequenceEnabled ? ' SEQUENCE' : ''),
+                        'action' => ($sneakEligible ? 'SNEAK BUY' : 'BUY ENTERED') . ($sequenceEnabled ? ' SEQUENCE' : ''),
                         'side' => 'BUY',
                         'trade_side' => 'BUY',
                         'executed' => true,
@@ -12242,26 +9921,13 @@ function updateBoundaryModelTraderState(
                     $state['total_bought_units'] += $buyUnits;
                     $state['total_bought_amount'] += $buyAmount;
                     if (function_exists('paperWalletRecordBuyLot')) {
-                        $state = paperWalletRecordBuyLot($state, $buyUnits, (float)($buyFill['fill_price'] ?? $currentPrice), $buyAmount, isset($boundaryTime) ? (string)$boundaryTime : '', (float)($state['session_high_price'] ?? $currentPrice), ($forcedRebuy && is_array($eligibleRebuy ?? null)) ? (string)($eligibleRebuy['id'] ?? '') : null);
+                        $state = paperWalletRecordBuyLot($state, $buyUnits, (float)($buyFill['fill_price'] ?? $currentPrice), $buyAmount, isset($boundaryTime) ? (string)$boundaryTime : '', (float)($state['session_high_price'] ?? $currentPrice));
                     }
-                    $capturedSupportEdge = 0.0;
                     if ($forcedRebuy && function_exists('paperWalletConsumeRebuyReserve')) {
-                        $sourceSellPrice = max(0.0, (float)($eligibleRebuy['sell_price'] ?? 0.0));
-                        $actualRebuyPrice = max(0.0, (float)($buyFill['fill_price'] ?? $currentPrice));
-                        $capturedSupportEdge = max(0.0, ($sourceSellPrice - $actualRebuyPrice) * $buyUnits);
-                        $state['realized_support_edge'] = round(
-                            max(0.0, (float)($state['realized_support_edge'] ?? 0.0)) + $capturedSupportEdge,
-                            8
-                        );
-                        $state['support_cycles_completed'] = max(0, (int)($state['support_cycles_completed'] ?? 0)) + 1;
-                        $eligibleIds = is_array($eligibleRebuy['ids'] ?? null)
-                            ? array_values(array_map('strval', $eligibleRebuy['ids']))
-                            : [(string)($eligibleRebuy['id'] ?? '')];
-                        $state = paperWalletConsumeEligibleRebuyReserves($state, $eligibleIds, abs((float)$buyFill['cash_delta']));
+                        $state = paperWalletConsumeRebuyReserve($state, abs((float)$buyFill['cash_delta']));
                         $state['last_rebuy_source_sell_id'] = (string)($eligibleRebuy['id'] ?? '');
                         $state['last_rebuy_target_price'] = (float)($eligibleRebuy['target_price'] ?? 0.0);
                         $state['last_rebuy_amount'] = $buyAmount;
-                        $state['last_rebuy_support_edge'] = round($capturedSupportEdge, 8);
                     }
                     if ($cashOutRefillPending) {
                         $state['cash_out_refill_pending'] = false;
@@ -12286,11 +9952,8 @@ function updateBoundaryModelTraderState(
                     $state['events_by_time'][$boundaryTime] = array_merge($buyFill, [
                         'action' => 'BUY',
                         'label' => $forcedRebuy
-                            ? ('SELL-FUNDED REBUY · RESERVED $' . number_format($buyAmount, 2)
-                                . ' · SOLD @ $' . number_format((float)($eligibleRebuy['sell_price'] ?? 0.0), 4)
-                                . ' · BOUGHT @ $' . number_format((float)($buyFill['fill_price'] ?? $currentPrice), 4)
-                                . ' · CONCURRENT RESERVES ' . max(1, (int)($eligibleRebuy['concurrent_count'] ?? 1))
-                                . ' · SUPPORT CAPTURE +$' . number_format($capturedSupportEdge, 2))
+                            ? ('SELL-FUNDED REBUY · FULL RESERVED $' . number_format($buyAmount, 2)
+                                . ' · TARGET $' . number_format((float)($eligibleRebuy['target_price'] ?? 0.0), 4))
                             : ($cashOutRefillPending
                             ? 'CASH OUT REFILL BUY · MAX $5,000 ASSET · $5K CASH RESERVED'
                             : ($sneakEligible
@@ -12303,9 +9966,6 @@ function updateBoundaryModelTraderState(
                         'amount' => $buyAmount,
                         'units' => $buyUnits,
                         'realized_pnl' => null,
-                        'captured_support_edge' => round($capturedSupportEdge, 8),
-                        'support_edge_total' => round((float)($state['realized_support_edge'] ?? 0.0), 8),
-                        'support_cycles_completed' => (int)($state['support_cycles_completed'] ?? 0),
                         'entry_price' => (float)$buyFill['fill_price'],
                         'exit_price' => null,
                     ]);
@@ -12411,74 +10071,20 @@ function updateBoundaryModelTraderState(
             }
 
             if (!is_array($state['events_by_time'][$boundaryTime] ?? null)) {
-                $fallbackEventAction = ($tradeDecisionApproved && $phaseAction === 'SELL') ? 'SELL' : $phaseAction;
-                $fallbackAvailable = $fallbackEventAction === 'SELL'
-                    ? (float)$state['asset_units'] * $currentPrice
-                    : (float)$state['cash_left'];
-                $fallbackRequested = ($fallbackEventAction === 'BUY' || $fallbackEventAction === 'SELL')
-                    ? requestedPaperTradeAmountForAction(
-                        $fallbackEventAction,
-                        (float)$state['fixed_trade_amount'],
-                        $sellMultiplier,
-                        (int)($sequenceSignal['trade_count'] ?? 1),
-                        $regimeActive,
-                        $bellCurveBuyAmount,
-                        $bellCurveSellAmount,
-                        $forcedRebuy,
-                        $rebuyAmount,
-                        $sneakEligible,
-                        $sneakFactor,
-                        $buyMultiplier
-                    )
-                    : 0.0;
-                $fallbackRequested = ($fallbackEventAction === 'BUY' || $fallbackEventAction === 'SELL')
-                    ? exchangeFloorTradeRequestAmount($fallbackEventAction, $fallbackRequested, $minimumFunds)
-                    : 0.0;
-                $fallbackSizing = canonicalTradeSizing(
-                    $fallbackEventAction === 'BUY' ? 'BUY' : 'SELL',
-                    $fallbackRequested,
-                    $fallbackAvailable,
-                    $minimumFunds,
-                    $minimumFundsSource
-                );
                 $state['events_by_time'][$boundaryTime] = [
-                    'action' => $fallbackEventAction,
-                    'label' => ($tradeDecisionApproved && $fallbackEventAction === 'SELL')
-                        ? 'SELL APPROVED · EXECUTION PATH DID NOT RETURN A FILL'
-                        : ($fallbackEventAction === 'BUY' || $fallbackEventAction === 'SELL'
-                            ? $fallbackEventAction . ' SELECTED · EXECUTION EVENT MISSING'
-                            : 'NO ACTION SELECTED'),
+                    'action' => $phaseAction,
+                    'label' => 'WAITING FOR LONG',
                     'class' => 'result-neutral-cell',
                     'executed' => false,
                     'amount' => 0.0,
-                    'requested_amount' => (float)$fallbackSizing['requested_amount'],
-                    'available_amount' => (float)$fallbackSizing['available_amount'],
-                    'shortfall' => round(max(0.0, (float)$fallbackSizing['requested_amount'] - (float)$fallbackSizing['available_amount']), 8),
-                    'blocked_amount' => round(min((float)$fallbackSizing['requested_amount'], (float)$fallbackSizing['available_amount']), 8),
+                    'requested_amount' => 0.0,
+                    'available_amount' => $phaseAction === 'SELL'
+                        ? (float)$state['asset_units'] * $currentPrice
+                        : (float)$state['cash_left'],
                     'realized_pnl' => null,
                     'entry_price' => is_numeric($state['entry_price'] ?? null) ? (float)$state['entry_price'] : null,
-                    'exit_price' => $fallbackEventAction === 'SELL' ? $currentPrice : null,
+                    'exit_price' => null,
                 ];
-            }
-            if (is_array($state['events_by_time'][$boundaryTime] ?? null)) {
-                $state['events_by_time'][$boundaryTime]['boundary_time'] = $boundaryTime;
-                $state['events_by_time'][$boundaryTime]['locked_template_action'] = $phaseAction;
-                $state['events_by_time'][$boundaryTime]['event_action'] = strtoupper(trim((string)($state['events_by_time'][$boundaryTime]['action'] ?? 'NO TRADE')));
-            }
-            $decisionRoom = is_array($state['trade_decision_room'] ?? null)
-                ? $state['trade_decision_room']
-                : [];
-            if ($decisionRoom && is_array($state['events_by_time'][$boundaryTime] ?? null)) {
-                $roomLabel = threeVoterDecisionRoomLabel($decisionRoom, true);
-                $eventLabel = trim((string)($state['events_by_time'][$boundaryTime]['label'] ?? ''));
-                if ($roomLabel !== '' && !str_contains($eventLabel, (string)($decisionRoom['summary'] ?? ''))) {
-                    $state['events_by_time'][$boundaryTime]['label'] = trim(
-                        $eventLabel . ($eventLabel !== '' ? ' · ' : '') . $roomLabel
-                    );
-                }
-                $state['events_by_time'][$boundaryTime]['decision_room'] = $decisionRoom;
-                $state['events_by_time'][$boundaryTime]['decision_banks'] = $decisionRoom['voters'] ?? [];
-                $state['events_by_time'][$boundaryTime]['decision_final_reason'] = $decisionRoom['final_reason'] ?? '';
             }
             $alternationControl = is_array($state['alternation_control'] ?? null)
                 ? $state['alternation_control']
@@ -12500,7 +10106,7 @@ function updateBoundaryModelTraderState(
                 $state['events_by_time'][$boundaryTime]['alternation_control'] = $alternationControl;
             }
             if (($riskMetricContext['compression_candle_branch_flip_active'] ?? false) === true) {
-                $compressionFlipLabel = 'COMPRESSION CANDLE AUDIT '
+                $compressionFlipLabel = 'COMPRESSION CANDLE FLIP '
                     . strtoupper(trim((string)($riskMetricContext['compression_pre_flip_action'] ?? 'NO TRADE')))
                     . '→'
                     . strtoupper(trim((string)($riskMetricContext['compression_candle_branch_action'] ?? 'NO TRADE')))
@@ -12514,12 +10120,10 @@ function updateBoundaryModelTraderState(
                 }
             }
             if (($riskMetricContext['late_wrong_mark_flip_active'] ?? false) === true) {
-                $lateWrongFrom = strtoupper(trim((string)($riskMetricContext['late_wrong_mark_pre_flip_action'] ?? 'NO TRADE')));
-                $lateWrongTo = strtoupper(trim((string)($riskMetricContext['late_wrong_mark_flip_action'] ?? 'NO TRADE')));
-                $lateWrongRelation = $lateWrongFrom === $lateWrongTo ? 'CONFIRMS' : 'SUGGESTS';
-                $lateWrongFlipLabel = 'LATE WRONG MARK AUDIT '
-                    . $lateWrongRelation . ' '
-                    . $lateWrongTo
+                $lateWrongFlipLabel = 'LATE WRONG MARK FLIP '
+                    . strtoupper(trim((string)($riskMetricContext['late_wrong_mark_pre_flip_action'] ?? 'NO TRADE')))
+                    . '→'
+                    . strtoupper(trim((string)($riskMetricContext['late_wrong_mark_flip_action'] ?? 'NO TRADE')))
                     . ' @ +6M';
                 $eventLabel = trim((string)($state['events_by_time'][$boundaryTime]['label'] ?? ''));
                 if ($eventLabel === '' || !str_contains($eventLabel, $lateWrongFlipLabel)) {
@@ -12601,11 +10205,16 @@ function updateBoundaryModelTraderState(
                 $executedAction = strtoupper(trim((string)($boundaryEvent['action'] ?? 'NO TRADE')));
                 $state['last_executed_action'] = $executedAction;
                 $state['last_executed_boundary'] = $boundaryTime;
+                $state['allocated_phase_action'] = $executedAction;
+                $state['allocated_phase_hour'] = $regimeHourKey !== '' ? $regimeHourKey : null;
+                $state['last_regime_trade_hour'] = $regimeActive && $regimeHourKey !== ''
+                    ? $regimeHourKey
+                    : null;
                 $state['hourly_bell_curve_executed_amount'] = $bellCurveActive
                     ? (float)($boundaryEvent['executed_amount'] ?? 0.0)
                     : 0.0;
                 $state['hourly_bell_curve_status'] = $bellCurveActive
-                    ? 'EXECUTED · RESERVED $' . number_format(max(0.0, (float)($state['reserved_cash'] ?? 0.0)), 2)
+                    ? 'EXECUTED · RESERVED $0.00'
                     : 'INACTIVE';
             } else {
                 // A request, HOLD, or safety block is not an escrow operation.
@@ -12638,7 +10247,7 @@ function updateBoundaryModelTraderState(
                 : 0.0;
             $state['hourly_bell_curve_reserved_amount'] = 0.0;
             $state['hourly_bell_curve_status'] = (($existingBoundaryEvent['executed'] ?? false) === true)
-                ? 'EXECUTED · RESERVED $' . number_format(max(0.0, (float)($state['reserved_cash'] ?? 0.0)), 2)
+                ? 'EXECUTED · RESERVED $0.00'
                 : 'REQUEST ONLY · KITTY UNCHANGED';
         }
 
@@ -12652,9 +10261,7 @@ function updateBoundaryModelTraderState(
 
     $state['holding_value'] = (float)$state['asset_units'] * max(0.0, $currentPrice);
     $state['open_pnl'] = (float)$state['holding_value'] - (float)$state['asset_cost_basis'];
-    $state['active_wallet_value'] = max(0.0, (float)$state['cash_left']) + max(0.0, (float)$state['holding_value']);
-    $state['external_kitty_total'] = paperWalletExternalKittyTotal($state);
-    $state = normalizePaperWalletTotals($state);
+    $state['equity_value'] = (float)$state['cash_left'] + (float)$state['holding_value'];
     $state['net_pnl'] = (float)$state['equity_value'] - (float)$state['starting_pot'];
     $state['reserved_cash'] = 0.0;
     $state['reserved_asset_units'] = 0.0;
@@ -12677,8 +10284,6 @@ function updateBoundaryModelTraderState(
     $state['accuracy_independent_of_execution'] = true;
     $state['current_price'] = $currentPrice;
     $state['observed_time'] = $boundaryTime;
-    $state = applyPrincipalIncomeLock($state, $currentPrice, $boundaryTime, $executionContext, 50.0);
-    $state = normalizePaperWalletTotals($state, $currentPrice);
     $state = applyPortfolioBenchmark($state, $currentPrice);
     $state = applySpiralDownCircuitBreaker(
         $state,
@@ -12687,10 +10292,8 @@ function updateBoundaryModelTraderState(
         $riskMetricContext
     );
     if (($state['spiral_guard']['paused'] ?? false) === true) {
-        $state['spiral_guard']['blocks_actions'] = ['SELL'];
-        $state['spiral_guard']['buy_enabled'] = true;
-        $state['display_action'] = 'SELLS PAUSED · BUYS ENABLED';
-        $state['hourly_bell_curve_status'] = 'SPIRAL GUARD ACTIVE · SELLS PAUSED · BUYS ENABLED · KITTY UNCHANGED';
+        $state['display_action'] = 'PAUSED · SPIRAL GUARD';
+        $state['hourly_bell_curve_status'] = 'PAUSED · SPIRAL GUARD · KITTY UNCHANGED';
     }
     $state['paper_only'] = true;
     $state['live_orders'] = false;
@@ -13067,7 +10670,7 @@ $accuracy_total = 0;
 $accuracy_wrong = 0;
 $accuracy_passed = 0;
 $accuracy_class = 'medium';
-$accuracy_note = '0 RIGHT / 0 WRONG / 0 TOTAL • UNSCORED • LATEST VISIBLE RESOLVED ONLY';
+$accuracy_note = '0 RIGHT / 0 WRONG / 0 TOTAL • UNSCORED • VERIFIED FORWARD ONLY';
 $completed_candle = completedCandleDirection($actual_data_path);
 $current_cngn_guess = currentCngnGuess((string)$rets_sofar[0]);
 $internal_agreement = internalAgreementStatsFromTableHtml((string)$rets_sofar[0], ONE_HOUR_CANDLE_COUNT);
@@ -13201,16 +10804,6 @@ if ($carry_forward_reset_time === '' && !file_exists($dir . $ticker . '-forward-
     if ($loop_update_allowed) {
         saveLocalJsonArray($carry_forward_reset_path, [
             'symbol' => $ticker,
-    'sell_density_accumulation_triggered' => (($sell_density_accumulation['triggered'] ?? false) === true),
-    'sell_density_accumulation_action' => $sell_density_action,
-    'sell_density_override_active' => $sell_density_action === 'BUY',
-    'sell_density_sell_count' => (int)($sell_density_accumulation['sell_count'] ?? 0),
-    'sell_density_sample_count' => (int)($sell_density_accumulation['sample_count'] ?? 0),
-    'sell_density_percent' => (float)($sell_density_accumulation['sell_density_percent'] ?? 0.0),
-    'sell_density_move_percent' => (float)($sell_density_accumulation['move_percent'] ?? 0.0),
-    'sell_density_threshold_percent' => (float)($sell_density_accumulation['threshold_percent'] ?? 0.0),
-    'sell_density_stage_multiplier' => (float)($sell_density_accumulation['stage_multiplier'] ?? 1.0),
-    'sell_density_reason' => (string)($sell_density_accumulation['reason'] ?? ''),
             'market_type' => $market_type,
             'started_at' => $carry_forward_reset_time,
             'created_at' => gmdate('Y-m-d\TH:i:s\Z'),
@@ -13227,15 +10820,11 @@ $early_locked_forecasts = $loop_update_allowed
         0
     )
     : (is_array($guess_history_state['forecasts'] ?? null) ? $guess_history_state['forecasts'] : []);
-$locked_current_guess = applyHourlyLockedFlipTemplate(
-    normalizeCngnGuess(
-        is_array($early_locked_forecasts[$early_boundary_key] ?? null)
-            && isStrictForwardForecast($early_locked_forecasts[$early_boundary_key], $early_boundary_key)
-            ? $early_locked_forecasts[$early_boundary_key]
-            : null
-    ),
-    $early_boundary_key,
-    $early_locked_forecasts
+$locked_current_guess = normalizeCngnGuess(
+    is_array($early_locked_forecasts[$early_boundary_key] ?? null)
+        && isStrictForwardForecast($early_locked_forecasts[$early_boundary_key], $early_boundary_key)
+        ? $early_locked_forecasts[$early_boundary_key]
+        : null
 );
 $guess_state = $loop_update_allowed
     ? updateGuessHistory($guess_history_path, $completed_candle, $locked_current_guess)
@@ -13498,18 +11087,6 @@ $verified_audit_forecasts = array_filter(
 $hour_audit_guesses = cachedGuessesForHour($hour_audit_candles, $verified_audit_forecasts, []);
 $hour_audit_summary = buildHourAuditSummary($ticker, $hour_audit_candles, $hour_audit_guesses);
 $hour_audit_table_html = renderHourAuditTable($hour_audit_summary);
-// At :05, establish the remaining hour's exact template directions and candle
-// geometry from the completed adjusted audit.  The returned ledger replaces
-// the in-memory copy immediately so the chart does not wait for another reload.
-$depth_locked_forecasts = lockHourlyAuditDepthProfile(
-    $guess_history_path,
-    $current_boundary_epoch,
-    $hour_audit_summary
-);
-if ($depth_locked_forecasts) {
-    $forecast_by_time = $depth_locked_forecasts;
-}
-
 $hour_audit_guess = $hour_audit_summary['guess_accuracy'] ?? ['right' => 0, 'wrong' => 0, 'percent' => 0.0];
 $hour_audit_strategy = $hour_audit_summary['strategy'] ?? ['wins' => 0, 'losses' => 0, 'net_pnl' => 0.0];
 $hour_audit_long = $hour_audit_summary['long'] ?? ['wins' => 0, 'losses' => 0, 'net_pnl' => 0.0];
@@ -13551,8 +11128,19 @@ $make_guess_candle = static function (string $time, float $open, ?array $guess, 
         ? $stored_direction
         : newGuessDirectionFromPair($symbol);
 
-    // Every hourly mark is inverted once when its timestamp is locked.
-    // Do not flip it again while rendering; chart, table and execution share one action.
+    // Flip the 2nd, 5th, 8th and 11th five-minute marks of every hour.
+    // Mark positions are :00=1, :05=2, ... :55=12.
+    $markTimestamp = yahooTimestamp($time);
+    $markPosition = $markTimestamp !== null
+        ? ((int)floor(((int)gmdate('i', $markTimestamp)) / 5) + 1)
+        : 0;
+    $flipMarkPositions = [2, 5, 8, 11];
+    $markIsFlipped = in_array($markPosition, $flipMarkPositions, true);
+    if ($markIsFlipped && ($direction === '+' || $direction === '-')) {
+        $direction = $direction === '+' ? '-' : '+';
+        $action = $direction === '+' ? 'BUY' : 'SELL';
+        $symbol = $direction;
+    }
     if ($direction !== '+' && $direction !== '-') {
         if ($symbol !== '%') return null;
         return [
@@ -13570,19 +11158,13 @@ $make_guess_candle = static function (string $time, float $open, ?array $guess, 
         ];
     }
     $storedChange = guessStoredChange($guess, $latent_guess_change);
-    $profileBody = isset($guess['audit_body_depth']) && is_numeric($guess['audit_body_depth'])
-        ? abs((float)$guess['audit_body_depth']) : 0.0;
-    $change = $profileBody > 0.0 ? $profileBody : $storedChange;
-    $upperWick = isset($guess['audit_upper_wick_depth']) && is_numeric($guess['audit_upper_wick_depth'])
-        ? max(0.0, (float)$guess['audit_upper_wick_depth']) : ($change * .12);
-    $lowerWick = isset($guess['audit_lower_wick_depth']) && is_numeric($guess['audit_lower_wick_depth'])
-        ? max(0.0, (float)$guess['audit_lower_wick_depth']) : ($change * .12);
+    $change = $storedChange;
     $close = $open + ($direction === '+' ? $change : -$change);
     return [
         'time' => $time,
         'open' => $open,
-        'high' => max($open, $close) + $upperWick,
-        'low' => min($open, $close) - $lowerWick,
+        'high' => max($open, $close) + ($change * .12),
+        'low' => min($open, $close) - ($change * .12),
         'close' => $close,
         'direction' => $direction,
         'symbol' => $symbol,
@@ -13592,13 +11174,8 @@ $make_guess_candle = static function (string $time, float $open, ?array $guess, 
         'stored_change' => $storedChange,
         'elasticity_basis' => 'CURRENT_AVERAGE_MOVE',
         'elasticity_step' => abs($average_change) > 0.00000001 ? abs($average_change) : $storedChange,
-        'mark_position' => hourlyFiveMinuteMark($time),
-        'mark_flipped' => !empty($guess['hourly_template_flipped']),
-        'audit_depth_profile_locked' => !empty($guess['audit_depth_profile_locked']),
-        'audit_depth_profile_hour' => (string)($guess['audit_depth_profile_hour'] ?? ''),
-        'audit_depth_source_time' => (string)($guess['audit_depth_source_time'] ?? ''),
-        'audit_upper_wick_depth' => $upperWick,
-        'audit_lower_wick_depth' => $lowerWick,
+        'mark_position' => $markPosition,
+        'mark_flipped' => $markIsFlipped,
         'forming' => $forming,
     ];
 };
@@ -14072,7 +11649,7 @@ $resolved_results_by_time = $loop_update_allowed
     : (is_array($settled_results_state['results'] ?? null) ? $settled_results_state['results'] : []);
 $resolved_results_by_time = array_filter(
     $resolved_results_by_time,
-    static fn($result, $time): bool => is_array($result) && isResolvedGuessResult($result, (string)$time),
+    static fn($result, $time): bool => is_array($result) && isStrictForwardResult($result, (string)$time),
     ARRAY_FILTER_USE_BOTH
 );
 $verified_results_state = loadLocalJsonArray($settled_results_path);
@@ -14098,76 +11675,8 @@ foreach ($pair_stats as &$pair_stat) {
 unset($pair_stat);
 $forecast_observation_state = buildForecastObservationState($resolved_results_by_time);
 $late_wrong_mark_flip = buildLateWrongMarkFlipState($forecast_observation_state, time());
-
-// LIVE latest-12 accuracy: start from settled rows, then provisionally include
-// the current forming five-minute candle.  This keeps the dashboard current
-// instead of one mark behind.  The hourly template is already applied to the
-// stored forecast before this point; the 65% controller therefore evaluates
-// the template-adjusted current direction and may only modify unresolved marks.
-$settled_accuracy_total = (int)($forecast_observation_state['total'] ?? 0);
-$settled_accuracy_right = (int)($forecast_observation_state['right'] ?? 0);
-$live_accuracy_rows = $resolved_results_by_time;
-$current_live_guess = is_array($forecast_by_time[$early_boundary_key] ?? null)
-    ? normalizeCngnGuess($forecast_by_time[$early_boundary_key])
-    : $locked_current_guess;
-$current_live_direction = is_array($current_live_guess)
-    ? (string)($current_live_guess['direction'] ?? '')
-    : '';
-$current_live_candle = null;
-foreach ($candle_chart as $candidate_live_candle) {
-    if (!is_array($candidate_live_candle)) continue;
-    $candidate_epoch = yahooTimestamp((string)($candidate_live_candle['time'] ?? ''));
-    if ($candidate_epoch !== null && $candidate_epoch === $early_boundary_epoch) {
-        $current_live_candle = $candidate_live_candle;
-        break;
-    }
-}
-$live_current_included = false;
-if (is_array($current_live_candle)
-    && ($current_live_direction === '+' || $current_live_direction === '-')
-    && is_numeric($current_live_candle['open'] ?? null)
-    && is_numeric($current_live_candle['close'] ?? null)
-) {
-    $live_actual_direction = candleDirection(
-        (float)$current_live_candle['open'],
-        (float)$current_live_candle['close']
-    );
-    if ($live_actual_direction === '+' || $live_actual_direction === '-') {
-        $live_accuracy_rows[$early_boundary_key] = [
-            'time' => $early_boundary_key,
-            'target_open' => $early_boundary_key,
-            'predicted' => $current_live_direction,
-            'actual' => $live_actual_direction,
-            'right' => $current_live_direction === $live_actual_direction,
-            'pair' => guessPairLabel($current_live_guess),
-            'provisional' => true,
-            'forming' => true,
-            'source' => 'current-live-candle',
-        ];
-        $live_current_included = true;
-    }
-}
-uksort($live_accuracy_rows, static fn(string $left, string $right): int => strcmp($left, $right));
-if (count($live_accuracy_rows) > ONE_HOUR_CANDLE_COUNT) {
-    $live_accuracy_rows = array_slice($live_accuracy_rows, -ONE_HOUR_CANDLE_COUNT, null, true);
-}
-$accuracy_total = count($live_accuracy_rows);
-$accuracy_right = 0;
-foreach ($live_accuracy_rows as $live_accuracy_row) {
-    if (is_array($live_accuracy_row) && (($live_accuracy_row['right'] ?? false) === true)) {
-        $accuracy_right++;
-    }
-}
-$live_accuracy_percent = $accuracy_total > 0
-    ? round(($accuracy_right / $accuracy_total) * 100.0, 4)
-    : 0.0;
-$forecast_observation_state['live_right'] = $accuracy_right;
-$forecast_observation_state['live_wrong'] = max(0, $accuracy_total - $accuracy_right);
-$forecast_observation_state['live_total'] = $accuracy_total;
-$forecast_observation_state['live_percent'] = $live_accuracy_percent;
-$forecast_observation_state['live_current_included'] = $live_current_included;
-$forecast_observation_state['settled_right'] = $settled_accuracy_right;
-$forecast_observation_state['settled_total'] = $settled_accuracy_total;
+$accuracy_total = (int)($forecast_observation_state['total'] ?? 0);
+$accuracy_right = (int)($forecast_observation_state['right'] ?? 0);
 $internal_agreement = internalAgreementStatsFromResolvedTable($resolved_results_by_time, ONE_HOUR_CANDLE_COUNT);
 $pair_rule_state = buildHourlyPairDirectionState(
     $resolved_results_by_time,
@@ -14290,45 +11799,24 @@ if ($adaptive_complete_flip) {
 }
 $accuracy_historical = $accuracy;
 $accuracy_flipped = $adaptive_complete_flip;
-// The displayed Guess % and the 65% crossing controller use the exact live
-// latest-12 ratio. Bell evidence remains diagnostic only.
-$accuracy_effective = round($live_accuracy_percent, 2);
-
-// Confidence control owns only unresolved marks.  The existing SELL-density
-// pickup can still force BUY when repeated SELL positioning and the configured
-// cumulative loss threshold qualify.
-$confidence_hour_control = applyConfidenceControlledHourRemainder(
-    $guess_history_path,
-    $forecast_by_time,
-    $current_boundary_epoch,
-    $accuracy_effective,
-    66.0,
-    $loop_update_allowed,
-    $accuracy_right,
-    $accuracy_total
-);
-$forecast_by_time = is_array($confidence_hour_control['forecasts'] ?? null)
-    ? $confidence_hour_control['forecasts'] : $forecast_by_time;
-if (is_array($forecast_by_time[$early_boundary_key] ?? null)) {
-    $locked_current_guess = normalizeCngnGuess($forecast_by_time[$early_boundary_key]);
-    $display_current_guess = $locked_current_guess;
-}
-
+$accuracy_effective = round((float)($accuracy_bell_curve['effective_percent'] ?? $accuracy_historical), 2);
 $accuracy_class = $accuracy_total <= 0
     ? 'medium'
-    : ($accuracy_effective >= 66 ? 'good' : ($accuracy_effective >= 50 ? 'medium' : 'low'));
+    : ($accuracy_effective >= 65 ? 'good' : ($accuracy_effective >= 50 ? 'medium' : 'low'));
 $accuracy_note = $accuracy_total > 0
-    ? $accuracy_right . ' RIGHT / ' . $accuracy_wrong . ' WRONG / ' . $accuracy_total
-        . ' IN LIVE LATEST-' . ONE_HOUR_CANDLE_COUNT . ' WINDOW'
-        . ($live_current_included ? ' • CURRENT FORMING CANDLE INCLUDED' : ' • SETTLED ONLY')
-        . ' • GUESS ' . number_format($accuracy_effective, 2) . '%'
-        . ' • TARGET 80.00% • CONTROL 66.00%'
-        . ' • TEMPLATE-ADJUSTED LOCKED FORECASTS'
-        . ' • SETTLED ' . $settled_accuracy_right . '/' . $settled_accuracy_total
-        . ' • EXECUTION RESULTS EXCLUDED'
+    ? $accuracy_right . ' RIGHT / ' . $accuracy_wrong . ' WRONG / ' . $accuracy_total . ' TOTAL'
+        . ' • HISTORICAL ' . number_format($accuracy_historical, 2) . '%'
+        . ' • EFFECTIVE ' . number_format($accuracy_effective, 2) . '%'
+        . ($accuracy_flipped ? ' • FLIPPED' : '')
+        . ' • BELL ' . number_format((float)($accuracy_bell_curve['evidence_percent'] ?? 0.0), 1) . '%'
+        . ' · z ' . number_format((float)($accuracy_bell_curve['z_score'] ?? 0.0), 2)
+        . ' · ' . (string)($accuracy_bell_curve['reason'] ?? 'HOLD')
+        . ' • VERIFIED FORWARD OBSERVATIONS ONLY • TRADE EXECUTION IGNORED'
+        . ($legacy_historical_rows_excluded > 0 ? ' • LEGACY ' . $legacy_historical_rows_excluded . ' EXCLUDED' : '')
         . ($forward_unverified_rows_excluded > 0 ? ' • UNVERIFIED ' . $forward_unverified_rows_excluded . ' EXCLUDED' : '')
-    : '0 RIGHT / 0 WRONG / 0 RESOLVED IN LATEST-' . ONE_HOUR_CANDLE_COUNT . ' WINDOW'
-        . ' • GUESS UNSCORED • VERIFIED TIMESTAMP-LOCKED FORECASTS ONLY';
+    : '0 RIGHT / 0 WRONG / 0 TOTAL • UNSCORED • VERIFIED FORWARD OBSERVATIONS ONLY • TRADE EXECUTION IGNORED'
+        . ($legacy_historical_rows_excluded > 0 ? ' • LEGACY ' . $legacy_historical_rows_excluded . ' EXCLUDED' : '')
+        . ($forward_unverified_rows_excluded > 0 ? ' • UNVERIFIED ' . $forward_unverified_rows_excluded . ' EXCLUDED' : '');
 $compression_state = is_array($pair_rule_state['compression'] ?? null) ? $pair_rule_state['compression'] : [];
 $first_loop_compression_rows = [];
 foreach (historicalTimedCngnGuesses((string)$rets_sofar[0]) as $first_loop_guess) {
@@ -14616,10 +12104,9 @@ $autonomous_quick_flip_active = false;
 $autonomous_quick_flip_reason = '';
 $preFlipActionForAuto = is_array($effective_execution_guess) ? guessStoredAction($effective_execution_guess) : 'NO TRADE';
 $lateWrongPreview = is_array($late_wrong_mark_flip ?? null) ? $late_wrong_mark_flip : [];
-$lateWrongSuggestedAction = strtoupper(trim((string)($lateWrongPreview['flip_action'] ?? 'NO TRADE')));
-$lateWrongAuditActive = (($lateWrongPreview['active'] ?? false) === true)
-    && in_array($lateWrongSuggestedAction, ['BUY', 'SELL'], true);
-$lateWrongWouldFlip = false; // Audit evidence cannot mutate the locked executable action.
+$lateWrongWouldFlip = (($lateWrongPreview['active'] ?? false) === true)
+    && in_array(strtoupper(trim((string)($lateWrongPreview['flip_action'] ?? ''))), ['BUY', 'SELL'], true)
+    && strtoupper(trim((string)($lateWrongPreview['flip_action'] ?? ''))) !== $preFlipActionForAuto;
 $invertOrientation = isset($execution_bell_curve_orientation) && $execution_bell_curve_orientation === 'INVERT' && !empty($execution_bell_curve_eligible);
 $repeatLossDoom = false;
 if (isset($paper_wallet_state) && is_array($paper_wallet_state)) {
@@ -14627,9 +12114,10 @@ if (isset($paper_wallet_state) && is_array($paper_wallet_state)) {
     $lastAct = strtoupper(trim((string)(($paper_wallet_state['last_trade']['action'] ?? '') ?: ($paper_wallet_state['last_signal_action'] ?? ''))));
     if ($lastRes === 'LOSS' && ($lastAct === 'BUY' || $lastAct === 'SELL') && $preFlipActionForAuto === $lastAct) $repeatLossDoom = true;
 }
-if (is_array($effective_execution_guess) && ($preFlipActionForAuto === 'BUY' || $preFlipActionForAuto === 'SELL') && ($invertOrientation || $repeatLossDoom)) {
+if (is_array($effective_execution_guess) && ($preFlipActionForAuto === 'BUY' || $preFlipActionForAuto === 'SELL') && ($lateWrongWouldFlip || $invertOrientation || $repeatLossDoom)) {
     $autonomous_quick_flip_active = true;
-    if ($invertOrientation) { $autonomous_quick_flip_reason = 'INVERT ORIENTATION'; $to = $preFlipActionForAuto === 'BUY' ? 'SELL' : 'BUY'; }
+    if ($lateWrongWouldFlip) { $autonomous_quick_flip_reason = 'LATE WRONG MARK'; $to = strtoupper(trim((string)$lateWrongPreview['flip_action'])); }
+    elseif ($invertOrientation) { $autonomous_quick_flip_reason = 'INVERT ORIENTATION'; $to = $preFlipActionForAuto === 'BUY' ? 'SELL' : 'BUY'; }
     else { $autonomous_quick_flip_reason = 'REPEAT LOSS DOOM'; $to = $preFlipActionForAuto === 'BUY' ? 'SELL' : 'BUY'; }
     $effective_execution_guess['direction'] = $to === 'BUY' ? '+' : '-';
     $effective_execution_guess['action'] = $to;
@@ -14650,32 +12138,26 @@ if ($late_wrong_mark_flip_action !== 'BUY' && $late_wrong_mark_flip_action !== '
     $late_wrong_mark_flip_action = 'NO TRADE';
 }
 $late_wrong_mark_pre_flip_action = guessStoredAction($effective_execution_guess);
-$late_wrong_mark_relation = ($late_wrong_mark_flip_active
-    && in_array($late_wrong_mark_pre_flip_action, ['BUY', 'SELL'], true)
-    && in_array($late_wrong_mark_flip_action, ['BUY', 'SELL'], true))
-        ? ($late_wrong_mark_pre_flip_action === $late_wrong_mark_flip_action ? 'CONFIRMS' : 'SUGGESTS')
-        : 'NONE';
 if ($late_wrong_mark_flip_active
     && is_array($effective_execution_guess)
     && ($late_wrong_mark_flip_action === 'BUY' || $late_wrong_mark_flip_action === 'SELL')
 ) {
-    // Audit evidence only. The locked hourly-template action is immutable once
-    // the :05 reference establishes the hour.
+    $effective_execution_guess['direction'] = $late_wrong_mark_flip_action === 'BUY' ? '+' : '-';
+    $effective_execution_guess['action'] = $late_wrong_mark_flip_action;
     $effective_execution_guess['late_wrong_mark_flip'] = true;
-    $effective_execution_guess['late_wrong_mark_suggested_action'] = $late_wrong_mark_flip_action;
     $effective_execution_guess['late_wrong_mark_target_time'] = (string)($late_wrong_mark_flip['target_time'] ?? '');
     $effective_execution_guess['late_wrong_mark_activation_time'] = (string)($late_wrong_mark_flip['activation_time'] ?? '');
-    $execution_bell_curve_source = 'LATE_WRONG_MARK_EVIDENCE';
-    $execution_bell_curve_orientation = 'EVIDENCE_ONLY';
+    $execution_bell_curve_source = 'LATE_WRONG_MARK';
+    $execution_bell_curve_orientation = 'INVERT';
     $execution_bell_curve_eligible = true;
     $execution_bell_curve_strength = 100.0;
     $execution_bell_curve['eligible'] = true;
     $execution_bell_curve['observation_eligible'] = true;
-    $execution_bell_curve['orientation'] = 'EVIDENCE_ONLY';
-    $execution_bell_curve['observation_orientation'] = 'EVIDENCE_ONLY';
+    $execution_bell_curve['orientation'] = 'INVERT';
+    $execution_bell_curve['observation_orientation'] = 'INVERT';
     $execution_bell_curve['effective_percent'] = 100.0;
     $execution_bell_curve['evidence_percent'] = 100.0;
-    $execution_bell_curve['reason'] = 'WRONG MARK +6M AUDIT SUGGESTION';
+    $execution_bell_curve['reason'] = 'WRONG MARK +6M FLIP';
     $execution_bell_curve['stake_multiplier'] = max(1.0, (float)($execution_bell_curve['stake_multiplier'] ?? 0.0));
     $execution_bell_curve_multiplier = max($execution_bell_curve_multiplier, 1.0);
 }
@@ -14688,10 +12170,10 @@ $compression_candle_branch_opposes_action = $compression_candle_branch_active
     && $pre_compression_candle_action !== $compression_candle_branch_action;
 $compression_candle_branch_flip_active = $compression_candle_branch_opposes_action;
 if ($compression_candle_branch_flip_active && is_array($effective_execution_guess)) {
-    // Compression is an audit-voter suggestion, not a post-template rewrite.
+    $effective_execution_guess['direction'] = $compression_candle_branch_action === 'BUY' ? '+' : '-';
+    $effective_execution_guess['action'] = $compression_candle_branch_action;
     $effective_execution_guess['compression_candle_branch'] = true;
     $effective_execution_guess['compression_candle_flip'] = true;
-    $effective_execution_guess['compression_candle_suggested_action'] = $compression_candle_branch_action;
     $effective_execution_guess['compression_candle_score'] = round($compression_candle_branch_score, 2);
     $effective_execution_guess['compression_candle_horizon'] = $compression_candle_branch_horizon;
     $execution_bell_curve_source = 'COMPRESSION_CANDLE';
@@ -14748,11 +12230,6 @@ $execution_branch_trusted = $execution_bell_curve_source === 'FAMILY'
     && $execution_bell_curve_eligible
     && $execution_bell_curve_orientation === 'KEEP'
     && (float)($execution_bell_curve['effective_percent'] ?? 0.0) >= 85.0;
-// The visible symbol and executable action must be the same timestamp-owned decision.
-// Diagnostic audit branches may be displayed, but they cannot switch BUY/SELL after the mark is locked.
-if (is_array($locked_current_guess)) {
-    $effective_execution_guess = $locked_current_guess;
-}
 $trade_guess = $effective_execution_guess;
 $execution_current_guess = $trade_guess;
 $quarter_regime_trade_blocked = false;
@@ -14979,59 +12456,6 @@ if ($regime_plan_active) {
     $hourly_bell_curve_plan['phase_step_multiplier'] = $regime_step_count;
 }
 
-// Convert repeated recent SELL guesses plus a global percentage decline into
-// a staged BUY-for-inventory signal. This is evaluated before the ordinary
-// cumulative trigger so defensive selling can deliberately pick up weakness.
-$sell_density_accumulation = sellDensityAccumulationTrigger(
-    $guess_by_time,
-    $chart_source_candles,
-    (float)$break_buy_drop_pct,
-    8,
-    ONE_HOUR_CANDLE_COUNT
-);
-$sell_density_action = (($sell_density_accumulation['triggered'] ?? false) === true)
-    ? 'BUY'
-    : 'NO TRADE';
-
-// Measure cumulative completed-candle movement against the same global break
-// controls used by BUY and SELL. A qualifying move becomes an actionable signal
-// even when it took several five-minute candles to reach the percentage.
-$cumulative_open_close_trigger = cumulativeOpenCloseMoveTrigger(
-    $chart_source_candles,
-    (float)$break_take_gain_pct,
-    (float)$break_buy_drop_pct,
-    ONE_HOUR_CANDLE_COUNT
-);
-$cumulative_open_close_action = (($cumulative_open_close_trigger['triggered'] ?? false) === true)
-    ? strtoupper((string)($cumulative_open_close_trigger['action'] ?? 'NO TRADE'))
-    : 'NO TRADE';
-
-if ($sell_density_action === 'BUY') {
-    $formula_execution_action = 'BUY';
-    $densityMultiplier = max(1.0, (float)($sell_density_accumulation['stage_multiplier'] ?? 1.0));
-    if (isset($hourly_bell_curve_plan['single_trade_amount'])) {
-        $hourly_bell_curve_plan['single_trade_amount'] = round(
-            (float)$hourly_bell_curve_plan['single_trade_amount'] * $densityMultiplier,
-            8
-        );
-        $hourly_bell_curve_plan['single_trade_multiplier'] = round(
-            (float)($hourly_bell_curve_plan['single_trade_multiplier'] ?? 1.0) * $densityMultiplier,
-            4
-        );
-        $hourly_bell_curve_plan['sell_density_stage_multiplier'] = $densityMultiplier;
-        $hourly_bell_curve_plan['sell_density_override_active'] = true;
-        $hourly_bell_curve_plan['sell_density_override_reason'] = (string)($sell_density_accumulation['reason'] ?? 'SELL-DENSITY PICKUP OVERRIDE');
-        $hourly_bell_curve_plan['dominant_action'] = 'BUY';
-        $hourly_bell_curve_plan['single_trade_action'] = 'BUY';
-        $hourly_bell_curve_plan['total_buy_requested'] = round((float)$hourly_bell_curve_plan['single_trade_amount'], 8);
-        $hourly_bell_curve_plan['total_sell_requested'] = 0.0;
-        if (!empty($hourly_bell_curve_plan['slots'][0])) {
-            $hourly_bell_curve_plan['slots'][0]['action'] = 'BUY';
-            $hourly_bell_curve_plan['slots'][0]['reason'] = 'SELL-DENSITY OVERRIDE';
-        }
-    }
-}
-
 // Apply sequence trading only after the resolved result ledger is available.
 $sequence_guesses = $guess_by_time;
 $sequence_guesses[$early_boundary_key] = is_array($trade_guess) ? $trade_guess : [];
@@ -15060,49 +12484,9 @@ if ($regime_plan_active && ($formula_execution_action === 'BUY' || $formula_exec
         'samples' => $compression_candle_branch_flip_active ? max(1, $compression_samples) : $accuracy_total,
     ];
 }
-if ($cumulative_open_close_action === 'BUY' || $cumulative_open_close_action === 'SELL') {
-    $formula_execution_action = $cumulative_open_close_action;
-    $sequence_signal = [
-        'enabled' => true,
-        'cumulative_open_close_active' => true,
-        'action' => $cumulative_open_close_action,
-        'run_length' => max(0, (int)($cumulative_open_close_trigger['candle_count'] ?? 1) - 1),
-        'trade_count' => 1,
-        'pair' => guessPairLabel($trade_guess),
-        'run_pair' => guessPairLabel($trade_guess),
-        'accuracy' => 100.0,
-        'samples' => max(1, (int)($cumulative_open_close_trigger['candle_count'] ?? 1)),
-        'reason' => (string)($cumulative_open_close_trigger['reason'] ?? 'CUMULATIVE OPEN→CLOSE BREAK'),
-    ];
-}
-
-if ($sell_density_action === 'BUY') {
-    $formula_execution_action = 'BUY';
-    $sequence_signal = [
-        'enabled' => true,
-        'sell_density_accumulation_active' => true,
-        'action' => 'BUY',
-        'run_length' => max(0, (int)($sell_density_accumulation['sell_count'] ?? 1) - 1),
-        'trade_count' => 1,
-        'pair' => guessPairLabel($trade_guess),
-        'run_pair' => guessPairLabel($trade_guess),
-        'accuracy' => (float)($sell_density_accumulation['sell_density_percent'] ?? 0.0),
-        'samples' => max(1, (int)($sell_density_accumulation['sample_count'] ?? 1)),
-        'reason' => (string)($sell_density_accumulation['reason'] ?? 'SELL-DENSITY PICKUP'),
-    ];
-}
-
 $spiral_guard_metric_context = [
     'market_type' => $market_type,
     'symbol' => $ticker,
-    'cumulative_open_close_triggered' => (($cumulative_open_close_trigger['triggered'] ?? false) === true),
-    'cumulative_open_close_action' => $cumulative_open_close_action,
-    'cumulative_open_close_move_percent' => (float)($cumulative_open_close_trigger['move_percent'] ?? 0.0),
-    'cumulative_open_close_candle_count' => (int)($cumulative_open_close_trigger['candle_count'] ?? 0),
-    'cumulative_open_close_start_open' => (float)($cumulative_open_close_trigger['start_open'] ?? 0.0),
-    'cumulative_open_close_latest_close' => (float)($cumulative_open_close_trigger['latest_close'] ?? 0.0),
-    'cumulative_open_close_threshold_percent' => (float)($cumulative_open_close_trigger['threshold_percent'] ?? 0.0),
-    'cumulative_open_close_reason' => (string)($cumulative_open_close_trigger['reason'] ?? ''),
     'forecast_fingerprint' => (string)($locked_current_guess['fingerprint'] ?? ''),
     'forecast_rule_version' => (string)($locked_current_guess['rule_version'] ?? forecastRuleVersion()),
     'verified_samples' => $accuracy_total,
@@ -15126,7 +12510,6 @@ $spiral_guard_metric_context = [
     'late_wrong_mark_flip_active' => $late_wrong_mark_flip_active,
     'late_wrong_mark_flip_action' => $late_wrong_mark_flip_action,
     'late_wrong_mark_pre_flip_action' => $late_wrong_mark_pre_flip_action,
-    'late_wrong_mark_relation' => $late_wrong_mark_relation,
     'late_wrong_mark_target_time' => (string)($late_wrong_mark_flip['target_time'] ?? ''),
     'late_wrong_mark_activation_time' => (string)($late_wrong_mark_flip['activation_time'] ?? ''),
     'internal_agreement' => $internal_agreement_recent_effective_percent,
@@ -15141,11 +12524,6 @@ $spiral_guard_metric_context = [
     'compression_allows_alternation' => $alternation_pattern_active
         && compressionAllowsAlternation($compression_state, $formula_execution_action),
     'global_wrong_mark_branches' => $tracked_wrong_mark_branches,
-    'loss_buy_spree_percent' => (int)$loss_buy_spree_percent,
-    'loss_buy_spree_candles' => latestCompletedFiveMinuteCandles($chart_source_candles, 4),
-    'loss_buy_spree_lookback_candles' => 4,
-    'loss_buy_spree_gain_multiplier' => max(0.10, (float)$sell_multiplier),
-    'loss_buy_spree_average_amount' => max($paper_minimum_trade_funds, (float)$average_change),
 ];
 $paper_break_replay_state = buildModelPaperTraderState(
     $chart_source_candles,
@@ -15187,9 +12565,6 @@ $paper_break_state = $loop_update_allowed
         ? $stored_model_wallet_state
         : $paper_break_replay_state);
 $paper_break_state = normalizeTraderDisplayState($paper_break_state);
-$hour_audit_summary = attachGuessPositioningToHourAudit($hour_audit_summary, $paper_break_state);
-if ($loop_update_allowed) saveLocalJsonArray($model_wallet_state_path, normalizeTraderDisplayState($paper_break_state));
-$hour_audit_table_html = renderHourAuditTable($hour_audit_summary);
 $paper_break_state = attachCashOutRejoinFeeEstimate($paper_break_state, (float)$current_price, $paper_execution_context);
 $paper_break_state['forecast_observation'] = $forecast_observation_state;
 $paper_break_state['global_wrong_mark_branches'] = $tracked_wrong_mark_branches;
@@ -15198,13 +12573,6 @@ $paper_break_state['accuracy_independent_of_execution'] = true;
 $paper_break_state['right_percent'] = is_numeric($forecast_observation_state['effective_percent'] ?? null)
     ? (float)$forecast_observation_state['effective_percent']
     : 0.0;
-$paper_break_state['confidence_hour_control'] = $confidence_hour_control ?? [
-    'threshold' => 65.0,
-    'confidence' => $accuracy_effective ?? 0.0,
-    'above_threshold' => (($accuracy_effective ?? 0.0) >= 65.0),
-    'remaining_flipped' => false,
-    'reason' => 'UNAVAILABLE',
-];
 $paper_break_state['attack_active'] = (($attack_profile['active'] ?? false) === true);
 $paper_break_state['attack_factor'] = (float)($attack_profile['factor'] ?? 1.0);
 $paper_break_state['attack_label'] = (string)($attack_profile['label'] ?? 'BASE');
@@ -15215,20 +12583,13 @@ $spiral_guard = is_array($paper_break_state['spiral_guard'] ?? null)
     : defaultSpiralDownGuardState((float)($paper_break_state['starting_pot'] ?? 10000.0));
 $spiral_guard_paused = (($spiral_guard['paused'] ?? false) === true);
 if ($spiral_guard_paused) {
-    // Spiral protection is directional: it suppresses discretionary SELLs only.
-    // BUYs and sell-funded rebuys remain eligible unless another hard gate fails.
-    $spiral_guard['blocks_actions'] = ['SELL'];
-    $spiral_guard['buy_enabled'] = true;
-    $paper_break_state['spiral_guard'] = $spiral_guard;
-    if (strtoupper((string)($bell_curve_trade_action ?? $bell_curve_trade_reason ?? '')) === 'SELL') {
-        $bell_curve_trade_eligible = false;
-        $bell_curve_trade_reason = 'HOLD SELL · SPIRAL GUARD · '
-            . (string)($spiral_guard['reason'] ?? 'DRAWDOWN PAUSE');
-    }
+    $bell_curve_trade_eligible = false;
+    $bell_curve_trade_reason = 'HOLD · SPIRAL GUARD · '
+        . (string)($spiral_guard['reason'] ?? 'DRAWDOWN PAUSE');
     $aggressive_actions_active = false;
     $paper_break_state['attack_active'] = false;
-    $paper_break_state['attack_label'] = 'SELL RISK PAUSE';
-    $paper_break_state['attack_reason'] = 'SPIRAL GUARD BLOCKS SELLS ONLY · BUYS ENABLED';
+    $paper_break_state['attack_label'] = 'RISK PAUSE';
+    $paper_break_state['attack_reason'] = $bell_curve_trade_reason;
 }
 $paper_break_action = (string)($paper_break_state['display_action'] ?? 'WATCHING');
 $paper_break_class = (float)($paper_break_state['sim_net_move'] ?? 0.0) > 0.0
@@ -15266,7 +12627,7 @@ $visible_timeline_future = array_slice($timeline_future, 0, min(VISIBLE_FUTURE_G
 $display_timeline = array_merge(array_reverse($visible_timeline_future), $timeline_current, array_reverse($timeline_elapsed));
 $display_timeline = centeredTimelineWindow(
     $display_timeline,
-    guessStoredAction(is_array($execution_current_guess) ? $execution_current_guess : null),
+    'BUY',
     gmdate('Y-m-d\TH:i:s\Z', $current_boundary_epoch),
     16
 );
@@ -15285,40 +12646,7 @@ $current_price_note = '1H ' . $current_price_direction
     . ' • MOVE ' . ($hour_price_change >= 0.0 ? '+' : '-') . '$' . number_format(abs($hour_price_change), 2)
     . ($hour_reference_price > 0.0 ? ' • FROM $' . number_format($hour_reference_price, 2) : '');
 $paper_break_position = (($paper_break_state['position'] ?? 'flat') === 'long') ? 'LONG' : 'FLAT';
-$paper_break_active_wallet_value = max(0.0, (float)($paper_break_state['cash_left'] ?? 0.0)) + max(0.0, (float)($paper_break_state['holding_value'] ?? 0.0));
-$paper_break_external_kitty_total = paperWalletExternalKittyTotal($paper_break_state);
-$paper_break_sold_into_cash_kitty_total = paperWalletSoldIntoCashKittyTotal($paper_break_state);
-$paper_break_equity = paperWalletTotalEquity(
-    $paper_break_state,
-    max(0.0, (float)($paper_break_state['cash_left'] ?? 0.0)),
-    max(0.0, (float)($paper_break_state['holding_value'] ?? 0.0))
-);
-// Never trust a stale saved equity_value for display. Persist the canonical sum.
-$paper_break_state['active_wallet_value'] = $paper_break_active_wallet_value;
-$paper_break_state['external_kitty_total'] = $paper_break_external_kitty_total;
-$paper_break_state = finalizeCanonicalTradingState($paper_break_state, $current_price);
-$paper_break_equity = (float)$paper_break_state['equity_value'];
-// OUTPUT TOTAL excludes the starting principal. It reflects only the
-// current signed trading P&L plus SELL proceeds that remain unreinvested.
-$principal_initial = max(0.0, (float)($paper_break_state['principal_initial'] ?? $paper_break_state['starting_pot'] ?? 10000.0));
-$paper_total_sold_cumulative = max(0.0, $paper_break_sold_into_cash_kitty_total);
-$paper_total_sold_unreinvested = min(
-    $paper_total_sold_cumulative,
-    max(0.0, (float)($paper_break_state['pending_rebuy_total'] ?? 0.0))
-);
-$paper_total_signed_pnl = (float)($paper_break_state['net_pnl'] ?? 0.0);
-$paper_total_reconciled = $paper_total_signed_pnl + $paper_total_sold_unreinvested;
-$paper_total_breakdown = ($paper_total_signed_pnl >= 0.0 ? 'P&L +$' : 'P&L -$')
-    . number_format(abs($paper_total_signed_pnl), 2)
-    . ' + UNREINVESTED SOLD $' . number_format($paper_total_sold_unreinvested, 2);
-$principal_active_equity = max(0.0, (float)($paper_break_state['principal_active_equity'] ?? ((float)($paper_break_state['cash_left'] ?? 0.0) + (float)($paper_break_state['holding_value'] ?? 0.0))));
-$principal_active_excess = max(0.0, (float)($paper_break_state['principal_active_excess'] ?? ($principal_active_equity - $principal_initial)));
-$principal_income_locked_total = paperWalletPrincipalSelloffCashedOutTotal($paper_break_state);
-$paper_break_state['principal_income_locked_total'] = $principal_income_locked_total;
-$principal_income_last_lock = max(0.0, (float)($paper_break_state['principal_income_last_lock'] ?? 0.0));
-$principal_income_threshold = max(0.01, (float)($paper_break_state['principal_income_threshold'] ?? 50.0));
-$principal_next_lock_needed = max(0.0, (float)($paper_break_state['principal_next_lock_needed'] ?? ($principal_income_threshold - $principal_active_excess)));
-$principal_income_status = (string)($paper_break_state['principal_income_status'] ?? ('WAITING · NEEDS $' . number_format($principal_next_lock_needed, 2)));
+$paper_break_equity = (float)($paper_break_state['equity_value'] ?? 0.0);
 $paper_break_cash_left = (float)($paper_break_state['cash_left'] ?? 0.0);
 $paper_break_holding_value = (float)($paper_break_state['holding_value'] ?? 0.0);
 $paper_break_held_units = (float)($paper_break_state['asset_units'] ?? 0.0);
@@ -15345,7 +12673,7 @@ $paper_break_cashout_rejoin_label = trim((string)($paper_break_state['cash_out_r
 $paper_break_cashout_cash_kitty_reserve = (float)($paper_break_state['cash_out_cash_kitty_reserve'] ?? 5000.0);
 $paper_break_cashout_available_for_asset_refill = (float)($paper_break_state['cash_out_available_for_asset_refill'] ?? max(0.0, $paper_break_cash_left - $paper_break_cashout_cash_kitty_reserve));
 $spiral_guard_metrics = is_array($spiral_guard['metrics'] ?? null) ? $spiral_guard['metrics'] : [];
-$spiral_guard_status_label = $spiral_guard_paused ? 'SELLS PAUSED · BUYS ENABLED' : 'MONITORING';
+$spiral_guard_status_label = $spiral_guard_paused ? 'PAUSED' : 'MONITORING';
 $spiral_guard_class = $spiral_guard_paused ? 'low' : 'good';
 $spiral_guard_detail_label = (string)($spiral_guard['reason'] ?? 'Risk metrics stable')
     . ' • DRAWDOWN ' . number_format((float)($spiral_guard['drawdown_percent'] ?? 0.0), 2) . '%'
@@ -15498,7 +12826,6 @@ $current_phase_sizing['late_wrong_mark_flip'] = $late_wrong_mark_flip;
 $current_phase_sizing['late_wrong_mark_flip_active'] = $late_wrong_mark_flip_active;
 $current_phase_sizing['late_wrong_mark_flip_action'] = $late_wrong_mark_flip_action;
 $current_phase_sizing['late_wrong_mark_pre_flip_action'] = $late_wrong_mark_pre_flip_action;
-$current_phase_sizing['late_wrong_mark_relation'] = $late_wrong_mark_relation;
 $current_phase_sizing['late_wrong_mark_target_time'] = (string)($late_wrong_mark_flip['target_time'] ?? '');
 $current_phase_sizing['late_wrong_mark_activation_time'] = (string)($late_wrong_mark_flip['activation_time'] ?? '');
 $current_boundary_trade_event = is_array($paper_break_events_by_time[$early_boundary_key] ?? null)
@@ -15521,7 +12848,7 @@ if (is_array($current_boundary_trade_event)) {
     $genericNoExecutionEvent = !$eventExecuted
         && $eventRequested <= 0.00000001
         && $fallbackRequested > 0.0
-        && ($eventLabelText === 'HOLD · NO EXECUTION' || $eventActionText === 'NO TRADE');
+        && ($eventLabelText === 'HOLD · NO EXECUTION' || $eventLabelText === 'WAITING FOR LONG' || $eventActionText === 'NO TRADE');
     if ($genericNoExecutionEvent) {
         $eventRequested = $fallbackRequested;
         $eventAvailable = $fallbackAvailable;
@@ -15538,9 +12865,9 @@ if (is_array($current_boundary_trade_event)) {
     $current_phase_sizing['reserved_amount'] = 0.0;
     $current_phase_sizing['shortfall'] = is_numeric($current_boundary_trade_event['shortfall'] ?? null)
         ? round(max(0.0, (float)$current_boundary_trade_event['shortfall']), 8)
-        : round(max(0.0, $eventRequested - $eventAvailable), 8);
+        : round(max(0.0, $eventRequested - $eventAmount), 8);
     if ($genericNoExecutionEvent) {
-        $current_phase_sizing['shortfall'] = round(max(0.0, $eventRequested - $eventAvailable), 8);
+        $current_phase_sizing['shortfall'] = round(max(0.0, $eventRequested), 8);
     }
     $current_phase_sizing['eligible'] = $eventExecuted;
     $current_phase_sizing['event_executed'] = $eventExecuted;
@@ -15589,11 +12916,10 @@ $current_guess_note = $current_guess_pair_label === '%'
 $paper_break_value_label = 'PORTFOLIO P&L '
     . ($paper_break_sim_net_move >= 0.0 ? '+' : '-')
     . '$' . number_format(abs($paper_break_sim_net_move), 2);
-$paper_break_remaining_units_from_turnover = max(0.0, $paper_break_bought_units - $paper_break_sold_units);
 $paper_break_note = 'POT $' . number_format($paper_break_equity, 2)
     . ' • ' . $paper_break_asset_left_label . ' ' . $paper_break_asset_left_amount
-    . ' • ' . 'CUMULATIVE ' . $paper_break_asset_bought_label . ' ' . $paper_break_asset_bought_amount . ' ($' . number_format($paper_break_bought_amount, 2) . ')'
-    . ' • ' . 'CUMULATIVE ' . $paper_break_asset_sold_label . ' ' . $paper_break_asset_sold_amount . ' ($' . number_format($paper_break_sold_amount, 2) . ')'
+    . ' • ' . $paper_break_asset_bought_label . ' ' . $paper_break_asset_bought_amount . ' ($' . number_format($paper_break_bought_amount, 2) . ')'
+    . ' • ' . $paper_break_asset_sold_label . ' ' . $paper_break_asset_sold_amount . ' ($' . number_format($paper_break_sold_amount, 2) . ')'
     . ' • HOLDING $' . number_format($paper_break_holding_value, 2)
     . ' • CASH KITTY $' . number_format($paper_break_cash_left, 2)
     . ' • P&L BASIS $' . number_format($paper_break_pnl_basis, 2)
@@ -15601,7 +12927,7 @@ $paper_break_note = 'POT $' . number_format($paper_break_equity, 2)
     . ($paper_break_pnl_basis_label !== '' ? ' · ' . $paper_break_pnl_basis_label : '')
     . ' • CASHOUT AFTER REJOIN FEE $' . number_format($paper_break_cashout_after_rejoin_fee, 2)
     . ' (' . ($paper_break_cashout_rejoin_label !== '' ? $paper_break_cashout_rejoin_label : 'REJOIN FEE') . ' $' . number_format($paper_break_cashout_rejoin_fee, 2) . ')'
-    . ' • RESERVED $' . number_format($display_reserved_cash, 2)
+    . ' • RESERVED $0.00'
     . ' • POSITION ' . $paper_break_position
     . ' • SIGNAL ' . $paper_break_action
     . ' • OPEN ' . ($paper_break_position === 'LONG'
@@ -15668,11 +12994,11 @@ foreach ($display_timeline as $record) {
             $buy_multiplier
         );
     }
-    // The execution unit is one independent five-minute boundary.
-    // Do not display an optimistic profit estimate before a fill.
+    // The execution unit is one decision per hour; do not display a
+    // fractional sneak multiplier or an optimistic dollar estimate here.
     $estimatedProfitLabel = $action === 'NO TRADE'
         ? ''
-        : ' · 1 ACTION/5-MIN MARK';
+        : ' · 1 TRADE/HOUR';
     $guessCell = '<td>' . htmlspecialchars('MODEL ' . $action)
         . ($commitmentAmount >= $paper_minimum_trade_funds ? ' · REQUESTED $' . htmlspecialchars(number_format($commitmentAmount, 2, '.', ',')) : '')
         . '</td>';
@@ -15685,18 +13011,14 @@ foreach ($display_timeline as $record) {
             $eventAmount = is_numeric($tradeEvent['amount'] ?? null) ? (float)$tradeEvent['amount'] : 0.0;
             $eventRequested = is_numeric($tradeEvent['requested_amount'] ?? null) ? (float)$tradeEvent['requested_amount'] : $commitmentAmount;
             $eventAvailable = is_numeric($tradeEvent['available_amount'] ?? null) ? (float)$tradeEvent['available_amount'] : $eventAmount;
-            $eventShortfall = is_numeric($tradeEvent['shortfall'] ?? null) ? (float)$tradeEvent['shortfall'] : max(0.0, $eventRequested - $eventAvailable);
+            $eventShortfall = is_numeric($tradeEvent['shortfall'] ?? null) ? (float)$tradeEvent['shortfall'] : max(0.0, $eventRequested - $eventAmount);
             $executionVerb = $eventAction === 'SELL' ? 'SOLD' : ($eventAction === 'BUY' ? 'BOUGHT' : 'EXECUTED');
             $amountLabel = ' · REQUESTED $' . number_format($eventRequested, 2)
                 . ' · AVAILABLE $' . number_format($eventAvailable, 2)
                 . ' · EXECUTED $' . number_format($eventAmount, 2)
-                . ' · RESERVED $' . number_format(max(0.0, (float)($tradeEvent['reserved_amount'] ?? 0.0)), 2)
+                . ' · RESERVED $0.00'
                 . ' (' . $executionVerb . ')'
-                . ($eventRequested > 0.00000001 && $eventAmount <= 0.00000001
-                    ? (($eventAvailable + 0.00000001 >= $eventRequested)
-                        ? ' · BLOCKED $' . number_format($eventRequested, 2)
-                        : ' · SHORT $' . number_format(max(0.0, $eventRequested - $eventAvailable), 2))
-                    : '')
+                . ($eventShortfall > 0.00000001 ? ' · SHORT $' . number_format($eventShortfall, 2) : '')
                 . paperEventEconomicsLabel($tradeEvent);
             $resultCell = '<td class="result-neutral-cell">' . htmlspecialchars('CURRENT · EXEC ' . $eventAction . ' · ' . $eventLabel . $amountLabel . ' · SETTLING' . $estimatedProfitLabel) . '</td>';
         } elseif (is_array($tradeEvent)) {
@@ -15705,16 +13027,12 @@ foreach ($display_timeline as $record) {
             $eventAmount = is_numeric($tradeEvent['amount'] ?? null) ? max(0.0, (float)$tradeEvent['amount']) : 0.0;
             $eventRequested = is_numeric($tradeEvent['requested_amount'] ?? null) ? max(0.0, (float)$tradeEvent['requested_amount']) : $commitmentAmount;
             $eventAvailable = is_numeric($tradeEvent['available_amount'] ?? null) ? max(0.0, (float)$tradeEvent['available_amount']) : 0.0;
-            $eventShortfall = is_numeric($tradeEvent['shortfall'] ?? null) ? max(0.0, (float)$tradeEvent['shortfall']) : max(0.0, $eventRequested - $eventAvailable);
+            $eventShortfall = is_numeric($tradeEvent['shortfall'] ?? null) ? max(0.0, (float)$tradeEvent['shortfall']) : max(0.0, $eventRequested - $eventAmount);
             $amountLabel = ' · REQUESTED $' . number_format($eventRequested, 2)
                 . ' · AVAILABLE $' . number_format($eventAvailable, 2)
                 . ' · EXECUTED $' . number_format($eventAmount, 2)
-                . ' · RESERVED $' . number_format(max(0.0, (float)($tradeEvent['reserved_amount'] ?? 0.0)), 2)
-                . ($eventRequested > 0.00000001 && $eventAmount <= 0.00000001
-                    ? (($eventAvailable + 0.00000001 >= $eventRequested)
-                        ? ' · BLOCKED $' . number_format($eventRequested, 2)
-                        : ' · SHORT $' . number_format(max(0.0, $eventRequested - $eventAvailable), 2))
-                    : '');
+                . ' · RESERVED $0.00'
+                . ($eventShortfall > 0.00000001 ? ' · SHORT $' . number_format($eventShortfall, 2) : '');
             $resultCell = '<td class="' . htmlspecialchars($eventClass) . '">'
                 . htmlspecialchars('CURRENT · NOT EXECUTED · ' . $eventLabel . $amountLabel . ' · KITTY UNCHANGED' . $estimatedProfitLabel) . '</td>';
         } else {
@@ -15725,7 +13043,7 @@ foreach ($display_timeline as $record) {
                 ? 'UNKNOWN'
                 : htmlspecialchars(
                     $executionLabel === 'HOLD'
-                        ? 'CURRENT · HOLD · NO EXECUTION SIGNAL'
+                        ? 'CURRENT · WAITING FOR LONG'
                         : 'CURRENT · SELECTED ' . $executionLabel . ' · AWAITING PHASE EVENT' . $estimatedProfitLabel
                 )) . '</td>';
         }
@@ -15745,13 +13063,9 @@ foreach ($display_timeline as $record) {
             $amountLabel = ' REQUESTED $' . number_format($eventRequested, 2)
                 . ' · AVAILABLE $' . number_format($eventAvailable, 2)
                 . ' · EXECUTED $' . number_format($eventAmount, 2)
-                . ' · RESERVED $' . number_format($display_reserved_cash, 2)
+                . ' · RESERVED $0.00'
                 . ($eventAmount > 0.0 ? ' (' . $executionVerb . ')' : '')
-                . ($eventRequested > 0.00000001 && $eventAmount <= 0.00000001
-                    ? (($eventAvailable + 0.00000001 >= $eventRequested)
-                        ? ' · BLOCKED $' . number_format($eventRequested, 2)
-                        : ' · SHORT $' . number_format(max(0.0, $eventRequested - $eventAvailable), 2))
-                    : '')
+                . ($eventShortfall > 0.00000001 ? ' · SHORT $' . number_format($eventShortfall, 2) : '')
                 . paperEventEconomicsLabel($tradeEvent);
             $suffix = is_numeric($eventPnl) ? $amountLabel . ' P&L ' . formatSignedMoney((float)$eventPnl, 2) : $amountLabel;
             $resultCell = '<td class="' . htmlspecialchars($eventClass) . '">'
@@ -15771,17 +13085,6 @@ foreach ($display_timeline as $record) {
     }
     $visible_rows_html .= '<tr' . $class . '>' . $timeCell . $guessCell . $resultCell . '</tr>';
 }
-
-// Canonical display-card values. Every card must read the same finalized
-// engine state used by execution and the live JSON payload.
-$display_reserved_cash = max(0.0, (float)($paper_break_state['reserved_cash'] ?? $paper_break_state['pending_rebuy_total'] ?? 0.0));
-$display_guess_window = max(1, (int)($forecast_observation_state['window_size'] ?? ONE_HOUR_CANDLE_COUNT));
-$display_guess_right = (int)($forecast_observation_state['right'] ?? 0);
-$display_guess_total = (int)($forecast_observation_state['total'] ?? 0);
-$display_guess_wrong = max(0, $display_guess_total - $display_guess_right);
-$display_guess_percent = $display_guess_total > 0
-    ? ($display_guess_right / $display_guess_total) * 100.0
-    : 0.0;
 
 // The wallet card now follows the live persistent five-minute trader state,
 // so its net move comes from that state instead of a fresh historical replay.
@@ -15877,9 +13180,9 @@ $wallet_last_label = $paper_break_last_trade_result !== ''
     : 'No closed trade yet';
 $model_resolution_label = $adaptive_complete_flip
     ? 'COMPLETE FLIP ACTIVE'
-    : ($current_guess_pair_label === '%' ? 'Signal unavailable' : 'five-minute mark locked');
+    : ($current_guess_pair_label === '%' ? 'Signal unavailable' : '1-hour ahead unresolved');
 $model_pair_label = $current_guess_pair_label === '%' ? 'Unavailable' : $current_guess_pair_label;
-$model_wl_label = $accuracy_right . ' RIGHT / ' . $accuracy_wrong . ' WRONG';
+$model_wl_label = $accuracy_right . ' / ' . $accuracy_wrong;
 $latest_observation = is_array($forecast_observation_state['latest'] ?? null)
     ? $forecast_observation_state['latest']
     : null;
@@ -16056,7 +13359,7 @@ unset($action_stat);
 $adaptive_flip_active = $adaptive_complete_flip || !empty($agreement_branch_flips);
 $model_resolution_label = $adaptive_flip_active
     ? ($adaptive_complete_flip ? 'COMPLETE FLIP ACTIVE' : 'BRANCH FLIP ACTIVE')
-    : ($current_guess_pair_label === '%' ? 'Signal unavailable' : 'five-minute mark locked');
+    : ($current_guess_pair_label === '%' ? 'Signal unavailable' : '1-hour ahead unresolved');
 $pair_card_ids = [
     'BUY' => 'buy',
     'SELL' => 'sell',
@@ -16081,9 +13384,6 @@ $tracked_strategy_alpha_count = 0;
 $tracked_portfolio_summary = aggregateTrackedDashboardPortfolio($tracked_dashboard_cards, $tracked_forecast_observation_state);
 $tracked_portfolio_net_pnl = (float)$tracked_portfolio_summary['net_pnl'];
 $tracked_portfolio_net_count = (int)$tracked_portfolio_summary['net_count'];
-$tracked_portfolio_output_total = (float)($tracked_portfolio_summary['output_total'] ?? 0.0);
-$tracked_portfolio_output_count = (int)($tracked_portfolio_summary['output_count'] ?? 0);
-$tracked_portfolio_unreinvested_sold = (float)($tracked_portfolio_summary['unreinvested_sold_total'] ?? 0.0);
 $tracked_strategy_alpha = (float)$tracked_portfolio_summary['strategy_alpha'];
 $tracked_strategy_alpha_count = (int)$tracked_portfolio_summary['strategy_alpha_count'];
 $tracked_link_groups = reconcileTrackedLinksWithDashboardCards($tracked_link_groups, $tracked_dashboard_cards);
@@ -16268,7 +13568,6 @@ if (isset($_GET['live']) && $_GET['live'] === '1') {
         'lateWrongMarkFlipActive' => $late_wrong_mark_flip_active,
         'lateWrongMarkFlipAction' => $late_wrong_mark_flip_action,
         'lateWrongMarkPreFlipAction' => $late_wrong_mark_pre_flip_action,
-        'lateWrongMarkRelation' => $late_wrong_mark_relation,
         'lateWrongMarkTargetTime' => (string)($late_wrong_mark_flip['target_time'] ?? ''),
         'lateWrongMarkActivationTime' => (string)($late_wrong_mark_flip['activation_time'] ?? ''),
         'alternationEvidence' => $alternation_evidence,
@@ -16318,25 +13617,6 @@ if (isset($_GET['live']) && $_GET['live'] === '1') {
         'globalAccuracyFlipped' => ($tracked_forecast_observation_state['flipped'] ?? false) === true,
         'globalAccuracyIndependentOfExecution' => true,
         'globalWrongMarkBranches' => $tracked_wrong_mark_branches,
-        'displayCardAudit' => [
-            'guess_window' => ONE_HOUR_CANDLE_COUNT,
-            'guess_right' => $accuracy_right,
-            'guess_wrong' => $accuracy_wrong,
-            'guess_total' => $accuracy_total,
-            'guess_percent' => $accuracy_effective,
-            'reserved_cash' => $display_reserved_cash,
-            'pot' => $paper_break_equity_value,
-            'cash' => $paper_break_cash_left,
-            'holding_value' => $paper_break_holding_value,
-            'withdrawn_kitty' => $paper_break_cash_out_withdrawn_total,
-            'total_paper_reconciled' => $paper_total_reconciled,
-            'active_paper' => $paper_total_active,
-            'sold_into_cash_already_in_active_cash' => true,
-            'initial_principal' => $principal_initial,
-            'active_equity_above_principal' => $principal_active_excess,
-            'income_locked_total' => $principal_income_locked_total,
-            'next_income_lock_needed' => $principal_next_lock_needed,
-        ],
         'averageChange' => $average_change,
         'averageBuyCommitment' => $average_buy_commitment,
         'averageSellCommitment' => $average_sell_commitment,
@@ -16396,37 +13676,6 @@ if (isset($_GET['live']) && $_GET['live'] === '1') {
     echo json_encode($live_payload, JSON_UNESCAPED_SLASHES);
     exit;
 }
-?>
-
-<?php
-$logic_poem_room = is_array($paper_break_state['trade_decision_room'] ?? null)
-    ? $paper_break_state['trade_decision_room']
-    : [];
-$logic_poem_votes = is_array($logic_poem_room['voters'] ?? null)
-    ? $logic_poem_room['voters']
-    : (is_array($logic_poem_room['banks'] ?? null) ? $logic_poem_room['banks'] : []);
-$logic_poem_yes = (int)($logic_poem_room['yes_votes'] ?? $paper_break_state['decision_yes_votes'] ?? 0);
-$logic_poem_required = max(2, (int)($logic_poem_room['required_votes'] ?? $paper_break_state['decision_required_votes'] ?? 2));
-$logic_poem_approved = (($logic_poem_room['approved'] ?? $paper_break_state['decision_approved'] ?? false) === true)
-    || $logic_poem_yes >= $logic_poem_required;
-$logic_poem_action = strtoupper(trim((string)($logic_poem_room['action'] ?? $current_guess_action ?? 'HOLD')));
-if (!in_array($logic_poem_action, ['BUY', 'SELL'], true)) $logic_poem_action = 'HOLD';
-$logic_poem_recovery = max(0.0, (float)($paper_break_state['audit_recovery_balance'] ?? 0.0));
-$logic_poem_gain_pending = max(0.0, (float)($paper_break_state['gain_kitty_pending'] ?? 0.0));
-$logic_poem_kitty_total = max(0.0, (float)($paper_break_state['gain_kitty_total'] ?? 0.0));
-$logic_poem_reserved = max(0.0, (float)($paper_break_state['reserved_cash'] ?? $paper_break_state['sell_rebuy_reserved_total'] ?? 0.0));
-$logic_poem_open_lots = is_array($paper_break_state['open_lots'] ?? null) ? count($paper_break_state['open_lots']) : 0;
-$logic_poem_pending_rebuys = is_array($paper_break_state['sell_funded_rebuys'] ?? null)
-    ? count(array_filter($paper_break_state['sell_funded_rebuys'], static fn($row): bool => is_array($row) && (($row['status'] ?? 'pending') === 'pending')))
-    : 0;
-$logic_poem_unresolved_votes = max(0, 3 - count($logic_poem_votes));
-$logic_poem_entropy_label = $logic_poem_approved
-    ? 'LOW · ACTION RESOLVED'
-    : ($logic_poem_yes > 0 ? 'FALLING · ROOM IN PROGRESS' : 'OPEN · WAITING FOR EVIDENCE');
-$logic_poem_spiral = $spiral_guard_paused ? 'SELLS CONSTRAINED · BUYS EXIST' : 'BOUNDARY QUIET · BOTH SIDES EXIST';
-$logic_poem_cycle = $logic_poem_pending_rebuys > 0
-    ? $logic_poem_pending_rebuys . ' SELL→BUY PAIR' . ($logic_poem_pending_rebuys === 1 ? '' : 'S') . ' WAITING'
-    : ($logic_poem_open_lots > 0 ? $logic_poem_open_lots . ' BUY LOT' . ($logic_poem_open_lots === 1 ? '' : 'S') . ' SEEKING SELL' : 'NO OPEN PAIR');
 ?>
 <!doctype html>
 <html lang="en">
@@ -18354,58 +15603,14 @@ $logic_poem_cycle = $logic_poem_pending_rebuys > 0
                 grid-auto-columns: 100%;
             }
         }
-    
-.audit-actual-candle-cell { display:flex; align-items:center; gap:7px; white-space:nowrap; }
-.audit-ohlc-wrap { display:inline-flex; width:28px; height:48px; flex:0 0 28px; align-items:center; justify-content:center; }
-.audit-ohlc { width:28px; height:48px; overflow:visible; }
-.audit-ohlc-wick { stroke:currentColor; stroke-width:2; vector-effect:non-scaling-stroke; }
-.audit-ohlc-body { fill:none; stroke:currentColor; stroke-width:2; vector-effect:non-scaling-stroke; }
-.audit-candle-up { color:#0b6b35; }
-.audit-candle-down { color:#a11b1b; }
-.audit-candle-flat { color:#666; }
-.audit-candle-text { display:inline-flex; flex-direction:column; gap:2px; }
-.audit-candle-text small { font-size:10px; opacity:.78; }
-
-
-        .logic-poem-console {
-            margin: 14px 0;
-            border: 1px solid rgba(96, 165, 250, .30);
-            border-radius: 22px;
-            background: linear-gradient(135deg, rgba(9, 18, 31, .97), rgba(8, 14, 24, .94));
-            overflow: hidden;
-            box-shadow: 0 18px 42px rgba(0,0,0,.24);
-        }
-        .logic-poem-head {
-            display:flex; align-items:flex-start; justify-content:space-between; gap:16px;
-            padding:16px 18px; border-bottom:1px solid rgba(53,75,104,.72);
-        }
-        .logic-poem-head h2 { margin:0; font-size:1.05rem; color:#f2f7ff; }
-        .logic-poem-head p { margin:5px 0 0; color:#91a8c1; font-size:.78rem; }
-        .logic-poem-live { display:inline-flex; align-items:center; gap:7px; color:#bbf7d0; font-size:.72rem; font-weight:800; letter-spacing:.06em; }
-        .logic-poem-live::before { content:''; width:8px; height:8px; border-radius:50%; background:#22c55e; box-shadow:0 0 0 5px rgba(34,197,94,.10); }
-        .logic-poem-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:1px; background:rgba(48,67,92,.5); }
-        .logic-poem-node { min-width:0; padding:15px 16px; background:rgba(7,13,23,.94); }
-        .logic-poem-node span { display:block; color:#7f9ab8; font-size:.67rem; font-weight:800; letter-spacing:.09em; text-transform:uppercase; margin-bottom:7px; }
-        .logic-poem-node strong { display:block; color:#edf5ff; font-size:.92rem; line-height:1.35; overflow-wrap:anywhere; }
-        .logic-poem-verse { display:grid; grid-template-columns:34px minmax(0,1fr); gap:12px; padding:16px 18px; border-top:1px solid rgba(53,75,104,.65); }
-        .logic-poem-coordinate { color:#60a5fa; font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-weight:800; }
-        .logic-poem-lines { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; color:#cfe0f3; font-size:.82rem; line-height:1.75; }
-        .logic-poem-lines b { color:#ffffff; font-weight:800; }
-        .logic-poem-lines .good { color:#86efac; }
-        .logic-poem-lines .warn { color:#fde68a; }
-        .logic-poem-trace { border-top:1px solid rgba(53,75,104,.65); }
-        .logic-poem-trace summary { cursor:pointer; padding:12px 18px; color:#9eb6cf; font-size:.77rem; font-weight:800; }
-        .logic-poem-trace pre { margin:0; padding:0 18px 18px; color:#bcd0e5; white-space:pre-wrap; font-size:.75rem; line-height:1.55; }
-        @media (max-width: 980px) { .logic-poem-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
-        @media (max-width: 620px) { .logic-poem-grid { grid-template-columns:1fr; } .logic-poem-head { flex-direction:column; } }
-</style>
+    </style>
 </head>
 <body class="compact-dashboard">
-<?php $tracked_portfolio_output_class = $tracked_portfolio_output_total > 0.00000001 ? 'good' : ($tracked_portfolio_output_total < -0.00000001 ? 'low' : 'medium'); ?>
-<aside id="portfolioTotalFloat" class="portfolio-total-float <?= htmlspecialchars($tracked_portfolio_output_class) ?>" aria-label="Combined output totals across tracked symbols">
-    <span class="portfolio-total-label">Cashed out</span>
-    <strong id="portfolioTotalValue" class="portfolio-total-value"><?= $tracked_portfolio_output_total >= 0.0 ? '' : '-' ?>$<?= number_format(abs($tracked_portfolio_output_total), 2) ?></strong>
-    <span id="portfolioTotalNote" class="portfolio-total-note"><?= $tracked_portfolio_output_count ?> SYMBOLS • P&amp;L <?= $tracked_portfolio_net_pnl >= 0.0 ? '+' : '-' ?>$<?= number_format(abs($tracked_portfolio_net_pnl), 2) ?> + UNREINVESTED SOLD $<?= number_format($tracked_portfolio_unreinvested_sold, 2) ?></span>
+<?php $tracked_portfolio_net_class = $tracked_portfolio_net_pnl > 0.00000001 ? 'good' : ($tracked_portfolio_net_pnl < -0.00000001 ? 'low' : 'medium'); ?>
+<aside id="portfolioTotalFloat" class="portfolio-total-float <?= htmlspecialchars($tracked_portfolio_net_class) ?>" aria-label="Total tracked portfolio paper result">
+    <span class="portfolio-total-label">Total paper portfolio</span>
+    <strong id="portfolioTotalValue" class="portfolio-total-value"><?= $tracked_portfolio_net_pnl >= 0.0 ? 'UP' : 'DOWN' ?> <?= $tracked_portfolio_net_pnl >= 0.0 ? '+' : '-' ?>$<?= number_format(abs($tracked_portfolio_net_pnl), 2) ?></strong>
+    <span id="portfolioTotalNote" class="portfolio-total-note"><?= (int)$tracked_portfolio_net_count ?> tracked assets • portfolio P&amp;L<br>strategy alpha <?= $tracked_strategy_alpha >= 0.0 ? '+' : '-' ?>$<?= number_format(abs($tracked_strategy_alpha), 2) ?> across <?= (int)$tracked_strategy_alpha_count ?></span>
 </aside>
 <main class="shell">
     <?php if (!empty($tracked_marquee_links)): ?>
@@ -18660,14 +15865,6 @@ $logic_poem_cycle = $logic_poem_pending_rebuys > 0
                 <div class="steam-dial-plaque">BRK LOSS</div>
                 <input id="breakLoss" name="break_loss" type="hidden" value="<?= number_format($break_stop_loss_pct, 2, '.', '') ?>">
             </div>
-            <div class="steam-dial" data-dial data-tip="Integer percent below global average cost that triggers a BUY spree." data-input="lossBuySpreePercent" data-min="1" data-max="50" data-step="1" data-decimals="0" data-unit="%">
-                <div class="steam-dial-bezel"><div class="steam-dial-face">
-                    <div class="steam-dial-ticks" aria-hidden="true"></div><div class="steam-dial-pointer"></div><div class="steam-dial-hub"></div>
-                    <div class="steam-dial-readout"><span class="steam-dial-value">0</span></div>
-                </div></div>
-                <div class="steam-dial-plaque">LOSS BUY %</div>
-                <input id="lossBuySpreePercent" name="loss_buy_spree_percent" type="hidden" value="<?= (int)$loss_buy_spree_percent ?>">
-            </div>
         </div>
         <button type="submit" name="run_analysis" value="1">Engage</button>
     </form>
@@ -18745,50 +15942,6 @@ $logic_poem_cycle = $logic_poem_pending_rebuys > 0
         </section>
     <?php endif; ?>
 
-
-
-    <section class="logic-poem-console" id="logicPoemConsole" aria-labelledby="logicPoemTitle">
-        <div class="logic-poem-head">
-            <div>
-                <h2 id="logicPoemTitle">The Integral That Knows Its Bounds</h2>
-                <p>Live poetic state translation · every line is constrained by current program state</p>
-            </div>
-            <span class="logic-poem-live">STATE EXISTENT</span>
-        </div>
-        <div class="logic-poem-grid">
-            <div class="logic-poem-node"><span>Coordinate</span><strong id="logicPoemCoordinate"><?= htmlspecialchars($current_guess_note ?: 'Five-minute boundary unresolved') ?></strong></div>
-            <div class="logic-poem-node"><span>Decision room</span><strong id="logicPoemDecision"><?= htmlspecialchars($logic_poem_yes . '/3 YES · REQUIRED ' . $logic_poem_required . ' · ' . ($logic_poem_approved ? $logic_poem_action . ' RESOLVED' : 'WAITING')) ?></strong></div>
-            <div class="logic-poem-node"><span>Entropy</span><strong id="logicPoemEntropy"><?= htmlspecialchars($logic_poem_entropy_label) ?></strong></div>
-            <div class="logic-poem-node"><span>Cycle</span><strong id="logicPoemCycle"><?= htmlspecialchars($logic_poem_cycle) ?></strong></div>
-            <div class="logic-poem-node"><span>Recovery bound</span><strong id="logicPoemRecovery">$<?= number_format($logic_poem_recovery, 2) ?> MUST BE CROSSED</strong></div>
-            <div class="logic-poem-node"><span>Reserved future</span><strong id="logicPoemReserved">$<?= number_format($logic_poem_reserved, 2) ?> AWAITS ITS OPPOSITE</strong></div>
-            <div class="logic-poem-node"><span>Kitty memory</span><strong id="logicPoemKitty">$<?= number_format($logic_poem_kitty_total, 2) ?> SECURED · $<?= number_format($logic_poem_gain_pending, 2) ?> PENDING</strong></div>
-            <div class="logic-poem-node"><span>Spiral boundary</span><strong id="logicPoemSpiral"><?= htmlspecialchars($logic_poem_spiral) ?></strong></div>
-        </div>
-        <div class="logic-poem-verse" aria-live="polite">
-            <div class="logic-poem-coordinate">∫</div>
-            <div class="logic-poem-lines" id="logicPoemVerse">
-                The guess enters as <b><?= htmlspecialchars($logic_poem_action) ?></b>; it is not fate, only a coordinate.<br>
-                <?= $logic_poem_approved ? '<span class="good">Two voices agree; the room closes and the action must meet reality.</span>' : '<span class="warn">The room remains open; evidence has not yet constrained the future.</span>' ?><br>
-                Wrong movement becomes recovery; realized gain must cross it before calling itself profit.<br>
-                Every BUY seeks its SELL. Every SELL reserves the BUY that completes its circle.
-            </div>
-        </div>
-        <details class="logic-poem-trace">
-            <summary>Show constrained program trace</summary>
-            <pre id="logicPoemTrace">action=<?= htmlspecialchars($logic_poem_action) ?>
-yes_votes=<?= $logic_poem_yes ?>
-required_votes=<?= $logic_poem_required ?>
-approved=<?= $logic_poem_approved ? 'true' : 'false' ?>
-recovery_balance=<?= number_format($logic_poem_recovery, 8, '.', '') ?>
-reserved_cash=<?= number_format($logic_poem_reserved, 8, '.', '') ?>
-open_buy_lots=<?= $logic_poem_open_lots ?>
-pending_sell_rebuys=<?= $logic_poem_pending_rebuys ?>
-kitty_secured=<?= number_format($logic_poem_kitty_total, 8, '.', '') ?>
-spiral_sells_paused=<?= $spiral_guard_paused ? 'true' : 'false' ?></pre>
-        </details>
-    </section>
-
     <section class="market-pulse-metrics">
         <article class="metric market-pulse-card summary-card summary-card--market">
             <div class="card-topline">
@@ -18822,7 +15975,7 @@ spiral_sells_paused=<?= $spiral_guard_paused ? 'true' : 'false' ?></pre>
             <div class="card-topline">
                 <div>
                     <span class="metric-label">Wallet now</span>
-                    <p class="card-kicker">Paper wallet position</p>
+                    <p class="card-kicker">50/50 paper position</p>
                 </div>
                 <span id="walletSeedChip" class="card-chip is-accent"><?= htmlspecialchars($wallet_seed_label) ?></span>
             </div>
@@ -18831,18 +15984,9 @@ spiral_sells_paused=<?= $spiral_guard_paused ? 'true' : 'false' ?></pre>
                 <div id="autoBreakNote" class="metric-note metric-note--strong"><?= htmlspecialchars($paper_break_note) ?></div>
             </div>
             <div class="card-grid card-grid--wallet">
-                <div class="summary-stat summary-stat--total-paper">
-                    <span>OUTPUT TOTAL</span>
-                    <strong id="walletPotValue">$<?= number_format($paper_total_reconciled, 2) ?></strong>
-                    <small id="walletTotalPaperBreakdown"><?= htmlspecialchars($paper_total_breakdown) ?></small>
-                </div>
                 <div class="summary-stat">
-                    <span>Total income locked</span>
-                    <strong id="walletIncomeLockedValue">$<?= number_format($principal_income_locked_total, 2) ?></strong>
-                </div>
-                <div class="summary-stat">
-                    <span>Last income lock</span>
-                    <strong id="walletLastIncomeLockValue">$<?= number_format($principal_income_last_lock, 2) ?></strong>
+                    <span>POT</span>
+                    <strong id="walletPotValue">$<?= number_format($paper_break_equity, 2) ?></strong>
                 </div>
                 <div class="summary-stat">
                     <span><?= htmlspecialchars($paper_break_asset_left_label) ?></span>
@@ -18855,15 +15999,6 @@ spiral_sells_paused=<?= $spiral_guard_paused ? 'true' : 'false' ?></pre>
                 <div class="summary-stat">
                     <span>Cash kitty</span>
                     <strong id="walletCashValue">$<?= number_format($paper_break_cash_left, 2) ?></strong>
-                </div>
-                <div class="summary-stat">
-                    <span>Sold into cash kitty</span>
-                    <strong id="walletSoldIntoCashKittyValue">$<?= number_format($paper_break_sold_into_cash_kitty_total, 2) ?></strong>
-                    <small>Only the unreinvested reserve is added to TOTAL PAPER</small>
-                </div>
-                <div class="summary-stat">
-                    <span>Withdrawn sold kitty</span>
-                    <strong id="walletExternalKittyValue">$<?= number_format($paper_break_external_kitty_total, 2) ?></strong>
                 </div>
                 <div class="summary-stat">
                     <span>CASHOUT TOTAL</span>
@@ -18883,7 +16018,7 @@ spiral_sells_paused=<?= $spiral_guard_paused ? 'true' : 'false' ?></pre>
                 </div>
                 <div class="summary-stat">
                     <span>Reserved</span>
-                    <strong id="walletReservedValue">$<?= number_format($display_reserved_cash, 2) ?></strong>
+                    <strong id="walletReservedValue">$0.00</strong>
                 </div>
                 <div class="summary-stat">
                     <span>Portfolio P&amp;L</span>
@@ -18914,19 +16049,19 @@ spiral_sells_paused=<?= $spiral_guard_paused ? 'true' : 'false' ?></pre>
                     <strong id="walletOpenPnlValue"><?= ($paper_break_open_pnl >= 0 ? '+' : '-') . '$' . number_format(abs($paper_break_open_pnl), 2) ?></strong>
                 </div>
                 <div class="summary-stat">
-                    <span>Current request / reserve</span>
+                    <span>Model request / kitty</span>
                     <strong id="walletBellCurveValue"><?= htmlspecialchars(($paper_break_bell_curve_active
                         ? ($paper_break_bell_curve_action
                             . ' • REQUESTED $' . number_format($paper_break_bell_curve_total_requested, 2)
                             . ' • EXECUTED $' . number_format($paper_break_bell_curve_executed, 2)
-                            . ' • RESERVED $' . number_format($display_reserved_cash, 2)
+                            . ' • RESERVED $0.00'
                             . ' • ' . $paper_break_bell_curve_status)
                         : 'HOLD') . ' • ' . $paper_break_confidence_bell_curve_label) ?></strong>
                 </div>
             </div>
             <div class="summary-ribbon">
-                <span id="walletBoughtValue" title="Cumulative BUY turnover, not current holdings"><?= htmlspecialchars('CUMULATIVE ' . $paper_break_asset_bought_label . ' ' . $paper_break_asset_bought_amount . ' ($' . number_format($paper_break_bought_amount, 2) . ')') ?></span>
-                <span id="walletSoldValue" title="Cumulative SELL turnover, not current holdings"><?= htmlspecialchars('CUMULATIVE ' . $paper_break_asset_sold_label . ' ' . $paper_break_asset_sold_amount . ' ($' . number_format($paper_break_sold_amount, 2) . ')') ?></span>
+                <span id="walletBoughtValue"><?= htmlspecialchars($paper_break_asset_bought_label . ' ' . $paper_break_asset_bought_amount . ' ($' . number_format($paper_break_bought_amount, 2) . ')') ?></span>
+                <span id="walletSoldValue"><?= htmlspecialchars($paper_break_asset_sold_label . ' ' . $paper_break_asset_sold_amount . ' ($' . number_format($paper_break_sold_amount, 2) . ')') ?></span>
                 <span id="walletPositionValue"><?= htmlspecialchars('POSITION ' . $paper_break_position) ?></span>
                 <span id="walletLastTradeValue"><?= htmlspecialchars($wallet_last_label) ?></span>
             </div>
@@ -18937,7 +16072,7 @@ spiral_sells_paused=<?= $spiral_guard_paused ? 'true' : 'false' ?></pre>
             <div class="card-topline">
                 <div>
                     <span class="metric-label">Model now</span>
-                    <p class="card-kicker">Current locked five-minute stance</p>
+                    <p class="card-kicker">Current 1-hour-ahead stance</p>
                 </div>
                 <span id="modelResolutionChip" class="card-chip <?= $current_guess_pair_label === '%' ? 'is-neutral' : 'is-warning' ?>"><?= htmlspecialchars($model_resolution_label) ?></span>
             </div>
@@ -18951,11 +16086,11 @@ spiral_sells_paused=<?= $spiral_guard_paused ? 'true' : 'false' ?></pre>
                     <strong id="modelPairValue"><?= htmlspecialchars($model_pair_label) ?></strong>
                 </div>
                 <div class="summary-stat">
-                    <span>Guess % — latest 12</span>
+                    <span>Carry-forward</span>
                     <strong id="modelCarryValue" class="<?= $accuracy_class ?>"><?= htmlspecialchars($model_carry_value) ?></strong>
                 </div>
                 <div class="summary-stat">
-                    <span>Latest-12 R / W</span>
+                    <span>Observed R / W</span>
                     <strong id="modelWinLossValue"><?= htmlspecialchars($model_wl_label) ?></strong>
                 </div>
                 <div class="summary-stat">
@@ -18972,7 +16107,7 @@ spiral_sells_paused=<?= $spiral_guard_paused ? 'true' : 'false' ?></pre>
                 </div>
                 <div class="summary-stat">
                     <span>Phase status</span>
-                    <strong id="phaseStatusValue">MODEL <?= htmlspecialchars($model_current_action) ?> → EXEC <?= htmlspecialchars($phase_execution_action === 'NO TRADE' ? 'HOLD' : $phase_execution_action) ?><?= !empty($current_phase_sizing['event_action']) ? ' • LOCKED EVENT ' . htmlspecialchars((string)$current_phase_sizing['event_action']) . (!empty($current_phase_sizing['event_executed']) ? ' EXECUTED' : ' NOT EXECUTED') : '' ?> • REQUESTED $<?= number_format((float)$current_phase_sizing['requested_amount'], 2) ?> • EXECUTED $<?= number_format((float)$current_phase_sizing['executed_amount'], 2) ?><?= !empty($current_phase_sizing['event_executed']) ? ' • GROSS $' . number_format((float)($current_phase_sizing['gross_notional'] ?? 0.0), 2) . ' • FEE $' . number_format((float)($current_phase_sizing['fee_amount'] ?? 0.0), 2) . ' • FILL $' . number_format((float)($current_phase_sizing['fill_price'] ?? 0.0), 2) : '' ?> • AVAILABLE $<?= number_format((float)$current_phase_sizing['available_amount'], 2) ?> • RESERVED $<?= number_format($display_reserved_cash, 2) ?><?= (float)$current_phase_sizing['shortfall'] > 0.00000001 ? (((float)$current_phase_sizing['available_amount'] + 0.00000001 >= (float)$current_phase_sizing['requested_amount'] && (float)$current_phase_sizing['executed_amount'] <= 0.00000001) ? ' • BLOCKED $' . number_format((float)$current_phase_sizing['requested_amount'], 2) : ' • SHORT $' . number_format((float)$current_phase_sizing['shortfall'], 2)) : '' ?><?= !empty($current_phase_sizing['event_label']) ? ' • ' . htmlspecialchars((string)$current_phase_sizing['event_label']) : '' ?><?= !empty($current_phase_sizing['kitty_unchanged']) ? ' • KITTY UNCHANGED' : '' ?> • <?= htmlspecialchars($execution_bell_curve_display_label . ' • ' . $bell_curve_trade_reason) ?> • REGIME HOUR <?= (int)$regime_step_count ?> / 12 • <?= $current_phase_status['steps_until_change'] === null ? 'NO CHANGE IN HORIZON' : (int)$current_phase_status['steps_until_change'] . ' STEPS LEFT' ?></strong>
+                    <strong id="phaseStatusValue">MODEL <?= htmlspecialchars($model_current_action) ?> → EXEC <?= htmlspecialchars($phase_execution_action === 'NO TRADE' ? 'HOLD' : $phase_execution_action) ?><?= !empty($current_phase_sizing['event_action']) ? ' • LOCKED EVENT ' . htmlspecialchars((string)$current_phase_sizing['event_action']) . (!empty($current_phase_sizing['event_executed']) ? ' EXECUTED' : ' NOT EXECUTED') : '' ?> • REQUESTED $<?= number_format((float)$current_phase_sizing['requested_amount'], 2) ?> • EXECUTED $<?= number_format((float)$current_phase_sizing['executed_amount'], 2) ?><?= !empty($current_phase_sizing['event_executed']) ? ' • GROSS $' . number_format((float)($current_phase_sizing['gross_notional'] ?? 0.0), 2) . ' • FEE $' . number_format((float)($current_phase_sizing['fee_amount'] ?? 0.0), 2) . ' • FILL $' . number_format((float)($current_phase_sizing['fill_price'] ?? 0.0), 2) : '' ?> • KITTY AVAILABLE $<?= number_format((float)$current_phase_sizing['available_amount'], 2) ?> • RESERVED $0.00<?= (float)$current_phase_sizing['shortfall'] > 0.00000001 ? (((float)$current_phase_sizing['available_amount'] + 0.00000001 >= (float)$current_phase_sizing['requested_amount'] && (float)$current_phase_sizing['executed_amount'] <= 0.00000001) ? ' • BLOCKED $' . number_format((float)$current_phase_sizing['requested_amount'], 2) : ' • SHORT $' . number_format((float)$current_phase_sizing['shortfall'], 2)) : '' ?><?= !empty($current_phase_sizing['event_label']) ? ' • ' . htmlspecialchars((string)$current_phase_sizing['event_label']) : '' ?><?= !empty($current_phase_sizing['kitty_unchanged']) ? ' • KITTY UNCHANGED' : '' ?> • <?= htmlspecialchars($execution_bell_curve_display_label . ' • ' . $bell_curve_trade_reason) ?> • REGIME HOUR <?= (int)$regime_step_count ?> / 12 • <?= $current_phase_status['steps_until_change'] === null ? 'NO CHANGE IN HORIZON' : (int)$current_phase_status['steps_until_change'] . ' STEPS LEFT' ?></strong>
                 </div>
                 <div class="summary-stat">
                     <span>Quarter/regime BUY gate</span>
@@ -18983,9 +16118,9 @@ spiral_sells_paused=<?= $spiral_guard_paused ? 'true' : 'false' ?></pre>
         </article>
     </section>
 
-    <section class="pair-stats" aria-label="Secondary analytics; these cards are diagnostic and may use their own stated sample windows">
+    <section class="pair-stats" aria-label="Secondary analytics">
         <article class="metric pair-card pair-card--carry">
-            <span class="metric-label">Guess % — latest 12 resolved</span>
+            <span class="metric-label">Loop 2 carry-forward</span>
             <div id="accuracyValue" class="metric-value <?= $accuracy_class ?>"><?= htmlspecialchars($model_carry_value) ?></div>
             <div id="accuracyNote" class="metric-note"><?= htmlspecialchars($accuracy_note) ?></div>
         </article>
@@ -19701,17 +16836,26 @@ function renderPairStats(stats) {
 }
 
 function renderForwardAccuracy(data) {
-    const accuracy = Number(data.accuracyEffective ?? data.accuracy ?? 0);
-    const total = Math.min(12, Math.max(0, Number(data.accuracyTotal || 0)));
-    const right = Math.min(total, Math.max(0, Number(data.accuracyRight || 0)));
+    const historicalAccuracy = Number(data.accuracyHistorical ?? data.accuracy ?? 0);
+    const accuracy = Number(data.accuracyEffective ?? data.accuracy ?? historicalAccuracy);
+    const flipped = Boolean(data.accuracyFlipped);
+    const total = Number(data.accuracyTotal || 0);
+    const right = Number(data.accuracyRight || 0);
+    const legacyExcluded = Number(data.legacyHistoricalRowsExcluded || 0);
     const unverifiedExcluded = Number(data.unverifiedRowsExcluded || 0);
+    const bellText = bellCurveText(data.accuracyBellCurve);
     const accuracyText = total > 0 ? `${accuracy.toFixed(2)}%` : '—';
     const accuracyNote = total > 0
-        ? `${right} RIGHT / ${Math.max(0, total - right)} WRONG / ${total} RESOLVED IN LATEST-12 WINDOW`
-            + ` • GUESS ${accuracy.toFixed(2)}% • TARGET 80.00% • CONTROL 65.00%`
-            + ' • VERIFIED TIMESTAMP-LOCKED FORECASTS ONLY • EXECUTION RESULTS EXCLUDED'
+        ? `${right} RIGHT / ${Math.max(0, total - right)} WRONG / ${total} TOTAL`
+            + ` • HISTORICAL ${historicalAccuracy.toFixed(2)}%`
+            + ` • EFFECTIVE ${accuracy.toFixed(2)}%`
+            + (flipped ? ' • FLIPPED' : '')
+            + ` • ${bellText}`
+            + ' • VERIFIED FORWARD OBSERVATIONS ONLY • TRADE EXECUTION IGNORED'
+            + (legacyExcluded > 0 ? ` • LEGACY ${legacyExcluded} EXCLUDED` : '')
             + (unverifiedExcluded > 0 ? ` • UNVERIFIED ${unverifiedExcluded} EXCLUDED` : '')
-        : '0 RIGHT / 0 WRONG / 0 RESOLVED IN LATEST-12 WINDOW • GUESS UNSCORED';
+        : 'No verified forward rows available'
+            + (legacyExcluded > 0 ? ` • LEGACY ${legacyExcluded} EXCLUDED` : '');
     const tone = total <= 0 ? 'medium' : (accuracy >= 65 ? 'good' : (accuracy >= 50 ? 'medium' : 'low'));
     const valueNode = setNodeText('accuracyValue', accuracyText);
     const noteNode = setNodeText('accuracyNote', accuracyNote);
@@ -19760,29 +16904,21 @@ function renderStatusMeta(data) {
 function renderTrackedPortfolio(data) {
     const portfolio = data && typeof data.trackedPortfolio === 'object' ? data.trackedPortfolio : null;
     if (!portfolio) return;
-
     const floatNode = document.getElementById('portfolioTotalFloat');
-    const outputTotal = Number(portfolio.output_total || 0);
-    const outputCount = Math.max(0, Number(portfolio.output_count || 0));
-    const pnl = Number(portfolio.net_pnl || 0);
-    const unreinvestedSold = Math.max(0, Number(portfolio.unreinvested_sold_total || 0));
-    const valueNode = setNodeText(
-        'portfolioTotalValue',
-        (outputTotal < 0 ? '-' : '') + '$' + number2(Math.abs(outputTotal))
-    );
-
+    const valueNode = setNodeText('portfolioTotalValue', String(portfolio.net_label || 'UP +$0.00'));
+    const note = String(portfolio.note_label || '')
+        .replace(/\r\n/g, '\n')
+        .replace(/\r/g, '\n');
     const noteNode = document.getElementById('portfolioTotalNote');
     if (noteNode) {
-        noteNode.textContent = `${outputCount} SYMBOLS • P&L ${pnl >= 0 ? '+' : '-'}$${number2(Math.abs(pnl))}`
-            + ` + UNREINVESTED SOLD $${number2(unreinvestedSold)}`;
+        noteNode.innerHTML = note.split('\n').map(part => escapeHtml(part)).join('<br>');
     }
-
-    const tone = outputTotal > 0.00000001 ? 'good' : (outputTotal < -0.00000001 ? 'low' : 'medium');
+    const tone = String(portfolio.net_class || 'medium');
     if (floatNode) {
         floatNode.classList.remove('good', 'medium', 'low');
-        floatNode.classList.add(tone);
+        floatNode.classList.add(/^(good|medium|low)$/.test(tone) ? tone : 'medium');
     }
-    setToneClass(valueNode, tone);
+    setToneClass(valueNode, /^(good|medium|low)$/.test(tone) ? tone : 'medium');
 }
 
 function renderTrackedDashboardCards(data) {
@@ -19848,7 +16984,7 @@ function renderModelStance(guess, traderState, data) {
     const pairLabel = pair === '%' ? 'Unavailable' : pair;
     const resolutionText = pair === '%'
         ? 'Signal unavailable'
-        : (adaptiveCompleteFlip ? 'COMPLETE FLIP ACTIVE' : (Boolean(data?.branchFlipActive) ? 'BRANCH FLIP ACTIVE' : 'Current five-minute mark locked'));
+        : (adaptiveCompleteFlip ? 'COMPLETE FLIP ACTIVE' : (Boolean(data?.branchFlipActive) ? 'BRANCH FLIP ACTIVE' : 'Current hour unresolved'));
     const currentGuessValueNode = document.getElementById('currentGuessValue');
     const currentGuessNoteNode = document.getElementById('currentGuessNote');
     if (currentGuessValueNode) {
@@ -19858,7 +16994,7 @@ function renderModelStance(guess, traderState, data) {
     if (currentGuessNoteNode) {
         currentGuessNoteNode.textContent = pair === '%'
             ? 'Model signal unavailable for the current hour'
-            : `MODEL ${pair} • ${action} • EXEC ${executionAction} • current five-minute mark locked`;
+            : `MODEL ${pair} • ${action} • EXEC ${executionAction} • current hour unresolved`;
     }
     setNodeText('modelPairValue', pairLabel);
     const resolutionChip = setNodeText('modelResolutionChip', resolutionText);
@@ -20334,7 +17470,7 @@ function renderLockedCurrentRow(guess, commitmentAmount = 0, currentStateText = 
     row.cells[1].textContent = action === 'NO TRADE'
         ? `CURRENT: ${action}`
         : `CURRENT: ${action} · COMMIT $${number2(commitmentAmount)}`;
-    row.cells[2].textContent = action === 'NO TRADE' ? 'UNKNOWN' : `${currentStateText} · 1 ACTION/5-MIN MARK`;
+    row.cells[2].textContent = action === 'NO TRADE' ? 'UNKNOWN' : `${currentStateText} · 1 TRADE/HOUR`;
 }
 
 function number2(value) {
@@ -20519,37 +17655,7 @@ function renderAutoBreakTrader(state) {
         + ' • GUARD ' + (spiralPaused ? 'PAUSED' : 'MONITORING')
         + ' • Paper only';
     noteNode.textContent = noteText;
-    const liveExternalKitty = Math.max(0, Number(state.external_kitty_total || 0), Number(state.cash_out_withdrawn_total || 0), Number(state.cash_out_summary?.withdrawn_total || 0));
-    const liveSoldIntoCashKitty = Math.max(0, Number(state.sold_into_cash_kitty_total || 0));
-    const liveCash = Math.max(0, Number(state.cash_left || 0));
-    const liveHolding = Math.max(0, Number(state.holding_value || 0));
-    // Add only SELL proceeds that have not yet been reinvested. The open
-    // sell-funded rebuy reserve falls as matching BUYs consume those proceeds.
-    const liveTradingPnl = Number(state.net_pnl || 0);
-    const livePrincipal = Math.max(0, Number(state.principal_initial || state.starting_pot || 10000));
-    const livePendingRebuy = Math.max(0, Number(state.pending_rebuy_total || 0));
-    const liveUnreinvestedSold = Math.min(liveSoldIntoCashKitty, livePendingRebuy);
-    const liveTotalPaper = liveTradingPnl + liveUnreinvestedSold;
-    setNodeText(
-        'walletPotValue',
-        (liveTotalPaper < 0 ? '-$' : '$') + number2(Math.abs(liveTotalPaper))
-    );
-    setNodeText(
-        'walletTotalPaperBreakdown',
-        (liveTradingPnl >= 0 ? 'P&L +$' : 'P&L -$')
-            + number2(Math.abs(liveTradingPnl))
-            + ' + UNREINVESTED SOLD $' + number2(liveUnreinvestedSold)
-    );
-    const liveActiveEquity = Math.max(0, Number(state.principal_active_equity || (liveCash + liveHolding)));
-    const livePrincipalExcess = Math.max(0, Number(state.principal_active_excess || (liveActiveEquity - livePrincipal)));
-    const liveIncomeLocked = Math.max(0, Number(state.principal_income_locked_total || 0));
-    const liveLastIncomeLock = Math.max(0, Number(state.principal_income_last_lock || 0));
-    const liveIncomeThreshold = Math.max(0.01, Number(state.principal_income_threshold || 50));
-    const liveNextIncomeLock = Math.max(0, Number(state.principal_next_lock_needed || (liveIncomeThreshold - livePrincipalExcess)));
-    setNodeText('walletIncomeLockedValue', '$' + number2(liveIncomeLocked));
-    setNodeText('walletLastIncomeLockValue', '$' + number2(liveLastIncomeLock));
-    setNodeText('walletSoldIntoCashKittyValue', '$' + number2(liveSoldIntoCashKitty));
-    setNodeText('walletExternalKittyValue', '$' + number2(liveExternalKitty));
+    setNodeText('walletPotValue', '$' + number2(state.equity_value));
     setNodeText('walletAssetValue', assetLeftAmount);
     setNodeText('walletHoldingValue', '$' + number2(state.holding_value));
     setNodeText('walletCashValue', '$' + number2(state.cash_left));
@@ -20557,8 +17663,7 @@ function renderAutoBreakTrader(state) {
     setNodeText('walletCashoutAfterRejoinFeeValue', '$' + number2(cashoutAfterRejoinFee));
     setNodeText('walletCashoutReserveValue', '$' + number2(cashoutReserve));
     setNodeText('walletAssetRefillAvailableValue', '$' + number2(cashoutAssetRefillAvailable));
-    const liveReserved = Math.max(0, Number(state.reserved_cash || state.pending_rebuy_total || 0));
-    setNodeText('walletReservedValue', '$' + number2(liveReserved));
+    setNodeText('walletReservedValue', '$0.00');
     setNodeText('walletNetMoveValue', `${simNetMove >= 0 ? '+' : '-'}$${number2(Math.abs(simNetMove))}`);
     setNodeText('walletBenchmarkValue', `${benchmarkPnl >= 0 ? '+' : '-'}$${number2(Math.abs(benchmarkPnl))}`);
     setNodeText('walletStrategyAlphaValue', `${strategyAlpha >= 0 ? '+' : '-'}$${number2(Math.abs(strategyAlpha))}`);
@@ -20573,11 +17678,11 @@ function renderAutoBreakTrader(state) {
     setNodeText(
         'walletBellCurveValue',
         bellCurveActive
-            ? `${bellCurveAction} • REQUESTED $${number2(bellCurveRequested)} • EXECUTED $${number2(bellCurveExecuted)} • RESERVED $${number2(liveReserved)} • ${bellCurveStatus} • ${number2(bellCurveTrust)}% • ${bellCurveBuyCalls}/${bellCurveSellCalls}/${bellCurveSlots} • ${confidenceBellText}`
+            ? `${bellCurveAction} • REQUESTED $${number2(bellCurveRequested)} • EXECUTED $${number2(bellCurveExecuted)} • RESERVED $0.00 • ${bellCurveStatus} • ${number2(bellCurveTrust)}% • ${bellCurveBuyCalls}/${bellCurveSellCalls}/${bellCurveSlots} • ${confidenceBellText}`
             : `HOLD • ${confidenceBellText}`
     );
-    setNodeText('walletBoughtValue', `CUMULATIVE ${assetBoughtLabel} ${assetBoughtAmount} ($${number2(totalBoughtAmount)})`);
-    setNodeText('walletSoldValue', `CUMULATIVE ${assetSoldLabel} ${assetSoldAmount} ($${number2(totalSoldAmount)})`);
+    setNodeText('walletBoughtValue', `${assetBoughtLabel} ${assetBoughtAmount} ($${number2(totalBoughtAmount)})`);
+    setNodeText('walletSoldValue', `${assetSoldLabel} ${assetSoldAmount} ($${number2(totalSoldAmount)})`);
     setNodeText('walletPositionValue', `POSITION ${position.toUpperCase()}`);
     const lastWalletText = lastTradeResult
         ? `${lastTradeResult} ${(lastTradePnl >= 0 ? '+' : '-')}$${number2(Math.abs(lastTradePnl))}`
@@ -20639,9 +17744,8 @@ function renderCompression(data) {
     const candleBranchText = candleBranchFlipActive
         ? ` • CANDLE BRANCH FLIP ${compressionPreFlipAction}→${candleBranchAction} x${candleBranchHorizon} @ ${number2(candleBranchScore)}%`
         : ` • candle branch ${candleBranchAction} threshold ${number2(candleBranchThreshold)}%`;
-    const lateWrongRelation = lateWrongPreFlipAction === lateWrongAction ? 'CONFIRMS' : 'SUGGESTS';
     const lateWrongText = lateWrongActive
-        ? ` • LATE WRONG MARK AUDIT ${lateWrongRelation} ${lateWrongAction} @ +6M${lateWrongActivation ? ` ${lateWrongActivation}` : ''}`
+        ? ` • LATE WRONG MARK FLIP ${lateWrongPreFlipAction}→${lateWrongAction} @ +6M${lateWrongActivation ? ` ${lateWrongActivation}` : ''}`
         : '';
     const hasSamples = samples > 0 || firstLoopScore > 0 || lateWrongActive;
     const valueNode = setNodeText('compressionValue', hasSamples ? `${number2(primaryScore)}%` : '—');
@@ -20737,12 +17841,9 @@ function renderCurrentPhaseStatus(data) {
     const confidenceBellText = bellCurveText(confidenceBell, confidenceBellSource);
     const confidenceTradeReason = String(sizing.confidence_bell_curve_trade_reason || data.executionBellCurveTradeReason || 'HOLD');
     const suffix = stepsUntilChange === null ? 'NO CHANGE IN HORIZON' : `${stepsUntilChange} STEPS LEFT`;
-    const phaseReserved = Math.max(0, Number(sizing.reserved_amount ?? data.autoBreakTrader?.reserved_cash ?? data.autoBreakTrader?.pending_rebuy_total ?? 0));
-    const sizingText = `MODEL ${modelAction} → EXEC ${executionAction}${eventState} • REQUESTED $${number2(requested)} • EXECUTED $${number2(executed)} • AVAILABLE $${number2(available)} • RESERVED $${number2(phaseReserved)}`
+    const sizingText = `MODEL ${modelAction} → EXEC ${executionAction}${eventState} • REQUESTED $${number2(requested)} • EXECUTED $${number2(executed)} • KITTY AVAILABLE $${number2(available)} • RESERVED $0.00`
         + (sizing.event_executed === true ? ` • GROSS $${number2(gross)} • FEE $${number2(fee)} • FILL $${number2(fillPrice)}` : '')
-        + (requested > 0.00000001 && executed <= 0.00000001
-            ? (available + 0.00000001 >= requested ? ` • BLOCKED $${number2(requested)}` : ` • SHORT $${number2(Math.max(0, requested - available))}`)
-            : '')
+        + (shortfall > 0.00000001 ? ` • SHORT $${number2(shortfall)}` : '')
         + (eventLabel ? ` • ${eventLabel}` : '')
         + (kittyUnchanged ? ' • KITTY UNCHANGED' : '');
     setNodeText('phaseStatusValue', `${sizingText} • ${confidenceBellText} • ${confidenceTradeReason} • REGIME HOUR ${stepsIn} / 12 • ${suffix}`);
@@ -20831,21 +17932,14 @@ async function loadLiveData(options = {}) {
             profitNode.textContent = `PORTFOLIO P&L ${profit >= 0 ? '+' : ''}$${number2(profit)}`;
             profitNode.style.color = profit >= 0 ? 'var(--accent)' : 'var(--danger)';
         }
-        // Always accept the newest chart frame, even during the lightweight
-        // 30-second refresh. The previous priceOnly branch repainted stale arrays,
-        // so forward guess candlesticks appeared frozen until a later full refresh.
-        candles = Array.isArray(data.candles) ? data.candles : candles;
-        guessCandles = Array.isArray(data.guessCandles) ? data.guessCandles : guessCandles;
-        timeline = Array.isArray(data.timeline) ? data.timeline : timeline;
-        chartTimeline = Array.isArray(data.chartTimeline) ? data.chartTimeline : chartTimeline;
-        chartPriceMin = Number(data.chartPriceMin || chartPriceMin || 0);
-        chartPriceMax = Number(data.chartPriceMax || chartPriceMax || 1);
-        syncChartMeta();
-
         if (priceOnly) {
             drawCandleChart();
             return;
         }
+        candles = Array.isArray(data.candles) ? data.candles : [];
+        guessCandles = Array.isArray(data.guessCandles) ? data.guessCandles : [];
+        timeline = Array.isArray(data.timeline) ? data.timeline : [];
+        chartTimeline = Array.isArray(data.chartTimeline) ? data.chartTimeline : [];
         pairStats = Array.isArray(data.pairStats) ? data.pairStats : [];
         pairDirectionMap = (data.pairDirectionMap && typeof data.pairDirectionMap === 'object')
             ? data.pairDirectionMap
@@ -20879,44 +17973,11 @@ async function loadLiveData(options = {}) {
     }
 }
 
-let lastBoundaryExecutionAttempt = '';
-let boundaryExecutionInFlight = false;
-
-async function requestBoundaryExecution(force = false) {
-    const boundaryEpoch = Math.floor(Date.now() / fiveMinutes) * fiveMinutes;
-    const boundaryKey = new Date(boundaryEpoch).toISOString();
-    if (!force && (boundaryExecutionInFlight || lastBoundaryExecutionAttempt === boundaryKey)) return false;
-
-    boundaryExecutionInFlight = true;
-    lastBoundaryExecutionAttempt = boundaryKey;
-    try {
-        const url = new URL(window.location.href);
-        url.searchParams.delete('live');
-        url.searchParams.delete('cache_only');
-        url.searchParams.set('run_analysis', '1');
-        url.searchParams.set('_', String(Date.now()));
-        const response = await fetch(url.toString(), {
-            method: 'GET',
-            credentials: 'same-origin',
-            cache: 'no-store',
-            headers: {'X-Requested-With': 'boundary-execution'}
-        });
-        return response.ok;
-    } catch (error) {
-        // The next live refresh or boundary timer can retry this mark.
-        lastBoundaryExecutionAttempt = '';
-        return false;
-    } finally {
-        boundaryExecutionInFlight = false;
-    }
-}
-
 function scheduleBoundaryRequest() {
     clearTimeout(boundaryTimer);
     const delay = Math.max(250, nextBoundary - Date.now() + 1500);
     boundaryTimer = setTimeout(async () => {
-        await requestBoundaryExecution(true);
-        await loadLiveData({priceOnly: false});
+        window.location.reload();
         while (nextBoundary <= Date.now()) nextBoundary += fiveMinutes;
         scheduleBoundaryRequest();
     }, delay);
@@ -21194,18 +18255,13 @@ updateRetrieveTimer();
 setInterval(updateRetrieveTimer, 250);
 setInterval(() => {
     loadLiveData({priceOnly: true});
-}, 15000);
+}, 30000);
 // Repaint the complete dashboard independently of five-minute boundary changes.
 // The live payload carries tracked cards and the aggregate paper portfolio, so
 // manual and timed refreshes use the same no-order, display-only path.
-setInterval(async () => {
-    // Catch up a boundary that an external cron or sleeping browser missed.
-    await requestBoundaryExecution(false);
-    await loadLiveData({priceOnly: false});
+setInterval(() => {
+    loadLiveData({priceOnly: false});
 }, 45000);
-// Process the current five-minute mark once on initial load as well. This is
-// idempotent server-side, so a cron and the browser cannot place two orders.
-requestBoundaryExecution(false).then(() => loadLiveData({priceOnly: false}));
 scheduleBoundaryRequest();
 scheduleHourBoundaryRequest();
 </script>
@@ -21269,7 +18325,7 @@ scheduleHourBoundaryRequest();
 })();
 
 (function () {
-  const settingIds = ['buyMultiplier', 'sellMultiplier', 'trustPercent', 'breakBuy', 'breakGain', 'breakLoss', 'lossBuySpreePercent'];
+  const settingIds = ['buyMultiplier', 'sellMultiplier', 'trustPercent', 'breakBuy', 'breakGain', 'breakLoss'];
   const settings = settingIds.map(id => document.getElementById(id)).filter(Boolean);
   if (!settings.length) return;
 
@@ -21302,8 +18358,7 @@ scheduleHourBoundaryRequest();
       trust_percent: document.getElementById('trustPercent')?.value || '',
       break_buy: document.getElementById('breakBuy')?.value || '',
       break_gain: document.getElementById('breakGain')?.value || '',
-      break_loss: document.getElementById('breakLoss')?.value || '',
-      loss_buy_spree_percent: document.getElementById('lossBuySpreePercent')?.value || ''
+      break_loss: document.getElementById('breakLoss')?.value || ''
     });
 
     setSaveState('Saving settings…', 'saving');
@@ -21339,67 +18394,10 @@ scheduleHourBoundaryRequest();
       save_dashboard_settings: '1', market_type: <?= json_encode($market_type) ?>, symbol: <?= json_encode($ticker) ?>,
       buy_multiplier: document.getElementById('buyMultiplier')?.value || '', sell_multiplier: document.getElementById('sellMultiplier')?.value || '',
       trust_percent: document.getElementById('trustPercent')?.value || '', break_buy: document.getElementById('breakBuy')?.value || '',
-      break_gain: document.getElementById('breakGain')?.value || '', break_loss: document.getElementById('breakLoss')?.value || '',
-      loss_buy_spree_percent: document.getElementById('lossBuySpreePercent')?.value || ''
+      break_gain: document.getElementById('breakGain')?.value || '', break_loss: document.getElementById('breakLoss')?.value || ''
     });
     navigator.sendBeacon(window.location.pathname, new Blob([body.toString()], {type: 'application/x-www-form-urlencoded;charset=UTF-8'}));
   });
-})();
-</script>
-
-
-<script>
-(function () {
-    const money = (value) => {
-        const n = Number(String(value ?? '').replace(/[^0-9.-]/g, ''));
-        return Number.isFinite(n) ? '$' + n.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) : '$0.00';
-    };
-    function syncLogicPoemUX() {
-        const actionText = (document.getElementById('currentGuessValue')?.textContent || 'HOLD').trim().toUpperCase();
-        const action = actionText.includes('BUY') ? 'BUY' : (actionText.includes('SELL') ? 'SELL' : 'HOLD');
-        const wallet = document.getElementById('autoBreakNote')?.textContent || '';
-        const spiral = document.getElementById('walletSpiralGuardValue')?.textContent || 'MONITORING';
-        const reserved = document.getElementById('walletReservedValue')?.textContent || '$0.00';
-        const pot = document.getElementById('walletPotValue')?.textContent || '$0.00';
-        const realized = document.getElementById('walletRealizedValue')?.textContent || '$0.00';
-        const decisionNode = document.getElementById('logicPoemDecision');
-        const decisionText = decisionNode?.textContent || '0/3 YES · WAITING';
-        const approved = /RESOLVED|APPROVED/.test(decisionText);
-        const coordinate = document.getElementById('logicPoemCoordinate');
-        if (coordinate) coordinate.textContent = document.getElementById('currentGuessNote')?.textContent || 'Five-minute boundary unresolved';
-        const spiralNode = document.getElementById('logicPoemSpiral');
-        if (spiralNode) spiralNode.textContent = /PAUSED/.test(spiral.toUpperCase()) ? 'SELLS CONSTRAINED · BUYS EXIST' : 'BOUNDARY QUIET · BOTH SIDES EXIST';
-        const reservedNode = document.getElementById('logicPoemReserved');
-        if (reservedNode) reservedNode.textContent = reserved + ' AWAITS ITS OPPOSITE';
-        const verse = document.getElementById('logicPoemVerse');
-        if (verse) {
-            const voice = approved
-                ? '<span class="good">Two voices agree; the room closes and ' + action + ' must meet reality.</span>'
-                : '<span class="warn">The room remains open; evidence has not yet constrained the future.</span>';
-            verse.innerHTML = 'The guess enters as <b>' + action + '</b>; it is not fate, only a coordinate.<br>'
-                + voice + '<br>'
-                + 'The wallet names itself ' + pot + '; realized consequence is ' + realized + '.<br>'
-                + 'Every BUY seeks its SELL. Every SELL reserves the BUY that completes its circle.';
-        }
-        const trace = document.getElementById('logicPoemTrace');
-        if (trace) trace.textContent = [
-            'action=' + action,
-            'decision=' + decisionText,
-            'reserved=' + reserved,
-            'pot=' + pot,
-            'realized=' + realized,
-            'spiral=' + spiral,
-            'wallet=' + wallet
-        ].join('\n');
-    }
-    document.addEventListener('DOMContentLoaded', syncLogicPoemUX);
-    const observer = new MutationObserver(syncLogicPoemUX);
-    document.addEventListener('DOMContentLoaded', () => {
-        ['currentGuessValue','currentGuessNote','walletSpiralGuardValue','walletReservedValue','walletPotValue','walletRealizedValue','autoBreakNote']
-            .map(id => document.getElementById(id)).filter(Boolean)
-            .forEach(node => observer.observe(node, {childList:true, subtree:true, characterData:true}));
-    });
-    setInterval(syncLogicPoemUX, 15000);
 })();
 </script>
 

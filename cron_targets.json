@@ -4,41 +4,17 @@
             "market_type": "crypto",
             "symbol": "BTC-USD",
             "base_url": "http://localhost:8081/index.php",
-            "buy_multiplier": 0.8,
-            "sell_multiplier": 0.65,
+            "buy_multiplier": 0.5,
+            "sell_multiplier": 0.4,
             "trust_percent": 50,
             "break_buy": "0.50",
             "break_gain": "0.50",
             "break_loss": "0.50",
-            "updated_at": "2026-07-29T19:16:05Z"
+            "updated_at": "2026-07-31T18:04:51Z"
         },
         {
             "market_type": "crypto",
             "symbol": "ETH-USD",
-            "base_url": "http://127.0.0.1:8081/index.php",
-            "buy_multiplier": 0.5,
-            "sell_multiplier": 0.4,
-            "trust_percent": 50,
-            "break_buy": "0.50",
-            "break_gain": "0.50",
-            "break_loss": "0.50",
-            "updated_at": "2026-07-29T19:16:06Z"
-        },
-        {
-            "market_type": "stock",
-            "symbol": "AAPL",
-            "base_url": "http://localhost:8081/index.php",
-            "buy_multiplier": 5,
-            "sell_multiplier": 4,
-            "trust_percent": 50,
-            "break_buy": "0.50",
-            "break_gain": "0.50",
-            "break_loss": "0.50",
-            "updated_at": "2026-07-29T19:16:09Z"
-        },
-        {
-            "market_type": "stock",
-            "symbol": "GM",
             "base_url": "http://localhost:8081/index.php",
             "buy_multiplier": 0.5,
             "sell_multiplier": 0.4,
@@ -46,19 +22,7 @@
             "break_buy": "0.50",
             "break_gain": "0.50",
             "break_loss": "0.50",
-            "updated_at": "2026-07-29T19:16:13Z"
-        },
-        {
-            "market_type": "stock",
-            "symbol": "TSLA",
-            "base_url": "http://localhost:8081/index.php",
-            "buy_multiplier": 0.5,
-            "sell_multiplier": 0.4,
-            "trust_percent": 50,
-            "break_buy": "0.50",
-            "break_gain": "0.50",
-            "break_loss": "0.50",
-            "updated_at": "2026-07-29T19:16:15Z"
+            "updated_at": "2026-07-31T18:05:30Z"
         }
     ]
 }

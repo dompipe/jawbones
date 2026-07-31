@@ -1069,19 +1069,16 @@ $sell_multiplier = isset($request_params['sell_multiplier']) && is_numeric($requ
 $trust_percent = isset($request_params['trust_percent']) && is_numeric($request_params['trust_percent'])
     ? max(1.0, min(100.0, (float)$request_params['trust_percent']))
     : (float)$symbol_preset['trust_percent'];
+// After existing $trust_percent etc.
+$profit_multiplier = isset($request_params['profit_multiplier']) && is_numeric($request_params['profit_multiplier'])
+    ? max(1.0, min(5.0, (float)$request_params['profit_multiplier']))
+    : 1.5;  // Default 1.5x target
+
+$hard_stop = isset($request_params['hard_stop']) && $request_params['hard_stop'] === '1';
 
 if (!preg_match('/^[A-Z0-9.\-^]{1,12}$/', $ticker)) {
     $ticker = 'TSLA';
 }
-
-$loss_buy_spree_settings_path = __DIR__ . '/loss-buy-spree-settings.json';
-$loss_buy_spree_settings = loadLocalJsonArray($loss_buy_spree_settings_path);
-$loss_buy_spree_key = strtolower($market_type) . ':' . strtoupper($ticker);
-$loss_buy_spree_saved = is_numeric($loss_buy_spree_settings[$loss_buy_spree_key]['percent'] ?? null)
-    ? (int)$loss_buy_spree_settings[$loss_buy_spree_key]['percent'] : 10;
-$loss_buy_spree_percent = isset($request_params['loss_buy_spree_percent']) && is_numeric($request_params['loss_buy_spree_percent'])
-    ? max(1, min(50, (int)round((float)$request_params['loss_buy_spree_percent'])))
-    : max(1, min(50, $loss_buy_spree_saved));
 
 function cpanelCronRegistryPath(): string
 {
@@ -1130,323 +1127,6 @@ function localEnvironmentValue(string $name): string
         return $value;
     }
     return '';
-}
-
-
-/** Broker HTTP helper. Never returns credentials or raw authorization headers. */
-function brokerHttpJson(string $method, string $url, array $headers = [], ?array $body = null, int $timeout = 12): array
-{
-    $method = strtoupper(trim($method));
-    $headerLines = ['Accept: application/json', 'User-Agent: MarketWaveDashboard/1.0'];
-    foreach ($headers as $name => $value) {
-        if (!is_string($name) || !is_scalar($value)) continue;
-        $headerLines[] = trim($name) . ': ' . trim((string)$value);
-    }
-    $payload = null;
-    if ($body !== null) {
-        $payload = json_encode($body, JSON_UNESCAPED_SLASHES);
-        $headerLines[] = 'Content-Type: application/json';
-    }
-
-    if (function_exists('curl_init')) {
-        $ch = curl_init($url);
-        if ($ch === false) return ['ok' => false, 'http_code' => 0, 'json' => null, 'error' => 'curl_init failed'];
-        curl_setopt_array($ch, [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_FOLLOWLOCATION => false,
-            CURLOPT_CONNECTTIMEOUT => min(6, $timeout),
-            CURLOPT_TIMEOUT => $timeout,
-            CURLOPT_CUSTOMREQUEST => $method,
-            CURLOPT_HTTPHEADER => $headerLines,
-            CURLOPT_ENCODING => '',
-        ]);
-        if ($payload !== null) curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
-        $raw = curl_exec($ch);
-        $error = curl_error($ch);
-        $httpCode = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-        curl_close($ch);
-    } else {
-        $context = stream_context_create(['http' => [
-            'method' => $method,
-            'header' => implode("\r\n", $headerLines),
-            'content' => $payload ?? '',
-            'timeout' => $timeout,
-            'ignore_errors' => true,
-        ]]);
-        $raw = @file_get_contents($url, false, $context);
-        $error = $raw === false ? 'HTTP stream request failed' : '';
-        $httpCode = 0;
-        $responseHeaders = $http_response_header ?? [];
-        if (isset($responseHeaders[0]) && preg_match('/\s(\d{3})\s/', (string)$responseHeaders[0], $match)) {
-            $httpCode = (int)$match[1];
-        }
-    }
-
-    $json = is_string($raw) && $raw !== '' ? json_decode($raw, true) : null;
-    return [
-        'ok' => $httpCode >= 200 && $httpCode < 300 && is_array($json),
-        'http_code' => $httpCode,
-        'json' => is_array($json) ? $json : null,
-        'error' => $error !== '' ? $error : (($httpCode >= 400) ? 'HTTP ' . $httpCode : ''),
-    ];
-}
-
-function base64UrlEncode(string $value): string
-{
-    return rtrim(strtr(base64_encode($value), '+/', '-_'), '=');
-}
-
-/** Build a short-lived Coinbase CDP ES256 JWT for one REST request. */
-function coinbaseCdpJwt(string $method, string $host, string $path): ?string
-{
-    $keyName = trim(localEnvironmentValue('COINBASE_API_KEY_NAME'));
-    if ($keyName === '') $keyName = trim(localEnvironmentValue('COINBASE_API_KEY'));
-    $privateKey = localEnvironmentValue('COINBASE_API_PRIVATE_KEY');
-    if ($privateKey === '') $privateKey = localEnvironmentValue('COINBASE_API_SECRET');
-    $privateKey = str_replace('\\n', "\n", trim($privateKey));
-    if ($keyName === '' || $privateKey === '' || !str_contains($privateKey, 'PRIVATE KEY')) return null;
-    $now = time();
-    $uri = strtoupper($method) . ' ' . $host . $path;
-    $header = ['alg' => 'ES256', 'kid' => $keyName, 'nonce' => bin2hex(random_bytes(16)), 'typ' => 'JWT'];
-    $payload = ['sub' => $keyName, 'iss' => 'cdp', 'nbf' => $now, 'exp' => $now + 120, 'uri' => $uri];
-    $encodedHeader = base64UrlEncode((string)json_encode($header, JSON_UNESCAPED_SLASHES));
-    $encodedPayload = base64UrlEncode((string)json_encode($payload, JSON_UNESCAPED_SLASHES));
-    $data = $encodedHeader . '.' . $encodedPayload;
-    $signatureDer = '';
-    $key = @openssl_pkey_get_private($privateKey);
-    if ($key === false || !@openssl_sign($data, $signatureDer, $key, OPENSSL_ALGO_SHA256)) return null;
-    // Convert DER ECDSA signature to JOSE R||S (32 bytes each).
-    $offset = 0;
-    $readLength = static function (string $der, int &$offset): int {
-        $length = ord($der[$offset++]);
-        if (($length & 0x80) === 0) return $length;
-        $count = $length & 0x7f; $length = 0;
-        for ($i = 0; $i < $count; $i++) $length = ($length << 8) | ord($der[$offset++]);
-        return $length;
-    };
-    if (($signatureDer[$offset++] ?? '') !== "\x30") return null;
-    $readLength($signatureDer, $offset);
-    if (($signatureDer[$offset++] ?? '') !== "\x02") return null;
-    $rLen = $readLength($signatureDer, $offset); $r = substr($signatureDer, $offset, $rLen); $offset += $rLen;
-    if (($signatureDer[$offset++] ?? '') !== "\x02") return null;
-    $sLen = $readLength($signatureDer, $offset); $sigS = substr($signatureDer, $offset, $sLen);
-    $r = str_pad(ltrim($r, "\x00"), 32, "\x00", STR_PAD_LEFT);
-    $sigS = str_pad(ltrim($sigS, "\x00"), 32, "\x00", STR_PAD_LEFT);
-    if (strlen($r) !== 32 || strlen($sigS) !== 32) return null;
-    return $data . '.' . base64UrlEncode($r . $sigS);
-}
-
-function coinbaseConnectionHealth(): array
-{
-    $host = 'api.coinbase.com';
-    $public = brokerHttpJson('GET', 'https://' . $host . '/api/v3/brokerage/time', [], null, 8);
-    $jwt = coinbaseCdpJwt('GET', $host, '/api/v3/brokerage/key_permissions');
-    if ($jwt === null) {
-        return ['provider' => 'COINBASE', 'public_ok' => $public['ok'], 'authenticated' => false, 'trade_permission' => false, 'mode' => 'MARKET_DATA_ONLY', 'message' => $public['ok'] ? 'Public Advanced Trade API reachable; CDP ECDSA credentials not configured.' : 'Coinbase Advanced Trade public endpoint could not be reached from this server.'];
-    }
-    $private = brokerHttpJson('GET', 'https://' . $host . '/api/v3/brokerage/key_permissions', ['Authorization' => 'Bearer ' . $jwt], null, 10);
-    $permissions = is_array($private['json'] ?? null) ? $private['json'] : [];
-    return [
-        'provider' => 'COINBASE', 'public_ok' => $public['ok'], 'authenticated' => $private['ok'],
-        'trade_permission' => ($permissions['can_trade'] ?? false) === true,
-        'view_permission' => ($permissions['can_view'] ?? false) === true,
-        'mode' => strtoupper(trim(localEnvironmentValue('COINBASE_MODE') ?: 'READ_ONLY')),
-        'http_code' => $private['http_code'],
-        'message' => $private['ok'] ? 'Coinbase CDP authentication accepted.' : ('Coinbase authentication failed: ' . ($private['error'] ?: 'unknown response')),
-    ];
-}
-
-function alpacaConnectionHealth(): array
-{
-    $key = trim(localEnvironmentValue('ALPACA_API_KEY_ID'));
-    $secret = trim(localEnvironmentValue('ALPACA_API_SECRET_KEY'));
-    $mode = strtolower(trim(localEnvironmentValue('ALPACA_MODE') ?: 'paper'));
-    $paper = $mode !== 'live';
-    $base = $paper ? 'https://paper-api.alpaca.markets' : 'https://api.alpaca.markets';
-    if ($key === '' || $secret === '') {
-        return ['provider' => 'ALPACA', 'authenticated' => false, 'trading_blocked' => true, 'mode' => $paper ? 'PAPER' : 'LIVE', 'message' => 'Alpaca credentials not configured.'];
-    }
-    $response = brokerHttpJson('GET', $base . '/v2/account', ['APCA-API-KEY-ID' => $key, 'APCA-API-SECRET-KEY' => $secret], null, 10);
-    $account = is_array($response['json'] ?? null) ? $response['json'] : [];
-    return [
-        'provider' => 'ALPACA', 'authenticated' => $response['ok'], 'mode' => $paper ? 'PAPER' : 'LIVE',
-        'account_status' => (string)($account['status'] ?? 'UNKNOWN'),
-        'trading_blocked' => ($account['trading_blocked'] ?? true) === true,
-        'account_blocked' => ($account['account_blocked'] ?? true) === true,
-        'buying_power' => is_numeric($account['buying_power'] ?? null) ? (float)$account['buying_power'] : null,
-        'http_code' => $response['http_code'],
-        'message' => $response['ok'] ? 'Alpaca ' . ($paper ? 'paper' : 'live') . ' account authentication accepted.' : ('Alpaca authentication failed: ' . ($response['error'] ?: 'unknown response')),
-    ];
-}
-
-function brokerConnectionHealth(): array
-{
-    return ['checked_at' => gmdate('Y-m-d\\TH:i:s\\Z'), 'coinbase' => coinbaseConnectionHealth(), 'alpaca' => alpacaConnectionHealth()];
-}
-
-if (isset($_GET['broker_health']) && (string)$_GET['broker_health'] === '1') {
-    header('Content-Type: application/json; charset=utf-8');
-    header('Cache-Control: no-store, max-age=0');
-    echo json_encode(brokerConnectionHealth(), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
-    exit;
-}
-
-
-
-/**
- * Submit an order only to a non-production broker environment.
- * Crypto uses Coinbase Advanced Trade's static sandbox. Stocks use Alpaca paper.
- * The local wallet remains the accounting source of truth; broker responses are
- * attached as execution evidence and never silently fall back to a live host.
- */
-function sandboxBrokerOrder(
-    string $marketType,
-    string $symbol,
-    string $action,
-    array $paperFill,
-    string $clientOrderId
-): array {
-    $marketType = strtolower(trim($marketType));
-    $action = strtoupper(trim($action));
-    if (($action !== 'BUY' && $action !== 'SELL') || (($paperFill['eligible'] ?? false) !== true)) {
-        return ['attempted' => false, 'accepted' => false, 'mode' => 'NONE', 'message' => 'No eligible order to submit.'];
-    }
-
-    if ($marketType === 'crypto') {
-        $mode = strtolower(trim(localEnvironmentValue('COINBASE_MODE') ?: 'sandbox'));
-        if ($mode !== 'sandbox') {
-            return ['attempted' => false, 'accepted' => false, 'mode' => strtoupper($mode), 'message' => 'Coinbase live submission disabled; set COINBASE_MODE=sandbox.'];
-        }
-        $productId = coinbaseProductIdForTicker($symbol) ?: strtoupper(trim($symbol));
-        $quoteSize = number_format(max(0.0, (float)($paperFill['executed_amount'] ?? 0.0)), 2, '.', '');
-        $baseSize = rtrim(rtrim(number_format(max(0.0, (float)($paperFill['units'] ?? 0.0)), 12, '.', ''), '0'), '.');
-        $body = [
-            'client_order_id' => substr(preg_replace('/[^A-Za-z0-9_-]+/', '-', $clientOrderId) ?: bin2hex(random_bytes(8)), 0, 64),
-            'product_id' => $productId,
-            'side' => $action,
-            'order_configuration' => [
-                'market_market_ioc' => $action === 'BUY'
-                    ? ['quote_size' => $quoteSize]
-                    : ['base_size' => $baseSize],
-            ],
-        ];
-        $response = brokerHttpJson('POST', 'https://api-sandbox.coinbase.com/api/v3/brokerage/orders', [], $body, 12);
-        return [
-            'attempted' => true,
-            'accepted' => $response['ok'],
-            'provider' => 'COINBASE',
-            'mode' => 'STATIC_SANDBOX',
-            'http_code' => (int)$response['http_code'],
-            'order_id' => (string)($response['json']['success_response']['order_id'] ?? ''),
-            'message' => $response['ok'] ? 'Coinbase static sandbox accepted the order request.' : ('Coinbase sandbox rejected the request: ' . ($response['error'] ?: 'unknown response')),
-        ];
-    }
-
-    $mode = strtolower(trim(localEnvironmentValue('ALPACA_MODE') ?: 'paper'));
-    if ($mode !== 'paper') {
-        return ['attempted' => false, 'accepted' => false, 'provider' => 'ALPACA', 'mode' => strtoupper($mode), 'message' => 'Alpaca live submission disabled; set ALPACA_MODE=paper.'];
-    }
-    $key = trim(localEnvironmentValue('ALPACA_API_KEY_ID'));
-    $secret = trim(localEnvironmentValue('ALPACA_API_SECRET_KEY'));
-    if ($key === '' || $secret === '') {
-        return ['attempted' => false, 'accepted' => false, 'provider' => 'ALPACA', 'mode' => 'PAPER', 'message' => 'Alpaca paper credentials not configured.'];
-    }
-    $body = [
-        'symbol' => strtoupper(trim($symbol)),
-        'side' => strtolower($action),
-        'type' => 'market',
-        'time_in_force' => 'day',
-        'client_order_id' => substr(preg_replace('/[^A-Za-z0-9_-]+/', '-', $clientOrderId) ?: bin2hex(random_bytes(8)), 0, 48),
-    ];
-    if ($action === 'BUY') {
-        $body['notional'] = number_format(max(0.0, (float)($paperFill['executed_amount'] ?? 0.0)), 2, '.', '');
-    } else {
-        $body['qty'] = rtrim(rtrim(number_format(max(0.0, (float)($paperFill['units'] ?? 0.0)), 9, '.', ''), '0'), '.');
-    }
-    $response = brokerHttpJson('POST', 'https://paper-api.alpaca.markets/v2/orders', [
-        'APCA-API-KEY-ID' => $key,
-        'APCA-API-SECRET-KEY' => $secret,
-    ], $body, 12);
-    return [
-        'attempted' => true,
-        'accepted' => $response['ok'],
-        'provider' => 'ALPACA',
-        'mode' => 'PAPER',
-        'http_code' => (int)$response['http_code'],
-        'order_id' => (string)($response['json']['id'] ?? ''),
-        'status' => (string)($response['json']['status'] ?? ''),
-        'message' => $response['ok'] ? 'Alpaca paper accepted the order.' : ('Alpaca paper rejected the order: ' . ($response['error'] ?: 'unknown response')),
-    ];
-}
-
-function resolvePaperOrSandboxFill(
-    string $action,
-    float $requestedAmount,
-    float $availableAmount,
-    float $referencePrice,
-    array $context = [],
-    float $availableUnits = 0.0,
-    bool $useTopOfBook = false
-): array {
-    $fill = paperExecutionFill($action, $requestedAmount, $availableAmount, $referencePrice, $context, $availableUnits, $useTopOfBook);
-    if (($fill['eligible'] ?? false) !== true) return $fill;
-    $marketType = (string)($context['market_type'] ?? '');
-    $symbol = (string)($context['symbol'] ?? $context['product_id'] ?? '');
-    $clientOrderId = (string)($context['client_order_id'] ?? ('mw-' . gmdate('YmdHis') . '-' . bin2hex(random_bytes(4))));
-    $broker = sandboxBrokerOrder($marketType, $symbol, $action, $fill, $clientOrderId);
-    $fill['broker_attempted'] = ($broker['attempted'] ?? false) === true;
-    $fill['broker_accepted'] = ($broker['accepted'] ?? false) === true;
-    $fill['broker_provider'] = (string)($broker['provider'] ?? '');
-    $fill['broker_mode'] = (string)($broker['mode'] ?? '');
-    $fill['broker_order_id'] = (string)($broker['order_id'] ?? '');
-    $fill['broker_status'] = (string)($broker['status'] ?? '');
-    $fill['broker_message'] = (string)($broker['message'] ?? '');
-    // Preserve the complete locally calculated fill before applying broker policy.
-    // FIFO and lot accounting must never receive zero units merely because a
-    // broker request failed; broker rejection is a broker gate, not a lot error.
-    $fill['proposed_executed_amount'] = (float)($fill['executed_amount'] ?? 0.0);
-    $fill['proposed_gross_notional'] = (float)($fill['gross_notional'] ?? 0.0);
-    $fill['proposed_fee_amount'] = (float)($fill['fee_amount'] ?? 0.0);
-    $fill['proposed_net_cash_amount'] = (float)($fill['net_cash_amount'] ?? 0.0);
-    $fill['proposed_cash_delta'] = (float)($fill['cash_delta'] ?? 0.0);
-    $fill['proposed_units'] = (float)($fill['units'] ?? 0.0);
-    $fill['proposed_asset_units_delta'] = (float)($fill['asset_units_delta'] ?? 0.0);
-
-    // Alpaca paper is stateful, so acceptance remains required by default.
-    // Coinbase Advanced Trade's public sandbox is static/mock; it is contacted
-    // and recorded, but local paper accounting may continue unless explicitly
-    // configured to require a successful static response.
-    $provider = strtoupper(trim((string)($broker['provider'] ?? '')));
-    $globalRequired = strtolower(trim(localEnvironmentValue('BROKER_SANDBOX_REQUIRED') ?: ''));
-    if ($globalRequired === '0') {
-        $requireSandbox = false;
-    } elseif ($globalRequired === '1') {
-        $requireSandbox = true;
-    } elseif ($provider === 'COINBASE') {
-        $requireSandbox = strtolower(trim(localEnvironmentValue('COINBASE_SANDBOX_REQUIRED') ?: '0')) !== '0';
-    } else {
-        $requireSandbox = strtolower(trim(localEnvironmentValue('ALPACA_PAPER_REQUIRED') ?: '1')) !== '0';
-    }
-    $fill['broker_acceptance_required'] = $requireSandbox;
-
-    if ($requireSandbox && (($broker['accepted'] ?? false) !== true)) {
-        $fill['eligible'] = false;
-        $fill['executed_amount'] = 0.0;
-        $fill['executable_amount'] = 0.0;
-        $fill['gross_notional'] = 0.0;
-        $fill['fee_amount'] = 0.0;
-        $fill['net_cash_amount'] = 0.0;
-        $fill['cash_delta'] = 0.0;
-        $fill['units'] = 0.0;
-        $fill['asset_units_delta'] = 0.0;
-        $fill['shortfall'] = round(max(0.0, $requestedAmount - $availableAmount), 8);
-        $fill['blocked_amount'] = round(min(max(0.0, $requestedAmount), max(0.0, $availableAmount)), 8);
-        $fill['blocked_reason'] = 'BROKER_ORDER_NOT_ACCEPTED';
-    } elseif (($broker['accepted'] ?? false) !== true) {
-        $fill['execution_source'] = trim((string)($fill['execution_source'] ?? 'PAPER_ASSUMPTION')) . ' + BROKER SANDBOX ATTEMPT';
-        $fill['broker_nonblocking'] = true;
-    }
-    return $fill;
 }
 
 function walletResetPasswordMatches(string $configuredPassword, string $providedPassword): bool
@@ -2011,13 +1691,9 @@ function buildTrackedDashboardCards(
             $wallet = markPaperWalletToMarket($wallet, (float)$price);
             $liveTrader = markPaperWalletToMarket($liveTrader, (float)$price);
         }
-        // Global canonical equity: rebuild every status/API value from
-        // spendable cash, live holding value, and the non-spendable kitty.
-        $walletEquity = paperWalletTotalEquity($wallet);
-        $liveTraderEquity = paperWalletTotalEquity($liveTrader);
-        $equity = $walletEquity > 0.0 ? $walletEquity : ($liveTraderEquity > 0.0 ? $liveTraderEquity : null);
-        $wallet['equity_value'] = $walletEquity;
-        $liveTrader['equity_value'] = $liveTraderEquity;
+        $equity = is_numeric($wallet['equity_value'] ?? null)
+            ? (float)$wallet['equity_value']
+            : (is_numeric($liveTrader['equity_value'] ?? null) ? (float)$liveTrader['equity_value'] : null);
         $netPnl = is_numeric($wallet['net_pnl'] ?? null)
             ? (float)$wallet['net_pnl']
             : (is_numeric($liveTrader['net_pnl'] ?? null)
@@ -2026,16 +1702,6 @@ function buildTrackedDashboardCards(
         $strategyAlpha = is_numeric($wallet['strategy_alpha'] ?? null)
             ? (float)$wallet['strategy_alpha']
             : (is_numeric($liveTrader['strategy_alpha'] ?? null) ? (float)$liveTrader['strategy_alpha'] : null);
-
-        // Per-symbol output total: signed P&L plus only SELL proceeds that
-        // remain reserved and have not yet been reinvested into the asset.
-        $trackedStateForOutput = $walletEquity > 0.0 ? $wallet : $liveTrader;
-        $trackedSoldCumulative = paperWalletSoldIntoCashKittyTotal($trackedStateForOutput);
-        $trackedSoldUnreinvested = min(
-            max(0.0, (float)$trackedSoldCumulative),
-            max(0.0, (float)($trackedStateForOutput['pending_rebuy_total'] ?? 0.0))
-        );
-        $trackedOutputTotal = (is_numeric($netPnl) ? (float)$netPnl : 0.0) + $trackedSoldUnreinvested;
         $position = strtoupper(trim((string)($wallet['position'] ?? ($liveTrader['position'] ?? 'flat'))));
         if ($position === '') $position = 'FLAT';
         $signal = trim((string)($wallet['display_action'] ?? ($liveTrader['display_action'] ?? 'WATCHING')));
@@ -2088,9 +1754,6 @@ function buildTrackedDashboardCards(
                 : '—',
             'net_value' => $netPnl,
             'net_class' => is_numeric($netPnl) ? ((float)$netPnl >= 0 ? 'good' : 'low') : 'medium',
-            'sold_unreinvested_value' => round($trackedSoldUnreinvested, 6),
-            'output_total_value' => round($trackedOutputTotal, 6),
-            'output_total_label' => ($trackedOutputTotal >= 0.0 ? '+' : '-') . '$' . number_format(abs($trackedOutputTotal), 2),
             'alpha_label' => is_numeric($strategyAlpha)
                 ? (((float)$strategyAlpha >= 0 ? '+' : '-') . '$' . number_format(abs((float)$strategyAlpha), 2))
                 : '—',
@@ -2128,9 +1791,6 @@ function aggregateTrackedDashboardPortfolio(array $trackedDashboardCards, ?array
     $netCount = 0;
     $strategyAlpha = 0.0;
     $strategyAlphaCount = 0;
-    $outputTotal = 0.0;
-    $outputCount = 0;
-    $unreinvestedSoldTotal = 0.0;
     foreach ($trackedDashboardCards as $card) {
         if (!is_array($card)) continue;
         if (is_numeric($card['net_value'] ?? null)) {
@@ -2140,13 +1800,6 @@ function aggregateTrackedDashboardPortfolio(array $trackedDashboardCards, ?array
         if (is_numeric($card['alpha_value'] ?? null)) {
             $strategyAlpha += (float)$card['alpha_value'];
             $strategyAlphaCount++;
-        }
-        if (is_numeric($card['output_total_value'] ?? null)) {
-            $outputTotal += (float)$card['output_total_value'];
-            $outputCount++;
-        }
-        if (is_numeric($card['sold_unreinvested_value'] ?? null)) {
-            $unreinvestedSoldTotal += max(0.0, (float)$card['sold_unreinvested_value']);
         }
     }
     $globalEffective = is_array($globalObservationState) && is_numeric($globalObservationState['effective_percent'] ?? null)
@@ -2171,10 +1824,6 @@ function aggregateTrackedDashboardPortfolio(array $trackedDashboardCards, ?array
         'strategy_alpha' => round($strategyAlpha, 6),
         'strategy_alpha_count' => $strategyAlphaCount,
         'strategy_alpha_label' => ($strategyAlpha >= 0.0 ? '+' : '-') . '$' . number_format(abs($strategyAlpha), 2),
-        'output_total' => round($outputTotal, 6),
-        'output_count' => $outputCount,
-        'output_total_label' => ($outputTotal >= 0.0 ? '+' : '-') . '$' . number_format(abs($outputTotal), 2),
-        'unreinvested_sold_total' => round($unreinvestedSoldTotal, 6),
         'global_accuracy_effective' => $globalEffective,
         'global_accuracy_historical' => $globalHistorical,
         'global_accuracy_flipped' => $globalFlipped,
@@ -2329,8 +1978,6 @@ $wallet_cash_out_requested = isset($_POST['cash_out_wallet']) && $_POST['cash_ou
     && !$is_live_request;
 $wallet_buy_back_requested = isset($_POST['buy_back_wallet']) && $_POST['buy_back_wallet'] === '1'
     && !$is_live_request;
-$autonomous_quick_flip_active = false;
-$autonomous_quick_flip_reason = '';
 $tracked_symbol_remove_requested = isset($_POST['remove_tracked_symbol']) && $_POST['remove_tracked_symbol'] === '1'
     && !$is_live_request;
 $skip_auto_register_current = isset($_GET['skip_autoregister']) && $_GET['skip_autoregister'] === '1';
@@ -2427,80 +2074,6 @@ if ($tracked_symbol_remove_requested) {
         header('Location: ' . $redirectTarget);
         exit;
     }
-}
-
-// Save dashboard controls without reloading the page. The values are stored in
-// the same tracked-symbol registry used by cron and restored on the next visit.
-if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (string)($request_params['save_dashboard_settings'] ?? '') === '1') {
-    $savedMarketType = ((string)($request_params['market_type'] ?? 'crypto')) === 'stock' ? 'stock' : 'crypto';
-    $savedSymbol = strtoupper(trim((string)($request_params['symbol'] ?? '')));
-    if ($savedMarketType === 'crypto' && $savedSymbol !== '' && !str_contains($savedSymbol, '-')) {
-        $savedSymbol .= '-USD';
-    }
-    if (!preg_match('/^[A-Z0-9.\-^]{1,12}$/', $savedSymbol)) {
-        http_response_code(422);
-        header('Content-Type: application/json; charset=utf-8');
-        echo json_encode(['ok' => false, 'error' => 'Invalid symbol']);
-        exit;
-    }
-
-    $savedBuyMultiplier = max(0.10, min(5.00, is_numeric($request_params['buy_multiplier'] ?? null) ? (float)$request_params['buy_multiplier'] : 1.0));
-    $savedSellMultiplier = max(0.10, min(5.00, is_numeric($request_params['sell_multiplier'] ?? null) ? (float)$request_params['sell_multiplier'] : 1.0));
-    $savedTrustPercent = max(1.0, min(100.0, is_numeric($request_params['trust_percent'] ?? null) ? (float)$request_params['trust_percent'] : 75.0));
-    $savedBreakBuy = max(0.01, min(25.0, is_numeric($request_params['break_buy'] ?? null) ? (float)$request_params['break_buy'] : 0.50));
-    $savedBreakGain = max(0.01, min(25.0, is_numeric($request_params['break_gain'] ?? null) ? (float)$request_params['break_gain'] : 0.50));
-    $savedBreakLoss = max(0.01, min(25.0, is_numeric($request_params['break_loss'] ?? null) ? (float)$request_params['break_loss'] : 0.50));
-    $savedLossBuySpreePercent = max(1, min(50, is_numeric($request_params['loss_buy_spree_percent'] ?? null)
-        ? (int)round((float)$request_params['loss_buy_spree_percent']) : 10));
-    $savedLossSpreeState = loadLocalJsonArray(__DIR__ . '/loss-buy-spree-settings.json');
-    $savedLossSpreeKey = strtolower($savedMarketType) . ':' . strtoupper($savedSymbol);
-    $savedLossSpreeState[$savedLossSpreeKey] = ['percent' => $savedLossBuySpreePercent, 'updated_at' => gmdate('Y-m-d\TH:i:s\Z')];
-    saveLocalJsonArray(__DIR__ . '/loss-buy-spree-settings.json', $savedLossSpreeState);
-
-    $baseUrl = detectedIndexBaseUrl();
-    upsertTrackedIndexTarget(
-        __DIR__ . '/wsl_portfolio_targets.json',
-        $savedMarketType,
-        $savedSymbol,
-        $baseUrl,
-        $savedBuyMultiplier,
-        $savedSellMultiplier,
-        $savedTrustPercent,
-        $savedBreakBuy,
-        $savedBreakGain,
-        $savedBreakLoss
-    );
-    registerCpanelCronTarget(
-        cpanelCronRegistryPath(),
-        $baseUrl,
-        $savedMarketType,
-        $savedSymbol,
-        $savedBuyMultiplier,
-        $savedSellMultiplier,
-        $savedTrustPercent,
-        $savedBreakBuy,
-        $savedBreakGain,
-        $savedBreakLoss
-    );
-
-    header('Content-Type: application/json; charset=utf-8');
-    header('Cache-Control: no-store');
-    echo json_encode([
-        'ok' => true,
-        'saved_at' => gmdate('Y-m-d\TH:i:s\Z'),
-        'market_type' => $savedMarketType,
-        'symbol' => $savedSymbol,
-        'settings' => [
-            'buy_multiplier' => $savedBuyMultiplier,
-            'sell_multiplier' => $savedSellMultiplier,
-            'trust_percent' => $savedTrustPercent,
-            'break_buy' => $savedBreakBuy,
-            'break_gain' => $savedBreakGain,
-            'break_loss' => $savedBreakLoss,
-            'loss_buy_spree_percent' => $savedLossBuySpreePercent,
-        ],
-    ], JSON_UNESCAPED_SLASHES);
-    exit;
 }
 
 $persisted_current_target = trackedTargetForSymbol(
@@ -2682,452 +2255,13 @@ if (!defined('CHART_HOURLY_WINDOW')) define('CHART_HOURLY_WINDOW', 15);
 if (!defined('FUTURE_GUESS_HORIZON')) define('FUTURE_GUESS_HORIZON', 49);
 if (!defined('VISIBLE_FUTURE_GUESSES')) define('VISIBLE_FUTURE_GUESSES', 9);
 if (!defined('TRADE_ANALYSIS_HORIZON')) define('TRADE_ANALYSIS_HORIZON', ONE_HOUR_CANDLE_COUNT);
-if (!defined('REALIZE_LOSS_TRADES')) define('REALIZE_LOSS_TRADES', false);
-if (!defined('MAX_REALIZED_SELL_LOSS_AMOUNT')) define('MAX_REALIZED_SELL_LOSS_AMOUNT', 50.00);
+if (!defined('REALIZE_LOSS_TRADES')) define('REALIZE_LOSS_TRADES', true);
+if (!defined('MAX_REALIZED_SELL_LOSS_AMOUNT')) define('MAX_REALIZED_SELL_LOSS_AMOUNT', 100.00);
 if (!defined('LOW_ACCURACY_INVERSION_PERCENT')) define('LOW_ACCURACY_INVERSION_PERCENT', 50.0);
 if (!defined('LATE_WRONG_MARK_FLIP_DELAY_SECONDS')) define('LATE_WRONG_MARK_FLIP_DELAY_SECONDS', 60);
 // Table-led paper execution should be able to sell immediately on a SELL call.
 if (!defined('MIN_SELL_EDGE_PERCENT')) define('MIN_SELL_EDGE_PERCENT', 0.00);
 if (!defined('MIN_TRADE_AMOUNT')) define('MIN_TRADE_AMOUNT', 5.00);
-
-/** Price-tiered break %: <$1 → 30%; each 10× above $1 shifts decimal left. */
-function adaptiveBreakPercentFromPrice(float $price): float
-{
-    $price = max(0.0, $price);
-    if ($price < 1.0) return 30.0;
-    $magnitude = (int)floor(log10(max($price, 1.0)));
-    return max(0.001, min(30.0, 30.0 / (10.0 ** max(0, $magnitude))));
-}
-
-function paperWalletOpenLots(array $state): array
-{
-    $lots = is_array($state['open_lots'] ?? null) ? array_values($state['open_lots']) : [];
-    // Migrate an older pooled position into one protected lot so existing
-    // holdings do not become permanently unsellable after this upgrade.
-    if (!$lots) {
-        $legacyUnits = max(0.0, (float)($state['asset_units'] ?? 0.0));
-        $legacyCost = max(0.0, (float)($state['asset_cost_basis'] ?? 0.0));
-        $legacyEntry = is_numeric($state['entry_price'] ?? null)
-            ? max(0.0, (float)$state['entry_price'])
-            : ($legacyUnits > 0.0 ? ($legacyCost / $legacyUnits) : 0.0);
-        if ($legacyUnits > 0.0 && $legacyEntry > 0.0) {
-            $legacyPct = min(25.0, max(0.01, (float)($state['configured_sell_gain_percent'] ?? 0.50)));
-            $lots[] = [
-                'id' => 'legacy-' . substr(hash('sha256', $legacyEntry . '|' . $legacyUnits . '|' . $legacyCost), 0, 12),
-                'units' => $legacyUnits,
-                'entry_price' => $legacyEntry,
-                'cost_basis' => $legacyCost > 0.0 ? $legacyCost : ($legacyUnits * $legacyEntry),
-                'break_percent' => $legacyPct,
-                'take_gain_percent' => $legacyPct,
-                'stop_loss_percent' => $legacyPct,
-                'bought_at' => (string)($state['entry_time'] ?? ''),
-                'session_high_at_buy' => $legacyEntry,
-            ];
-        }
-    }
-    $out = [];
-    foreach ($lots as $lot) {
-        if (!is_array($lot)) continue;
-        $units = max(0.0, (float)($lot['units'] ?? 0.0));
-        $entry = max(0.0, (float)($lot['entry_price'] ?? 0.0));
-        if ($units <= 0.0 || $entry <= 0.0) continue;
-        // GLOBAL SELL BREAK: every open BUY lot uses the current configured
-        // gain break, including lots created under older settings.
-        $pct = min(25.0, max(0.01, (float)($state['configured_sell_gain_percent'] ?? 0.50)));
-        $lotId = (string)($lot['id'] ?? substr(hash('sha256', $entry . '|' . $units), 0, 12));
-        $out[] = [
-            'id' => $lotId,
-            'cycle_id' => (string)($lot['cycle_id'] ?? ('cycle-' . $lotId)),
-            'source_sell_id' => isset($lot['source_sell_id']) ? (string)$lot['source_sell_id'] : null,
-            'units' => $units,
-            'entry_price' => $entry,
-            'cost_basis' => max(0.0, (float)($lot['cost_basis'] ?? ($units * $entry))),
-            'break_percent' => $pct,
-            'take_gain_percent' => $pct,
-            'buy_drop_percent' => min(25.0, max(0.01, (float)($state['configured_buy_break_percent'] ?? 0.50))),
-            'sell_target_price' => round($entry * (1.0 + ($pct / 100.0)), 12),
-            'stop_loss_percent' => is_numeric($lot['stop_loss_percent'] ?? null) ? max(0.001, (float)$lot['stop_loss_percent']) : $pct,
-            'bought_at' => (string)($lot['bought_at'] ?? ''),
-            'status' => (string)($lot['status'] ?? 'OPEN_WAITING_FOR_SELL_BREAK'),
-            'session_high_at_buy' => max($entry, (float)($lot['session_high_at_buy'] ?? $entry)),
-        ];
-    }
-    return $out;
-}
-
-function paperWalletRecordBuyLot(
-    array $state,
-    float $units,
-    float $entryPrice,
-    float $costBasis,
-    string $boughtAt,
-    float $sessionHigh = 0.0,
-    ?string $sourceSellId = null
-): array
-{
-    $units = max(0.0, $units); $entryPrice = max(0.0, $entryPrice);
-    if ($units <= 0.0 || $entryPrice <= 0.0) return $state;
-    $gainPct = min(25.0, max(0.01, (float)($state['configured_sell_gain_percent'] ?? 0.50)));
-    $buyDropPct = min(25.0, max(0.01, (float)($state['configured_buy_break_percent'] ?? 0.50)));
-    $lotId = substr(hash('sha256', $boughtAt . '|' . $entryPrice . '|' . $units . '|' . microtime(true)), 0, 12);
-    $lots = paperWalletOpenLots($state);
-    $lots[] = [
-        'id' => $lotId,
-        'cycle_id' => $sourceSellId !== null && $sourceSellId !== '' ? ('cycle-' . $sourceSellId) : ('cycle-' . $lotId),
-        'source_sell_id' => $sourceSellId,
-        'units' => $units, 'entry_price' => $entryPrice,
-        'cost_basis' => max(0.0, $costBasis > 0.0 ? $costBasis : $units * $entryPrice),
-        'break_percent' => $gainPct,
-        'take_gain_percent' => $gainPct,
-        'buy_drop_percent' => $buyDropPct,
-        'sell_target_price' => round($entryPrice * (1.0 + ($gainPct / 100.0)), 12),
-        'stop_loss_percent' => max(0.001, (float)($state['stop_loss_percent'] ?? $gainPct)),
-        'bought_at' => $boughtAt, 'session_high_at_buy' => max($entryPrice, $sessionHigh),
-        'status' => 'OPEN_WAITING_FOR_SELL_BREAK',
-    ];
-    $state['open_lots'] = $lots;
-    $state['open_lot_count'] = count($lots);
-    return $state;
-}
-
-function paperWalletLotsEligibleToSell(array $state, float $currentPrice): array
-{
-    $currentPrice = max(0.0, $currentPrice);
-    $lots = paperWalletOpenLots($state);
-    $eligible = [];
-    $reasons = [];
-    $units = 0.0;
-
-    // GLOBAL SELL BREAK: evaluate the complete open BUY inventory as one
-    // concurrent position. This is the authoritative LOT-voter test.
-    $totalUnits = 0.0;
-    $totalCost = 0.0;
-    foreach ($lots as $lot) {
-        $lotUnits = max(0.0, (float)($lot['units'] ?? 0.0));
-        $lotCost = max(0.0, (float)($lot['cost_basis'] ?? 0.0));
-        $lotEntry = max(0.0, (float)($lot['entry_price'] ?? 0.0));
-        if ($lotUnits <= 1.0e-12 || $lotEntry <= 0.0) continue;
-        if ($lotCost <= 0.0) $lotCost = $lotUnits * $lotEntry;
-        $totalUnits += $lotUnits;
-        $totalCost += $lotCost;
-    }
-
-    // Fall back to the aggregate wallet position when legacy state has units
-    // but no complete lot ledger.
-    if ($totalUnits <= 1.0e-12) {
-        $totalUnits = max(0.0, (float)($state['asset_units'] ?? 0.0));
-        $totalCost = max(0.0, (float)($state['asset_cost_basis'] ?? 0.0));
-    }
-
-    $globalBreakPct = min(25.0, max(0.01, (float)($state['configured_sell_gain_percent'] ?? 0.50)));
-    $averageEntry = $totalUnits > 1.0e-12 ? ($totalCost / $totalUnits) : 0.0;
-    $globalTarget = $averageEntry > 0.0
-        ? $averageEntry * (1.0 + ($globalBreakPct / 100.0))
-        : 0.0;
-    $globalMovePct = ($averageEntry > 0.0 && $currentPrice > 0.0)
-        ? (($currentPrice - $averageEntry) / $averageEntry) * 100.0
-        : 0.0;
-    $globalBreakMet = $totalUnits > 1.0e-12
-        && $globalTarget > 0.0
-        && ($currentPrice + 1.0e-12 >= $globalTarget);
-
-    if ($globalBreakMet) {
-        // Once the global inventory break is met, every open lot participates
-        // concurrently in FIFO sizing. This makes the break global to all sales.
-        $eligible = $lots;
-        $units = $totalUnits;
-        foreach ($lots as $lot) {
-            $reasons[] = [
-                'id' => (string)($lot['id'] ?? ''),
-                'entry_price' => round((float)($lot['entry_price'] ?? 0.0), 12),
-                'required_price' => round($globalTarget, 12),
-                'move_percent' => round($globalMovePct, 6),
-                'reason' => 'GLOBAL_BREAK_MET',
-                'threshold_percent' => $globalBreakPct,
-                'cycle_id' => (string)($lot['cycle_id'] ?? ('cycle-' . ($lot['id'] ?? ''))),
-                'matched_buy_lot_id' => (string)($lot['id'] ?? ''),
-            ];
-        }
-    }
-
-    return [
-        'eligible_lots' => $eligible,
-        'eligible_units' => $units,
-        'reasons' => $reasons,
-        'global_break_percent' => $globalBreakPct,
-        'global_break_met' => $globalBreakMet,
-        'global_average_entry' => round($averageEntry, 12),
-        'global_target_price' => round($globalTarget, 12),
-        'global_current_price' => round($currentPrice, 12),
-        'global_move_percent' => round($globalMovePct, 6),
-        'global_open_units' => round($totalUnits, 12),
-    ];
-}
-
-/** Preview the exact FIFO eligible lots that would fund a sell. */
-function paperWalletPreviewSellLots(array $state, float $sellUnits, float $currentPrice, bool $allowAnyOpenLot = false): array
-{
-    $remaining = max(0.0, $sellUnits);
-    $eligibility = paperWalletLotsEligibleToSell($state, $currentPrice);
-    $eligibleIds = [];
-    foreach ($eligibility['eligible_lots'] as $lot) $eligibleIds[(string)$lot['id']] = true;
-
-    $openLots = paperWalletOpenLots($state);
-    // Full-circle fallback: an older wallet may have aggregate holdings but no
-    // complete per-lot ledger. Once the frozen 2-of-3 room approves the SELL,
-    // represent that aggregate position as one legacy FIFO lot so sizing,
-    // execution, reservation, and the later rebuy all see the same units.
-    if ($allowAnyOpenLot && count($openLots) === 0) {
-        $aggregateUnits = max(0.0, (float)($state['asset_units'] ?? 0.0));
-        $aggregateCost = max(0.0, (float)($state['asset_cost_basis'] ?? 0.0));
-        if ($aggregateUnits > 1.0e-12) {
-            $aggregateEntry = $aggregateCost > 0.0
-                ? $aggregateCost / $aggregateUnits
-                : max(0.0, (float)($state['entry_price'] ?? $currentPrice));
-            $openLots[] = [
-                'id' => 'legacy-aggregate',
-                'units' => $aggregateUnits,
-                'entry_price' => $aggregateEntry,
-                'cost_basis' => $aggregateCost,
-                'break_percent' => 0.0,
-                'take_gain_percent' => 0.0,
-            ];
-        }
-    }
-
-    $sold = 0.0; $costPortion = 0.0; $lotResults = [];
-    foreach ($openLots as $lot) {
-        if ($remaining <= 1.0e-12) break;
-        $id = (string)$lot['id'];
-        if (!$allowAnyOpenLot && empty($eligibleIds[$id])) continue;
-        $lotUnits = max(0.0, (float)$lot['units']);
-        $take = min($lotUnits, $remaining);
-        if ($take <= 0.0) continue;
-        $lotCost = $lotUnits > 0.0 ? ((float)$lot['cost_basis'] * ($take / $lotUnits)) : 0.0;
-        $costPortion += $lotCost; $sold += $take; $remaining -= $take;
-        $lotResults[] = [
-            'id' => $id,
-            'cycle_id' => (string)($lot['cycle_id'] ?? ('cycle-' . $id)),
-            'matched_buy_lot_id' => $id,
-            'sold_units' => $take,
-            'entry_price' => (float)$lot['entry_price'],
-            'break_percent' => (float)$lot['take_gain_percent'],
-            'cost_portion' => $lotCost,
-        ];
-    }
-    return ['sold_units' => $sold, 'cost_portion' => $costPortion, 'lot_results' => $lotResults];
-}
-
-function paperWalletConsumeSellLots(array $state, float $sellUnits, float $currentPrice, bool $allowAnyOpenLot = false): array
-{
-    $sellUnits = max(0.0, $sellUnits);
-    $lots = paperWalletOpenLots($state);
-    if ($allowAnyOpenLot && count($lots) === 0) {
-        $aggregateUnits = max(0.0, (float)($state['asset_units'] ?? 0.0));
-        $aggregateCost = max(0.0, (float)($state['asset_cost_basis'] ?? 0.0));
-        if ($aggregateUnits > 1.0e-12) {
-            $aggregateEntry = $aggregateCost > 0.0
-                ? $aggregateCost / $aggregateUnits
-                : max(0.0, (float)($state['entry_price'] ?? $currentPrice));
-            $lots[] = [
-                'id' => 'legacy-aggregate',
-                'units' => $aggregateUnits,
-                'entry_price' => $aggregateEntry,
-                'cost_basis' => $aggregateCost,
-                'break_percent' => 0.0,
-                'take_gain_percent' => 0.0,
-            ];
-        }
-    }
-    $eligibility = paperWalletLotsEligibleToSell($state, $currentPrice);
-    $eligibleIds = [];
-    foreach ($eligibility['eligible_lots'] as $lot) $eligibleIds[(string)$lot['id']] = true;
-    $remaining = $sellUnits; $costPortion = 0.0; $sold = 0.0; $lotResults = []; $newLots = [];
-    foreach ($lots as $lot) {
-        $id = (string)$lot['id']; $lotUnits = (float)$lot['units'];
-        if ($remaining <= 1e-12 || (!$allowAnyOpenLot && empty($eligibleIds[$id]))) {
-            if ($lotUnits > 1e-12) $newLots[] = $lot;
-            continue;
-        }
-        $take = min($lotUnits, $remaining);
-        $lotCost = $lotUnits > 0.0 ? ((float)$lot['cost_basis'] * ($take / $lotUnits)) : 0.0;
-        $costPortion += $lotCost; $sold += $take; $remaining -= $take;
-        $lotResults[] = ['id' => $id, 'cycle_id' => (string)($lot['cycle_id'] ?? ('cycle-' . $id)), 'matched_buy_lot_id' => $id, 'sold_units' => $take, 'entry_price' => (float)$lot['entry_price'], 'break_percent' => (float)$lot['break_percent'], 'cost_portion' => $lotCost];
-        $left = $lotUnits - $take;
-        if ($left > 1e-12) {
-            $lot['units'] = $left;
-            $lot['cost_basis'] = max(0.0, (float)$lot['cost_basis'] - $lotCost);
-            $newLots[] = $lot;
-        }
-    }
-    $state['open_lots'] = $newLots;
-    $state['open_lot_count'] = count($newLots);
-    return ['state' => $state, 'sold_units' => $sold, 'cost_portion' => $costPortion, 'lot_results' => $lotResults];
-}
-
-/** Normalize sell-funded rebuy buckets. Each sell keeps its own net proceeds. */
-function paperWalletPendingRebuys(array $state): array
-{
-    $rows = is_array($state['pending_rebuys'] ?? null) ? $state['pending_rebuys'] : [];
-    $out = [];
-    foreach ($rows as $row) {
-        if (!is_array($row)) continue;
-        $remaining = max(0.0, (float)($row['remaining_amount'] ?? $row['sell_net_amount'] ?? 0.0));
-        $sellPrice = max(0.0, (float)($row['sell_price'] ?? 0.0));
-        if ($remaining <= 0.00000001 || $sellPrice <= 0.0) continue;
-        // GLOBAL BUY BREAK: every pending SELL reserve uses the current
-        // configured buy break concurrently, including older reserves.
-        $globalBuyBreak = min(25.0, max(0.01, (float)($state['configured_buy_break_percent'] ?? 0.50)));
-        $target = round($sellPrice * (1.0 - ($globalBuyBreak / 100.0)), 12);
-        $out[] = array_merge($row, [
-            'id' => (string)($row['id'] ?? substr(hash('sha256', json_encode($row)), 0, 12)),
-            'remaining_amount' => round($remaining, 8),
-            'buy_break_percent' => $globalBuyBreak,
-            'target_price' => $target,
-            'target_basis' => 'GLOBAL_SELL_FILL_MINUS_CURRENT_BUY_BREAK',
-            'status' => 'PENDING',
-        ]);
-    }
-    return array_values($out);
-}
-
-/** Reserve the complete net proceeds from an executed sell for a target-price buy. */
-function paperWalletRecordSellFundedRebuy(
-    array $state,
-    array $sellFill,
-    array $lotResults,
-    float $buyMultiplier,
-    string $soldAt,
-    ?float $buyBreakPercent = null
-): array {
-    $net = max(0.0, (float)($sellFill['net_cash_amount'] ?? $sellFill['executed_amount'] ?? 0.0));
-    $sellPrice = max(0.0, (float)($sellFill['fill_price'] ?? 0.0));
-    if ($net <= 0.00000001 || $sellPrice <= 0.0) return $state;
-
-    $weightedEntry = 0.0; $weightedUnits = 0.0;
-    foreach ($lotResults as $lot) {
-        if (!is_array($lot)) continue;
-        $units = max(0.0, (float)($lot['sold_units'] ?? 0.0));
-        $entry = max(0.0, (float)($lot['entry_price'] ?? 0.0));
-        if ($units <= 0.0 || $entry <= 0.0) continue;
-        $weightedEntry += $entry * $units;
-        $weightedUnits += $units;
-    }
-    $referenceBuyPrice = $weightedUnits > 0.0 ? ($weightedEntry / $weightedUnits) : $sellPrice;
-    $multiplier = max(0.10, min(5.00, $buyMultiplier));
-    $dropPct = min(25.0, max(0.01, $buyBreakPercent ?? (float)($state['configured_buy_break_percent'] ?? 0.50)));
-    // Matched-cycle target: the configured BUY break is the exact percentage
-    // below this SELL fill where its reserved proceeds may buy back.
-    $targetPrice = $sellPrice * (1.0 - ($dropPct / 100.0));
-
-    $queue = paperWalletPendingRebuys($state);
-    $queue[] = [
-        'id' => substr(hash('sha256', $soldAt . '|' . $sellPrice . '|' . $net . '|' . microtime(true)), 0, 12),
-        'sold_at' => $soldAt,
-        'sell_price' => round($sellPrice, 12),
-        'source_buy_price' => round($referenceBuyPrice, 12),
-        'buy_multiplier' => $multiplier,
-        'buy_break_percent' => $dropPct,
-        'target_price' => round($targetPrice, 12),
-        'target_basis' => 'SELL_FILL_MINUS_CONFIGURED_BUY_BREAK',
-        'matched_buy_lot_ids' => array_values(array_unique(array_filter(array_map(static fn($lot) => is_array($lot) ? (string)($lot['matched_buy_lot_id'] ?? $lot['id'] ?? '') : '', $lotResults)))),
-        'cycle_ids' => array_values(array_unique(array_filter(array_map(static fn($lot) => is_array($lot) ? (string)($lot['cycle_id'] ?? '') : '', $lotResults)))),
-        'sell_net_amount' => round($net, 8),
-        'remaining_amount' => round($net, 8),
-        'status' => 'PENDING',
-        'lot_results' => array_values($lotResults),
-    ];
-    $state['pending_rebuys'] = $queue;
-    $state['pending_rebuy_total'] = round(array_sum(array_column($queue, 'remaining_amount')), 8);
-    $state['rebuy_pending'] = true;
-    return $state;
-}
-
-function paperWalletEligibleRebuy(array $state, float $currentPrice): ?array
-{
-    $price = max(0.0, $currentPrice);
-    if ($price <= 0.0) return null;
-
-    $eligibleRows = [];
-    $totalAmount = 0.0;
-    $weightedSellValue = 0.0;
-    $ids = [];
-    $targets = [];
-    foreach (paperWalletPendingRebuys($state) as $row) {
-        if ($price > (float)$row['target_price'] + 1.0e-12) continue;
-        $amount = max(0.0, (float)$row['remaining_amount']);
-        if ($amount <= 0.00000001) continue;
-        $eligibleRows[] = $row;
-        $totalAmount += $amount;
-        $weightedSellValue += max(0.0, (float)($row['sell_price'] ?? 0.0)) * $amount;
-        $ids[] = (string)$row['id'];
-        $targets[] = (float)$row['target_price'];
-    }
-    if (!$eligibleRows || $totalAmount <= 0.00000001) return null;
-
-    return [
-        'id' => implode(',', $ids),
-        'ids' => $ids,
-        'eligible_rows' => $eligibleRows,
-        'remaining_amount' => round($totalAmount, 8),
-        'sell_price' => $totalAmount > 0.0 ? ($weightedSellValue / $totalAmount) : 0.0,
-        'target_price' => $targets ? max($targets) : 0.0,
-        'target_prices' => $targets,
-        'buy_break_percent' => min(25.0, max(0.01, (float)($state['configured_buy_break_percent'] ?? 0.50))),
-        'concurrent_count' => count($eligibleRows),
-        'status' => 'CONCURRENT_ELIGIBLE',
-    ];
-}
-
-/** Consume only concurrently eligible reserves named by the aggregate match. */
-function paperWalletConsumeEligibleRebuyReserves(array $state, array $eligibleIds, float $usedAmount): array
-{
-    $remainingUse = max(0.0, $usedAmount);
-    $allowed = array_fill_keys(array_map('strval', $eligibleIds), true);
-    $new = [];
-    foreach (paperWalletPendingRebuys($state) as $row) {
-        $left = max(0.0, (float)$row['remaining_amount']);
-        $id = (string)($row['id'] ?? '');
-        if ($remainingUse > 0.00000001 && isset($allowed[$id])) {
-            $take = min($left, $remainingUse);
-            $left -= $take;
-            $remainingUse -= $take;
-        }
-        if ($left > 0.00000001) {
-            $row['remaining_amount'] = round($left, 8);
-            $new[] = $row;
-        }
-    }
-    $state['pending_rebuys'] = $new;
-    $state['pending_rebuy_total'] = round(array_sum(array_column($new, 'remaining_amount')), 8);
-    $state['rebuy_pending'] = count($new) > 0;
-    return $state;
-}
-
-/** Consume only the reserved sell totals actually used by the matching buy. */
-function paperWalletConsumeRebuyReserve(array $state, float $usedAmount): array
-{
-    $remainingUse = max(0.0, $usedAmount);
-    $queue = paperWalletPendingRebuys($state);
-    $new = [];
-    foreach ($queue as $row) {
-        $left = max(0.0, (float)$row['remaining_amount']);
-        if ($remainingUse > 0.00000001) {
-            $take = min($left, $remainingUse);
-            $left -= $take;
-            $remainingUse -= $take;
-        }
-        if ($left > 0.00000001) {
-            $row['remaining_amount'] = round($left, 8);
-            $new[] = $row;
-        }
-    }
-    $state['pending_rebuys'] = $new;
-    $state['pending_rebuy_total'] = round(array_sum(array_column($new, 'remaining_amount')), 8);
-    $state['rebuy_pending'] = count($new) > 0;
-    return $state;
-}
-
 if (!defined('SPIRAL_GUARD_SOFT_DRAWDOWN_PERCENT')) define('SPIRAL_GUARD_SOFT_DRAWDOWN_PERCENT', 0.75);
 if (!defined('SPIRAL_GUARD_HARD_DRAWDOWN_PERCENT')) define('SPIRAL_GUARD_HARD_DRAWDOWN_PERCENT', 2.00);
 if (!defined('SPIRAL_GUARD_ALPHA_LOSS_PERCENT')) define('SPIRAL_GUARD_ALPHA_LOSS_PERCENT', 0.50);
@@ -3556,20 +2690,18 @@ function fetchCoinbaseLatestPrices(array $symbols): array
         if (!is_string($symbol)) continue;
         $productId = coinbaseProductIdForTicker($symbol);
         if ($productId === null) continue;
-        $urls[$productId] = 'https://api.coinbase.com/api/v3/brokerage/market/products/'
-            . rawurlencode($productId) . '/ticker?limit=1';
+        $urls[$productId] = 'https://api.exchange.coinbase.com/products/'
+            . rawurlencode($productId) . '/ticker';
     }
     if (!$urls) return [];
     $responses = fetchCoinbasePublicJsonBatch($urls, 10);
     $quotes = [];
     foreach ($responses as $productId => $response) {
         $json = is_array($response['json'] ?? null) ? $response['json'] : null;
-        $trade = is_array($json['trades'][0] ?? null) ? $json['trades'][0] : [];
-        $priceValue = $trade['price'] ?? ($json['price'] ?? null);
-        if (!is_array($json) || !is_numeric($priceValue)) continue;
-        $price = (float)$priceValue;
-        $bid = is_numeric($json['best_bid'] ?? null) ? (float)$json['best_bid'] : null;
-        $ask = is_numeric($json['best_ask'] ?? null) ? (float)$json['best_ask'] : null;
+        if (!is_array($json) || !is_numeric($json['price'] ?? null)) continue;
+        $price = (float)$json['price'];
+        $bid = is_numeric($json['bid'] ?? null) ? (float)$json['bid'] : null;
+        $ask = is_numeric($json['ask'] ?? null) ? (float)$json['ask'] : null;
         $mid = is_float($bid) && is_float($ask) && $bid > 0.0 && $ask >= $bid
             ? (($bid + $ask) / 2.0)
             : $price;
@@ -3581,8 +2713,8 @@ function fetchCoinbaseLatestPrices(array $symbols): array
             'bid' => $bid,
             'ask' => $ask,
             'spread_bps' => $spreadBps,
-            'last_updated_at' => yahooTimestamp((string)($trade['time'] ?? ($json['time'] ?? ''))),
-            'source' => 'COINBASE_ADVANCED',
+            'last_updated_at' => yahooTimestamp((string)($json['time'] ?? '')),
+            'source' => 'COINBASE',
             'product_id' => $productId,
         ];
     }
@@ -3597,17 +2729,17 @@ function fetchCoinbaseProductRules(string $ticker): array
     if ($productId === null) return [];
     if (array_key_exists($productId, $cache)) return $cache[$productId];
     $responses = fetchCoinbasePublicJsonBatch([
-        $productId => 'https://api.coinbase.com/api/v3/brokerage/market/products/' . rawurlencode($productId),
+        $productId => 'https://api.exchange.coinbase.com/products/' . rawurlencode($productId),
     ], 10);
     $json = is_array($responses[$productId]['json'] ?? null) ? $responses[$productId]['json'] : [];
     $cache[$productId] = [
         'product_id' => $productId,
         'base_increment' => is_numeric($json['base_increment'] ?? null) ? (float)$json['base_increment'] : 0.00000001,
         'quote_increment' => is_numeric($json['quote_increment'] ?? null) ? (float)$json['quote_increment'] : 0.01,
-        'min_market_funds' => is_numeric($json['quote_min_size'] ?? null) ? (float)$json['quote_min_size'] : MIN_TRADE_AMOUNT,
+        'min_market_funds' => is_numeric($json['min_market_funds'] ?? null) ? (float)$json['min_market_funds'] : MIN_TRADE_AMOUNT,
         'status' => strtoupper(trim((string)($json['status'] ?? 'UNKNOWN'))),
-        'trading_disabled' => (($json['trading_disabled'] ?? false) === true) || (($json['is_disabled'] ?? false) === true),
-        'source' => $json ? 'COINBASE_ADVANCED_PRODUCT' : 'CONFIG_FALLBACK',
+        'trading_disabled' => (($json['trading_disabled'] ?? false) === true),
+        'source' => $json ? 'COINBASE_PRODUCT' : 'CONFIG_FALLBACK',
     ];
     return $cache[$productId];
 }
@@ -4659,31 +3791,6 @@ function isStrictForwardForecast(array $guess, string $targetTime): bool
     return $createdEpoch < $targetEpoch;
 }
 
-function isResolvedGuessResult(array $result, string $targetTime): bool
-{
-    $targetEpoch = yahooTimestamp($targetTime);
-    if ($targetEpoch === null) return false;
-
-    $predicted = (string)($result['predicted'] ?? '');
-    $actual = (string)($result['actual'] ?? '');
-    $right = $result['right'] ?? null;
-
-    // The dashboard Guess % must describe the same resolved rows shown in the
-    // audit. Forward-verification metadata remains available separately, but it
-    // must not make a visibly resolved RIGHT/WRONG row disappear from 12-row
-    // accuracy accounting.
-    if ($predicted !== '+' && $predicted !== '-') return false;
-    if ($actual !== '+' && $actual !== '-') return false;
-    if (!is_bool($right)) return false;
-
-    $savedTarget = trim((string)($result['target_open'] ?? ''));
-    if ($savedTarget !== '') {
-        $savedTargetEpoch = yahooTimestamp($savedTarget);
-        if ($savedTargetEpoch !== null && $savedTargetEpoch !== $targetEpoch) return false;
-    }
-    return true;
-}
-
 function isStrictForwardResult(array $result, string $targetTime): bool
 {
     $targetEpoch = yahooTimestamp($targetTime);
@@ -4873,136 +3980,6 @@ function freezeForecastGuesses(string $statePath, array $guessesByTime): array
     flock($handle, LOCK_UN);
     fclose($handle);
     return $state['forecasts'];
-}
-
-
-/**
- * At/after :05, freeze the current clock-hour forecast geometry from the
- * completed adjusted audit. Direction and candle depth are then timestamp-owned
- * for the rest of the hour. Completed marks are never rewritten.
- */
-function lockHourlyAuditDepthProfile(
-    string $statePath,
-    int $boundaryEpoch,
-    array $auditSummary
-): array {
-    $minute = (int)gmdate('i', $boundaryEpoch);
-    if ($minute < 5) return [];
-
-    $rows = is_array($auditSummary['rows'] ?? null) ? array_values($auditSummary['rows']) : [];
-    if (count($rows) < 1) return [];
-
-    // Use up to twelve completed audit candles, oldest first.  Each historical
-    // mark contributes its real body and wick depth to the corresponding mark
-    // of the newly established hour.
-    $rows = array_slice($rows, -12);
-    $depthByMark = [];
-    foreach ($rows as $index => $row) {
-        $actual = is_array($row['actual'] ?? null) ? $row['actual'] : [];
-        $open = (float)($actual['open'] ?? 0.0);
-        $high = (float)($actual['high'] ?? $open);
-        $low = (float)($actual['low'] ?? $open);
-        $close = (float)($actual['close'] ?? $open);
-        if ($open <= 0.0 || $high <= 0.0 || $low <= 0.0 || $close <= 0.0) continue;
-        $body = abs($close - $open);
-        $upper = max(0.0, $high - max($open, $close));
-        $lower = max(0.0, min($open, $close) - $low);
-        $depthByMark[$index + 1] = [
-            'body' => max(0.00000001, $body),
-            'upper' => $upper,
-            'lower' => $lower,
-            'range' => max(0.00000001, $high - $low),
-            'source_time' => (string)($row['time'] ?? ''),
-        ];
-    }
-    if (!$depthByMark) return [];
-
-    $hourStart = $boundaryEpoch - ((int)gmdate('i', $boundaryEpoch) * 60) - (int)gmdate('s', $boundaryEpoch);
-    $profileHour = gmdate('Y-m-d\\TH:00:00\\Z', $hourStart);
-    $profileFingerprint = hash('sha256', json_encode([$profileHour, $depthByMark]));
-
-    $handle = @fopen($statePath, 'c+');
-    if ($handle === false) return [];
-    flock($handle, LOCK_EX);
-    rewind($handle);
-    $raw = stream_get_contents($handle);
-    $decoded = is_string($raw) && $raw !== '' ? json_decode($raw, true) : null;
-    $state = is_array($decoded) ? $decoded : [];
-    $state['forecasts'] = is_array($state['forecasts'] ?? null) ? $state['forecasts'] : [];
-
-    // Mark 2 (:05) is established first because every remaining mark derives
-    // its side from that timestamp-owned reference.
-    $referenceTime = gmdate('Y-m-d\\TH:i:s\\Z', $hourStart + 300);
-    $referenceGuess = is_array($state['forecasts'][$referenceTime] ?? null)
-        ? $state['forecasts'][$referenceTime]
-        : null;
-    if (!is_array($referenceGuess)) {
-        flock($handle, LOCK_UN);
-        fclose($handle);
-        return $state['forecasts'];
-    }
-
-    $working = $state['forecasts'];
-    $referenceGuess = applyHourlyLockedFlipTemplate($referenceGuess, $referenceTime, $working);
-    if (is_array($referenceGuess)) {
-        $working[$referenceTime] = $referenceGuess;
-    }
-
-    for ($mark = 2; $mark <= 12; $mark++) {
-        $targetEpoch = $hourStart + (($mark - 1) * 300);
-        $targetTime = gmdate('Y-m-d\\TH:i:s\\Z', $targetEpoch);
-        if (!is_array($working[$targetTime] ?? null)) continue;
-
-        $guess = $working[$targetTime];
-        // Do not rewrite a completed mark. The setup is meant to be established
-        // at :05 and carried forward, not revised with hindsight afterward.
-        if ($targetEpoch < $boundaryEpoch && empty($guess['audit_depth_profile_locked'])) continue;
-
-        $guess = applyHourlyLockedFlipTemplate($guess, $targetTime, $working);
-        if (!is_array($guess)) continue;
-        $depth = $depthByMark[$mark] ?? $depthByMark[(($mark - 1) % count($depthByMark)) + 1] ?? null;
-        if (!is_array($depth)) continue;
-
-        // A profile already frozen for this hour is immutable.
-        if (!empty($guess['audit_depth_profile_locked'])
-            && (string)($guess['audit_depth_profile_hour'] ?? '') === $profileHour
-        ) {
-            $working[$targetTime] = $guess;
-            continue;
-        }
-
-        $guess['change'] = (float)$depth['body'];
-        $guess['audit_body_depth'] = (float)$depth['body'];
-        $guess['audit_upper_wick_depth'] = (float)$depth['upper'];
-        $guess['audit_lower_wick_depth'] = (float)$depth['lower'];
-        $guess['audit_total_range_depth'] = (float)$depth['range'];
-        $guess['audit_depth_source_time'] = (string)$depth['source_time'];
-        $guess['audit_depth_profile_hour'] = $profileHour;
-        $guess['audit_depth_profile_fingerprint'] = $profileFingerprint;
-        $guess['audit_depth_profile_locked'] = true;
-        $guess['audit_depth_setup_mark'] = 2;
-        $guess['audit_depth_setup_time'] = $referenceTime;
-        $working[$targetTime] = $guess;
-    }
-
-    $state['forecasts'] = $working;
-    $state['hourly_audit_depth_profiles'] = is_array($state['hourly_audit_depth_profiles'] ?? null)
-        ? $state['hourly_audit_depth_profiles'] : [];
-    $state['hourly_audit_depth_profiles'][$profileHour] = [
-        'setup_time' => $referenceTime,
-        'fingerprint' => $profileFingerprint,
-        'depth_by_mark' => $depthByMark,
-        'locked_at' => gmdate('Y-m-d\\TH:i:s\\Z'),
-    ];
-    $state['updated_at'] = gmdate('Y-m-d\\TH:i:s\\Z');
-
-    rewind($handle);
-    ftruncate($handle, 0);
-    fwrite($handle, json_encode($state, JSON_PRETTY_PRINT));
-    fflush($handle);
-    flock($handle, LOCK_UN);
-    fclose($handle);
-    return $working;
 }
 
 /** Return every numeric OHLC row in CSV-candle shape. */
@@ -5262,157 +4239,6 @@ function latestCompletedFiveMinuteCandles(array $candles, int $count = 12): arra
     return array_slice($completed, -max(1, $count));
 }
 
-
-/**
- * Find a cumulative completed-candle open-to-close move that reaches a global
- * trading break. The newest close is compared with each earlier completed
- * candle open, up to the requested lookback. The shortest qualifying suffix
- * wins, so a one-candle move acts immediately and a slower multi-candle move
- * acts as soon as its cumulative percentage reaches the configured threshold.
- */
-
-
-/**
- * When a dense run of recent SELL guesses is followed by a material decline,
- * create a staged BUY accumulation signal. This converts repeated defensive
- * SELL positioning into an explicit lower-price pickup rule.
- */
-function sellDensityAccumulationTrigger(
-    array $guessByTime,
-    array $candles,
-    float $buyDropPercent,
-    int $minimumSellSignals = 8,
-    int $lookbackCandles = 12
-): array {
-    $completed = latestCompletedFiveMinuteCandles($candles, $lookbackCandles);
-    if (!$completed) {
-        return ['triggered' => false, 'action' => 'NO TRADE', 'reason' => 'NO COMPLETED CANDLES'];
-    }
-    $times = [];
-    foreach ($completed as $candle) {
-        $time = trim((string)($candle['time'] ?? ''));
-        if ($time !== '') $times[] = $time;
-    }
-    $sellCount = 0;
-    $buyCount = 0;
-    foreach ($times as $time) {
-        $guess = is_array($guessByTime[$time] ?? null) ? $guessByTime[$time] : [];
-        $action = strtoupper(trim((string)($guess['action'] ?? $guess['guessAction'] ?? '')));
-        if ($action === '') {
-            $direction = (string)($guess['direction'] ?? '');
-            $action = $direction === '-' ? 'SELL' : ($direction === '+' ? 'BUY' : 'NO TRADE');
-        }
-        if ($action === 'SELL') $sellCount++;
-        if ($action === 'BUY') $buyCount++;
-    }
-    $first = $completed[0];
-    $last = $completed[array_key_last($completed)];
-    $startOpen = max(0.000000000001, (float)($first['open'] ?? 0.0));
-    $latestClose = (float)($last['close'] ?? 0.0);
-    $movePercent = (($latestClose - $startOpen) / $startOpen) * 100.0;
-    $buyDropPercent = min(25.0, max(0.01, $buyDropPercent));
-    $density = count($times) > 0 ? ($sellCount / count($times)) * 100.0 : 0.0;
-    $triggered = $sellCount >= max(1, $minimumSellSignals) && $movePercent <= -$buyDropPercent;
-    $stageMultiplier = $triggered
-        ? min(4.0, max(1.0, 1.0 + (($sellCount - $minimumSellSignals) * 0.35) + (abs($movePercent) / max($buyDropPercent, 0.01) - 1.0) * 0.25))
-        : 1.0;
-    return [
-        'triggered' => $triggered,
-        'action' => $triggered ? 'BUY' : 'NO TRADE',
-        'sell_count' => $sellCount,
-        'buy_count' => $buyCount,
-        'sample_count' => count($times),
-        'sell_density_percent' => round($density, 4),
-        'minimum_sell_signals' => max(1, $minimumSellSignals),
-        'required_sell_density_percent' => round((max(1, $minimumSellSignals) / max(1, count($times))) * 100.0, 4),
-        'move_percent' => round($movePercent, 8),
-        'threshold_percent' => round($buyDropPercent, 8),
-        'stage_multiplier' => round($stageMultiplier, 4),
-        'start_open' => round($startOpen, 12),
-        'latest_close' => round($latestClose, 12),
-        'reason' => $triggered
-            ? ('SELL-DENSITY PICKUP · ' . $sellCount . '/' . count($times) . ' SELLS (' . number_format($density, 2, '.', '') . '%)'
-                . ' MARKS · PRICE ' . number_format($movePercent, 4, '.', '')
-                . '% · BUY STAGE ×' . number_format($stageMultiplier, 2, '.', ''))
-            : ('SELL-DENSITY WAIT · ' . $sellCount . '/' . max(1, $minimumSellSignals) . ' REQUIRED'
-                . ' SELLS · PRICE ' . number_format($movePercent, 4, '.', '')
-                . '% · NEED -' . number_format($buyDropPercent, 4, '.', '') . '%'),
-    ];
-}
-function cumulativeOpenCloseMoveTrigger(
-    array $candles,
-    float $sellGainPercent,
-    float $buyDropPercent,
-    int $maxCandles = 12
-): array {
-    $completed = array_values(array_filter($candles, static function ($candle): bool {
-        return is_array($candle)
-            && (($candle['forming'] ?? false) !== true)
-            && is_numeric($candle['open'] ?? null)
-            && is_numeric($candle['close'] ?? null)
-            && (float)$candle['open'] > 0.0;
-    }));
-    if (!$completed) {
-        return ['triggered' => false, 'action' => 'NO TRADE', 'reason' => 'NO COMPLETED CANDLES'];
-    }
-
-    $completed = array_slice($completed, -max(1, $maxCandles));
-    $latest = $completed[array_key_last($completed)];
-    $latestClose = (float)$latest['close'];
-    $sellGainPercent = min(25.0, max(0.01, $sellGainPercent));
-    $buyDropPercent = min(25.0, max(0.01, $buyDropPercent));
-
-    for ($length = 1; $length <= count($completed); $length++) {
-        $startIndex = count($completed) - $length;
-        $start = $completed[$startIndex];
-        $startOpen = (float)$start['open'];
-        if ($startOpen <= 0.0) continue;
-        $movePercent = (($latestClose - $startOpen) / $startOpen) * 100.0;
-        $action = 'NO TRADE';
-        $threshold = 0.0;
-        if ($movePercent + 1.0e-12 >= $sellGainPercent) {
-            $action = 'SELL';
-            $threshold = $sellGainPercent;
-        } elseif ($movePercent - 1.0e-12 <= -$buyDropPercent) {
-            $action = 'BUY';
-            $threshold = $buyDropPercent;
-        }
-        if ($action !== 'NO TRADE') {
-            return [
-                'triggered' => true,
-                'action' => $action,
-                'candle_count' => $length,
-                'start_time' => (string)($start['time'] ?? ''),
-                'end_time' => (string)($latest['time'] ?? ''),
-                'start_open' => round($startOpen, 12),
-                'latest_close' => round($latestClose, 12),
-                'move_percent' => round($movePercent, 8),
-                'threshold_percent' => round($threshold, 8),
-                'reason' => 'CUMULATIVE OPEN→CLOSE ' . ($movePercent >= 0.0 ? '+' : '')
-                    . number_format($movePercent, 4, '.', '') . '% OVER ' . $length
-                    . ' COMPLETED CANDLE' . ($length === 1 ? '' : 'S'),
-            ];
-        }
-    }
-
-    $first = $completed[0];
-    $firstOpen = max(0.000000000001, (float)$first['open']);
-    $netPercent = (($latestClose - $firstOpen) / $firstOpen) * 100.0;
-    return [
-        'triggered' => false,
-        'action' => 'NO TRADE',
-        'candle_count' => count($completed),
-        'start_time' => (string)($first['time'] ?? ''),
-        'end_time' => (string)($latest['time'] ?? ''),
-        'start_open' => round($firstOpen, 12),
-        'latest_close' => round($latestClose, 12),
-        'move_percent' => round($netPercent, 8),
-        'sell_threshold_percent' => round($sellGainPercent, 8),
-        'buy_threshold_percent' => round($buyDropPercent, 8),
-        'reason' => 'CUMULATIVE OPEN→CLOSE BREAK NOT REACHED',
-    ];
-}
-
 /** Prefer frozen forecast guesses, then historical locked guesses, for a given candle window. */
 function cachedGuessesForHour(array $candles, array $forecastByTime, array $guessByTime): array
 {
@@ -5431,10 +4257,6 @@ function scoreHourAuditRow(array $candle, ?array $guess): array
 {
     $open = is_numeric($candle['open'] ?? null) ? (float)$candle['open'] : 0.0;
     $close = is_numeric($candle['close'] ?? null) ? (float)$candle['close'] : 0.0;
-    $high = is_numeric($candle['high'] ?? null) ? (float)$candle['high'] : max($open, $close);
-    $low = is_numeric($candle['low'] ?? null) ? (float)$candle['low'] : min($open, $close);
-    $high = max($high, $open, $close);
-    $low = min($low, $open, $close);
     $move = $close - $open;
     $actualDirection = $move > 0.0 ? '+' : ($move < 0.0 ? '-' : '0');
     $pair = guessPairLabel($guess);
@@ -5462,12 +4284,8 @@ function scoreHourAuditRow(array $candle, ?array $guess): array
         ],
         'actual' => [
             'open' => $open,
-            'high' => $high,
-            'low' => $low,
             'close' => $close,
             'move' => $move,
-            'range' => max(0.0, $high - $low),
-            'body' => abs($close - $open),
             'direction' => $actualDirection,
             'settled' => true,
         ],
@@ -5525,7 +4343,6 @@ function buildHourAuditSummary(string $symbol, array $candles, array $cachedGues
     $downCandleStreak = 0;
     $maxSellSignalStreak = 0;
     $maxDownCandleStreak = 0;
-    $maxCandleRange = 0.0;
 
     foreach ($candles as $candle) {
         $time = (string)($candle['time'] ?? '');
@@ -5539,7 +4356,6 @@ function buildHourAuditSummary(string $symbol, array $candles, array $cachedGues
         $maxDownCandleStreak = max($maxDownCandleStreak, $downCandleStreak);
         $row['sell_signal_streak'] = $sellSignalStreak;
         $row['down_candle_streak'] = $downCandleStreak;
-        $maxCandleRange = max($maxCandleRange, (float)($row['actual']['range'] ?? 0.0));
         $rows[] = $row;
 
         if ($row['guess_right'] === true) $guessRight++;
@@ -5569,7 +4385,6 @@ function buildHourAuditSummary(string $symbol, array $candles, array $cachedGues
         'window_start' => $rows ? (string)$rows[0]['time'] : '',
         'window_end' => $rows ? (string)$rows[count($rows) - 1]['time'] : '',
         'rows' => $rows,
-        'max_candle_range' => $maxCandleRange,
         'guess_accuracy' => [
             'right' => $guessRight,
             'wrong' => $guessWrong,
@@ -5604,321 +4419,11 @@ function buildHourAuditSummary(string $symbol, array $candles, array $cachedGues
     ];
 }
 
-/** Draw one completed audit candle from its real OHLC values.
- * Wick height is scaled against the largest five-minute range in the audit hour.
- * Body position and height are calculated from this candle's own high/low marks.
- */
-function renderAuditOhlcCandle(array $actual, float $hourMaxRange): string
-{
-    $open = (float)($actual['open'] ?? 0.0);
-    $high = (float)($actual['high'] ?? max($open, (float)($actual['close'] ?? 0.0)));
-    $low = (float)($actual['low'] ?? min($open, (float)($actual['close'] ?? 0.0)));
-    $close = (float)($actual['close'] ?? 0.0);
-    $high = max($high, $open, $close);
-    $low = min($low, $open, $close);
-    $range = max(0.0, $high - $low);
-    $maxRange = max($range, $hourMaxRange, 0.000000000001);
-
-    // A zero-range candle stays visible as a short flat mark.
-    $wickHeight = $range > 0.0 ? max(8.0, min(42.0, 42.0 * ($range / $maxRange))) : 4.0;
-    $top = (48.0 - $wickHeight) / 2.0;
-    $bottom = $top + $wickHeight;
-    $priceToY = static function (float $price) use ($high, $range, $top, $wickHeight): float {
-        if ($range <= 0.0) return $top + ($wickHeight / 2.0);
-        return $top + (($high - $price) / $range) * $wickHeight;
-    };
-    $openY = $priceToY($open);
-    $closeY = $priceToY($close);
-    $bodyTop = min($openY, $closeY);
-    $bodyHeight = max(2.0, abs($closeY - $openY));
-    if ($bodyTop + $bodyHeight > $bottom) $bodyTop = max($top, $bottom - $bodyHeight);
-    $directionClass = $close > $open ? 'audit-candle-up' : ($close < $open ? 'audit-candle-down' : 'audit-candle-flat');
-    $aria = 'OHLC candle open ' . number_format($open, 8, '.', '')
-        . ', high ' . number_format($high, 8, '.', '')
-        . ', low ' . number_format($low, 8, '.', '')
-        . ', close ' . number_format($close, 8, '.', '');
-
-    return '<span class="audit-ohlc-wrap" title="' . htmlspecialchars($aria, ENT_QUOTES) . '">'
-        . '<svg class="audit-ohlc ' . $directionClass . '" viewBox="0 0 28 48" role="img" aria-label="' . htmlspecialchars($aria, ENT_QUOTES) . '">'
-        . '<line class="audit-ohlc-wick" x1="14" y1="' . number_format($top, 2, '.', '') . '" x2="14" y2="' . number_format($bottom, 2, '.', '') . '"></line>'
-        . '<rect class="audit-ohlc-body" x="8" y="' . number_format($bodyTop, 2, '.', '') . '" width="12" height="' . number_format($bodyHeight, 2, '.', '') . '"></rect>'
-        . '</svg></span>';
-}
-
 /** Render the one-hour audit as a compact table. */
-
-/** Attach executable-position context to each audit guess.
- *
- * Directional edge remains a one-unit hindsight measurement.  This layer adds:
- * - the exact units from a real event when available;
- * - otherwise a conservative planned unit estimate from that event's request;
- * - gross edge on those units;
- * - actual realized P/L/support capture only when the ledger contains a fill.
- *
- * It deliberately does not call a hindsight gross edge "profit".
- */
-function attachGuessPositioningToHourAudit(array $auditSummary, array &$state): array
-{
-    $events = is_array($state['events_by_time'] ?? null) ? $state['events_by_time'] : [];
-    $currentAssetUnits = max(0.0, (float)($state['asset_units'] ?? 0.0));
-    $currentCash = max(0.0, (float)($state['cash_left'] ?? 0.0));
-    $fallbackTradeAmount = max(0.0, (float)($state['fixed_trade_amount'] ?? 0.0));
-
-    // Wrong audit calls do not become profit by declaration. They create a
-    // quantified recovery obligation. Later *realized* gains pay that balance
-    // down first; only gains above the remaining balance are net strategy profit.
-    $recovery = is_array($state['audit_recovery_ledger'] ?? null)
-        ? $state['audit_recovery_ledger']
-        : [];
-    $recovery['balance'] = max(0.0, (float)($recovery['balance'] ?? 0.0));
-    $recovery['total_wrong_obligation'] = max(0.0, (float)($recovery['total_wrong_obligation'] ?? 0.0));
-    $recovery['total_realized_losses'] = max(0.0, (float)($recovery['total_realized_losses'] ?? 0.0));
-    $recovery['total_recovered'] = max(0.0, (float)($recovery['total_recovered'] ?? 0.0));
-    $recovery['net_profit_after_recovery'] = max(0.0, (float)($recovery['net_profit_after_recovery'] ?? 0.0));
-    // Net gains are accumulated for a kitty sweep.  They are only moved out of
-    // spendable cash after recovery is paid, the pending gain reaches $50, and
-    // the live asset position remains strictly above the $5,000 floor.
-    $recovery['gain_kitty_pending'] = max(0.0, (float)($recovery['gain_kitty_pending'] ?? 0.0));
-    $recovery['gain_kitty_total'] = max(0.0, (float)($recovery['gain_kitty_total'] ?? 0.0));
-    $recovery['processed_wrong'] = is_array($recovery['processed_wrong'] ?? null) ? $recovery['processed_wrong'] : [];
-    $recovery['processed_realized'] = is_array($recovery['processed_realized'] ?? null) ? $recovery['processed_realized'] : [];
-    $recovery['entries'] = is_array($recovery['entries'] ?? null) ? $recovery['entries'] : [];
-
-    foreach ($auditSummary['rows'] ?? [] as $index => $row) {
-        if (!is_array($row)) continue;
-        $time = (string)($row['time'] ?? '');
-        $action = strtoupper(trim((string)($row['guess']['action'] ?? 'NO TRADE')));
-        $open = max(0.0, (float)($row['actual']['open'] ?? 0.0));
-        $strategyEdgePerUnit = (float)($row['strategy']['pnl'] ?? 0.0);
-        $event = is_array($events[$time] ?? null) ? $events[$time] : [];
-
-        // Canonical event reconciliation: an executed trade is authoritative even
-        // when events_by_time was not populated by an older execution path.
-        // Match by normalized five-minute timestamp and side so eligible realized
-        // gains cannot disappear from kitty accounting.
-        $eventTimeTs = strtotime($time);
-        $eventMarkTs = $eventTimeTs !== false ? (int)(floor($eventTimeTs / 300) * 300) : 0;
-        $eventExecuted = (($event['executed'] ?? false) === true);
-        if (!$eventExecuted) {
-            foreach (array_reverse((array)($state['trades'] ?? [])) as $tradeCandidate) {
-                if (!is_array($tradeCandidate) || (($tradeCandidate['executed'] ?? false) !== true)) continue;
-                $tradeSide = strtoupper(trim((string)($tradeCandidate['side'] ?? $tradeCandidate['trade_side'] ?? $tradeCandidate['action'] ?? '')));
-                if (strpos($tradeSide, $action) === false) continue;
-                $tradeTimeRaw = (string)($tradeCandidate['time'] ?? $tradeCandidate['timestamp'] ?? '');
-                $tradeTimeTs = strtotime($tradeTimeRaw);
-                $tradeMarkTs = $tradeTimeTs !== false ? (int)(floor($tradeTimeTs / 300) * 300) : 0;
-                if ($eventMarkTs > 0 && $tradeMarkTs === $eventMarkTs) {
-                    $event = array_merge($tradeCandidate, $event);
-                    $event['executed'] = true;
-                    break;
-                }
-            }
-        }
-
-        $eventAction = strtoupper(trim((string)($event['action'] ?? $event['side'] ?? $event['trade_side'] ?? '')));
-        $sameAction = strpos($eventAction, $action) !== false;
-        $executed = $sameAction && (($event['executed'] ?? false) === true);
-        $requested = $sameAction
-            ? max(0.0, (float)($event['requested_amount'] ?? $event['amount'] ?? 0.0))
-            : 0.0;
-        if ($requested <= 0.0) $requested = $fallbackTradeAmount;
-
-        $units = $executed ? max(0.0, (float)($event['units'] ?? 0.0)) : 0.0;
-        $unitSource = $executed && $units > 0.0 ? 'EXECUTED FILL' : 'PLANNED';
-        if ($units <= 0.0 && $open > 0.0 && ($action === 'BUY' || $action === 'SELL')) {
-            if ($action === 'BUY') {
-                $budget = min($requested, $currentCash);
-                $units = $budget / $open;
-            } else {
-                $requestedUnits = $requested / $open;
-                $units = min($currentAssetUnits, $requestedUnits);
-            }
-        }
-
-        $grossEdge = $strategyEdgePerUnit * $units;
-        $realized = null;
-        $realizedLabel = 'NOT REALIZED';
-        if ($executed) {
-            if (is_numeric($event['captured_support_edge'] ?? null) && (float)$event['captured_support_edge'] > 0.0) {
-                $realized = (float)$event['captured_support_edge'];
-                $realizedLabel = 'SUPPORT CAPTURE';
-            } elseif (is_numeric($event['realized_pnl'] ?? null)) {
-                $realized = (float)$event['realized_pnl'];
-                $realizedLabel = 'REALIZED P/L';
-            } else {
-                $realizedLabel = $action === 'BUY' ? 'OPEN BUY POSITION' : 'SELL FILLED · REBUY PENDING';
-            }
-        } elseif ($sameAction && $event) {
-            $realizedLabel = 'NOT EXECUTED';
-        }
-
-        $auditSummary['rows'][$index]['positioning'] = [
-            'action' => $action,
-            'units' => max(0.0, $units),
-            'unit_source' => $unitSource,
-            'requested_amount' => $requested,
-            'entry_reference' => $executed
-                ? max(0.0, (float)($event['fill_price'] ?? $event['entry_price'] ?? $open))
-                : $open,
-            'exit_reference' => max(0.0, (float)($row['actual']['close'] ?? 0.0)),
-            'gross_edge' => $grossEdge,
-            'realized_net' => $realized,
-            'realized_label' => $realizedLabel,
-            'executed' => $executed,
-            'event_label' => (string)($event['label'] ?? ''),
-        ];
-
-        $recoveryEffect = 0.0;
-        $recoveryLabel = 'NO CHANGE';
-        $wrongKey = hash('sha256', $time . '|' . $action . '|' . number_format((float)($row['actual']['close'] ?? 0.0), 8, '.', ''));
-        $isWrong = (($row['guess_right'] ?? null) === false);
-        if ($isWrong && empty($recovery['processed_wrong'][$wrongKey])) {
-            $obligation = abs(min(0.0, $grossEdge));
-            if ($obligation > 0.0) {
-                $recovery['balance'] += $obligation;
-                $recovery['total_wrong_obligation'] += $obligation;
-                $recoveryEffect -= $obligation;
-                $recoveryLabel = 'WRONG CALL · RECOVERY DUE +' . number_format($obligation, 8, '.', '');
-                $recovery['entries'][] = [
-                    'time' => $time,
-                    'type' => 'WRONG_CALL_OBLIGATION',
-                    'amount' => $obligation,
-                    'action' => $action,
-                    'units' => $units,
-                    'edge_per_unit' => $strategyEdgePerUnit,
-                    'balance_after' => $recovery['balance'],
-                ];
-            }
-            $recovery['processed_wrong'][$wrongKey] = true;
-        }
-
-        if (is_numeric($realized)) {
-            $realizedAmount = (float)$realized;
-            $eventIdentity = (string)($event['id'] ?? $event['event_id'] ?? $event['order_id'] ?? $time);
-            $realizedKey = hash('sha256', $eventIdentity . '|' . number_format($realizedAmount, 8, '.', ''));
-            if (empty($recovery['processed_realized'][$realizedKey])) {
-                if ($realizedAmount < 0.0) {
-                    $loss = abs($realizedAmount);
-                    $recovery['balance'] += $loss;
-                    $recovery['total_realized_losses'] += $loss;
-                    $recoveryEffect -= $loss;
-                    $recoveryLabel = 'REALIZED LOSS · RECOVERY DUE +' . number_format($loss, 8, '.', '');
-                } elseif ($realizedAmount > 0.0) {
-                    $paid = min($recovery['balance'], $realizedAmount);
-                    $excess = max(0.0, $realizedAmount - $paid);
-                    $recovery['balance'] = max(0.0, $recovery['balance'] - $paid);
-                    $recovery['total_recovered'] += $paid;
-                    $recovery['net_profit_after_recovery'] += $excess;
-                    $recovery['gain_kitty_pending'] += $excess;
-                    $recoveryEffect += $paid;
-                    $recoveryLabel = $paid > 0.0
-                        ? ('REALIZED GAIN · RECOVERED ' . number_format($paid, 8, '.', '')
-                            . ($excess > 0.0 ? ' · NET PROFIT ' . number_format($excess, 8, '.', '') : ''))
-                        : 'REALIZED GAIN · NET PROFIT ' . number_format($excess, 8, '.', '');
-                }
-                $recovery['entries'][] = [
-                    'time' => $time,
-                    'type' => $realizedAmount < 0.0 ? 'REALIZED_LOSS' : 'REALIZED_GAIN',
-                    'amount' => abs($realizedAmount),
-                    'recovery_applied' => $realizedAmount > 0.0 ? min($recoveryEffect, $realizedAmount) : 0.0,
-                    'balance_after' => $recovery['balance'],
-                ];
-                $recovery['processed_realized'][$realizedKey] = true;
-            }
-        }
-
-        $auditSummary['rows'][$index]['recovery'] = [
-            'effect' => $recoveryEffect,
-            'label' => $recoveryLabel,
-            'balance_after' => $recovery['balance'],
-            'recovered_total' => $recovery['total_recovered'],
-            'net_profit_after_recovery' => $recovery['net_profit_after_recovery'],
-        ];
-    }
-
-    // Sweep accumulated post-recovery profit into the non-spendable kitty.
-    // The sweep is intentionally conservative: both the BTC/asset side and the
-    // active cash reserve must remain above their $5,000 floors.  This prevents a
-    // reported gain from hollowing out either side of the wallet.
-    $latestAuditPrice = 0.0;
-    foreach (array_reverse($auditSummary['rows'] ?? []) as $auditRowForPrice) {
-        if (!is_array($auditRowForPrice)) continue;
-        $candidatePrice = max(0.0, (float)($auditRowForPrice['actual']['close'] ?? 0.0));
-        if ($candidatePrice > 0.0) { $latestAuditPrice = $candidatePrice; break; }
-    }
-    if ($latestAuditPrice <= 0.0) {
-        $latestAuditPrice = max(0.0, (float)($state['current_price'] ?? $state['price'] ?? 0.0));
-    }
-    $assetFloor = 5000.0;
-    $cashFloor = max(5000.0, (float)($state['cash_out_cash_kitty_reserve'] ?? 5000.0));
-    $assetValueNow = $latestAuditPrice > 0.0
-        ? max(0.0, (float)($state['asset_units'] ?? 0.0)) * $latestAuditPrice
-        : max(0.0, (float)($state['holding_value'] ?? 0.0));
-    $activeCashNow = max(0.0, (float)($state['cash_left'] ?? 0.0));
-    $cashAboveFloor = max(0.0, $activeCashNow - $cashFloor);
-    $pendingGain = max(0.0, (float)$recovery['gain_kitty_pending']);
-    $kittySweep = 0.0;
-    // A gain is kitty-eligible only after it is present as a realized executed
-    // fill, recovery has been paid, the accumulated eligible amount is at least
-    // $50, and moving it will preserve both wallet floors. Once eligible, sweep
-    // the full amount that can safely be removed now.
-    $kittyEligible = $pendingGain >= 50.0 && $assetValueNow > $assetFloor && $cashAboveFloor > 0.0;
-    if ($kittyEligible) {
-        $kittySweep = min($pendingGain, $cashAboveFloor);
-        if ($kittySweep > 0.0) {
-            $state['cash_left'] = round(max(0.0, $activeCashNow - $kittySweep), 8);
-            $state['cash_out_withdrawn_total'] = round(
-                max(0.0, (float)($state['cash_out_withdrawn_total'] ?? 0.0)) + $kittySweep,
-                8
-            );
-            $recovery['gain_kitty_pending'] = max(0.0, $pendingGain - $kittySweep);
-            $recovery['gain_kitty_total'] += $kittySweep;
-            $recovery['entries'][] = [
-                'time' => gmdate('c'),
-                'type' => 'REALIZED_GAIN_TO_KITTY',
-                'amount' => $kittySweep,
-                'asset_value_at_sweep' => $assetValueNow,
-                'asset_floor' => $assetFloor,
-                'cash_floor' => $cashFloor,
-                'pending_after' => $recovery['gain_kitty_pending'],
-            ];
-        }
-    }
-    $state['gain_kitty_pending'] = round((float)$recovery['gain_kitty_pending'], 8);
-    $state['gain_kitty_total'] = round((float)$recovery['gain_kitty_total'], 8);
-    $state['gain_kitty_last_sweep'] = round($kittySweep, 8);
-    $state['gain_kitty_asset_floor_met'] = $assetValueNow > $assetFloor;
-    $state['gain_kitty_asset_value'] = round($assetValueNow, 8);
-    $state['gain_kitty_eligible'] = $kittyEligible;
-    $state['gain_kitty_cash_above_floor'] = round($cashAboveFloor, 8);
-    $state['gain_kitty_threshold'] = 50.0;
-    $state['gain_kitty_status'] = $kittySweep > 0.0
-        ? ('SWEPT $' . number_format($kittySweep, 2, '.', ','))
-        : ($pendingGain < 50.0
-            ? ('PENDING $' . number_format($pendingGain, 2, '.', ',') . ' · NEEDS $50.00')
-            : ($assetValueNow <= $assetFloor
-                ? ('WAITING · ASSET MUST STAY ABOVE $' . number_format($assetFloor, 2, '.', ','))
-                : ($cashAboveFloor <= 0.0
-                    ? ('WAITING · CASH MUST STAY ABOVE $' . number_format($cashFloor, 2, '.', ','))
-                    : 'ELIGIBLE')));
-
-    if (count($recovery['entries']) > 500) $recovery['entries'] = array_slice($recovery['entries'], -500);
-    if (count($recovery['processed_wrong']) > 1000) $recovery['processed_wrong'] = array_slice($recovery['processed_wrong'], -1000, null, true);
-    if (count($recovery['processed_realized']) > 1000) $recovery['processed_realized'] = array_slice($recovery['processed_realized'], -1000, null, true);
-    $recovery['updated_at'] = gmdate('c');
-    $state['audit_recovery_ledger'] = $recovery;
-    $state['audit_recovery_balance'] = $recovery['balance'];
-    $state['audit_recovery_total_recovered'] = $recovery['total_recovered'];
-    $state['audit_net_profit_after_recovery'] = $recovery['net_profit_after_recovery'];
-    $auditSummary['recovery'] = $recovery;
-    return $auditSummary;
-}
-
 function renderHourAuditTable(array $auditSummary): string
 {
     $rows = $auditSummary['rows'] ?? [];
-    $hourMaxRange = max(0.0, (float)($auditSummary['max_candle_range'] ?? 0.0));
-    $html = '<tr><td>Time</td><td>Predicted candle</td><td>What candle did</td><td>Result</td><td>What happened</td><td>SELL run</td><td>DOWN run</td><td>Directional edge (1 unit)</td><td>Position units</td><td>Your gross edge</td><td>Realized net</td><td>Recovery accounting</td><td>Recovery balance</td><td>Long</td><td>Short</td><td>Best</td></tr>';
+    $html = '<tr><td>Time</td><td>Predicted candle</td><td>What candle did</td><td>Result</td><td>What happened</td><td>SELL run</td><td>DOWN run</td><td>Directional edge (1 unit)</td><td>Long</td><td>Short</td><td>Best</td></tr>';
     foreach ($rows as $row) {
         if (!is_array($row)) continue;
         $time = (string)($row['time'] ?? '');
@@ -5932,8 +4437,6 @@ function renderHourAuditTable(array $auditSummary): string
         $long = is_array($row['long'] ?? null) ? $row['long'] : [];
         $short = is_array($row['short'] ?? null) ? $row['short'] : [];
         $best = is_array($row['best_side'] ?? null) ? $row['best_side'] : [];
-        $positioning = is_array($row['positioning'] ?? null) ? $row['positioning'] : [];
-        $recoveryRow = is_array($row['recovery'] ?? null) ? $row['recovery'] : [];
 
         $move = (float)($actual['move'] ?? 0.0);
         $actualOpen = (float)($actual['open'] ?? 0.0);
@@ -5948,11 +4451,6 @@ function renderHourAuditTable(array $auditSummary): string
         }
         $actualDirection = (string)($actual['direction'] ?? '?');
         $actualLabel = ($actualDirection === '+' ? 'UP / green' : ($actualDirection === '-' ? 'DOWN / red' : 'FLAT / gray')) . ' · ' . $moveLabel;
-        $actualCandleHtml = renderAuditOhlcCandle($actual, $hourMaxRange);
-        $ohlcLabel = 'O ' . number_format((float)($actual['open'] ?? 0.0), 2)
-            . ' · H ' . number_format((float)($actual['high'] ?? 0.0), 2)
-            . ' · L ' . number_format((float)($actual['low'] ?? 0.0), 2)
-            . ' · C ' . number_format((float)($actual['close'] ?? 0.0), 2);
         $guessResult = strtoupper(trim((string)($row['guess_result'] ?? '')));
         if (!in_array($guessResult, ['RIGHT', 'WRONG', 'FLAT', 'UNRESOLVED'], true)) {
             $guessResult = ($row['guess_right'] ?? null) === true
@@ -5987,42 +4485,16 @@ function renderHourAuditTable(array $auditSummary): string
         $happenedClass = !empty($strategy['model_call'])
             ? $strategyClass
             : 'result-neutral-cell';
-        $positionUnits = max(0.0, (float)($positioning['units'] ?? 0.0));
-        $grossPositionEdge = (float)($positioning['gross_edge'] ?? 0.0);
-        $grossPositionClass = abs($grossPositionEdge) <= 0.00000001
-            ? 'result-neutral-cell'
-            : ($grossPositionEdge > 0.0 ? 'result-gain-cell' : 'result-loss-cell');
-        $positionUnitsLabel = $positionUnits > 0.0
-            ? number_format($positionUnits, 8, '.', '') . ' (' . (string)($positioning['unit_source'] ?? 'PLANNED') . ')'
-            : '—';
-        $realizedNet = $positioning['realized_net'] ?? null;
-        $realizedNetLabel = is_numeric($realizedNet)
-            ? ((string)($positioning['realized_label'] ?? 'REALIZED') . ' ' . formatSignedMoney((float)$realizedNet, 8))
-            : (string)($positioning['realized_label'] ?? 'NOT REALIZED');
-        $realizedNetClass = !is_numeric($realizedNet) || abs((float)$realizedNet) <= 0.00000001
-            ? 'result-neutral-cell'
-            : ((float)$realizedNet > 0.0 ? 'result-gain-cell' : 'result-loss-cell');
-        $recoveryEffect = (float)($recoveryRow['effect'] ?? 0.0);
-        $recoveryBalance = max(0.0, (float)($recoveryRow['balance_after'] ?? 0.0));
-        $recoveryLabel = (string)($recoveryRow['label'] ?? 'NO CHANGE');
-        $recoveryClass = $recoveryEffect > 0.0 ? 'result-gain-cell' : ($recoveryEffect < 0.0 ? 'result-loss-cell' : 'result-neutral-cell');
 
         $html .= '<tr>'
             . '<td' . ($epoch !== null ? ' data-epoch="' . ($epoch * 1000) . '"' : '') . '>' . htmlspecialchars($timeLabel) . '</td>'
             . '<td class="' . $guessClass . '">' . htmlspecialchars($predictedLabel) . '</td>'
-            . '<td class="audit-actual-candle-cell">' . $actualCandleHtml
-            . '<span class="audit-candle-text">' . htmlspecialchars($actualLabel)
-            . '<small>' . htmlspecialchars($ohlcLabel) . '</small></span></td>'
+            . '<td>' . htmlspecialchars($actualLabel) . '</td>'
             . '<td class="' . $resultClass . '">' . htmlspecialchars($guessResult) . '</td>'
             . '<td class="' . $happenedClass . '">' . htmlspecialchars($happenedLabel) . '</td>'
             . '<td>' . ($sellRun > 0 ? htmlspecialchars((string)$sellRun . ' SELL' . ($sellRun === 1 ? '' : 'S')) : '—') . '</td>'
             . '<td>' . ($downRun > 0 ? htmlspecialchars((string)$downRun . ' DOWN' . ($downRun === 1 ? '' : 'S')) : '—') . '</td>'
             . '<td class="' . $strategyClass . '">' . htmlspecialchars(formatSignedMoney($strategyPnl, 8)) . '</td>'
-            . '<td>' . htmlspecialchars($positionUnitsLabel) . '</td>'
-            . '<td class="' . $grossPositionClass . '">' . htmlspecialchars(formatSignedMoney($grossPositionEdge, 8)) . '</td>'
-            . '<td class="' . $realizedNetClass . '">' . htmlspecialchars($realizedNetLabel) . '</td>'
-            . '<td class="' . $recoveryClass . '">' . htmlspecialchars($recoveryLabel) . '</td>'
-            . '<td class="' . ($recoveryBalance > 0.0 ? 'result-loss-cell' : 'result-gain-cell') . '">' . htmlspecialchars('$' . number_format($recoveryBalance, 8, '.', '')) . '</td>'
             . '<td class="' . $longClass . '">' . htmlspecialchars(formatSignedMoney($longPnl, 8)) . '</td>'
             . '<td class="' . $shortClass . '">' . htmlspecialchars(formatSignedMoney($shortPnl, 8)) . '</td>'
             . '<td class="result-gain-cell">' . htmlspecialchars((string)($best['side'] ?? '—') . ' ' . formatSignedMoney($bestPnl, 8)) . '</td>'
@@ -6505,322 +4977,6 @@ function guessStoredAction(?array $guess): string
     return $direction === '+' ? 'BUY' : ($direction === '-' ? 'SELL' : 'NO TRADE');
 }
 
-
-/** Return the one-based five-minute mark inside its own clock hour. */
-function hourlyFiveMinuteMark(string $time): int
-{
-    $timestamp = yahooTimestamp($time);
-    if ($timestamp === null) return 0;
-    return (int)floor(((int)gmdate('i', $timestamp)) / 5) + 1;
-}
-
-/**
- * Apply the selected-mark clock-hour direction template.
- *
- *   mark 1  (:00)                         => preserve its own locked answer
- *   mark 2  (:05)                         => flip its raw answer once; this is the FINAL reference
- *   marks 4, 6, 8 and 11                  => exactly match mark 2
- *   marks 3, 5, 7, 9, 10 and 12           => preserve their own original answers
- *
- * Only the selected template marks are rewritten. Odd marks are not inverted,
- * and non-template marks retain the direction produced by the underlying model.
- */
-function applyHourlyLockedFlipTemplate(?array $guess, string $time, array $forecastsByTime = []): ?array
-{
-    if (!is_array($guess)) return null;
-
-    $mark = hourlyFiveMinuteMark($time);
-    $direction = (string)($guess['direction'] ?? '');
-    if ($direction !== '+' && $direction !== '-') {
-        $direction = newGuessDirectionFromPair(guessPairLabel($guess));
-    }
-
-    // Preserve an answer already finalized by this exact template version.
-    if (!empty($guess['hourly_template_mark2_selected_v5'])) {
-        return $guess;
-    }
-
-    if ($mark < 1 || $mark > 12 || ($direction !== '+' && $direction !== '-')) {
-        return $guess;
-    }
-
-    $selectedMatchingMarks = [2, 4, 6, 8, 11];
-
-    // Mark 1 and every non-template mark keep their own model answer.
-    if ($mark === 1 || !in_array($mark, $selectedMatchingMarks, true)) {
-        $guess['hourly_template_original_direction'] = $direction;
-        $guess['direction'] = $direction;
-        $guess['action'] = $direction === '+' ? 'BUY' : 'SELL';
-        $guess['hourly_template_mark'] = $mark;
-        $guess['hourly_template_role'] = $mark === 1
-            ? 'HOUR_ANCHOR_UNCHANGED'
-            : 'MODEL_DIRECTION_UNCHANGED';
-        $guess['hourly_template_flipped'] = false;
-        $guess['hourly_template_mark2_selected_v5'] = true;
-        $guess['execution_symbol_locked'] = true;
-        $guess['execution_lock_time'] = $time;
-        return $guess;
-    }
-
-    $timestamp = yahooTimestamp($time);
-    $referenceKey = $timestamp !== null
-        ? gmdate('Y-m-d\\TH:05:00\\Z', $timestamp)
-        : '';
-    $referenceGuess = $referenceKey !== '' && is_array($forecastsByTime[$referenceKey] ?? null)
-        ? $forecastsByTime[$referenceKey]
-        : null;
-
-    if ($mark === 2) {
-        // Mark 2 is flipped exactly once from the model's unmodified answer.
-        $originalDirection = (string)($guess['hourly_template_original_direction'] ?? $direction);
-        if ($originalDirection !== '+' && $originalDirection !== '-') {
-            $originalDirection = $direction;
-        }
-        $referenceDirection = $originalDirection === '+' ? '-' : '+';
-    } else {
-        // Selected later marks use mark 2's final stored direction.
-        $referenceDirection = is_array($referenceGuess)
-            ? (string)($referenceGuess['direction'] ?? '')
-            : '';
-
-        if ($referenceDirection !== '+' && $referenceDirection !== '-') {
-            $referenceRawDirection = is_array($referenceGuess)
-                ? (string)($referenceGuess['hourly_template_original_direction'] ?? '')
-                : '';
-            if ($referenceRawDirection !== '+' && $referenceRawDirection !== '-') {
-                $referenceRawDirection = is_array($referenceGuess)
-                    ? newGuessDirectionFromPair(guessPairLabel($referenceGuess))
-                    : '';
-            }
-            if ($referenceRawDirection === '+' || $referenceRawDirection === '-') {
-                $referenceDirection = $referenceRawDirection === '+' ? '-' : '+';
-            }
-        }
-
-        // Safe fallback when :05 is temporarily unavailable: do not invent an
-        // opposite direction. Keep this mark's model answer until :05 is present.
-        if ($referenceDirection !== '+' && $referenceDirection !== '-') {
-            $referenceDirection = $direction;
-        }
-    }
-
-    $guess['hourly_template_original_direction'] = $direction;
-    $guess['direction'] = $referenceDirection;
-    $guess['action'] = $referenceDirection === '+' ? 'BUY' : 'SELL';
-    $guess['hourly_template_mark'] = $mark;
-    $guess['hourly_template_reference_time'] = $referenceKey;
-    $guess['hourly_template_reference_direction'] = $referenceDirection;
-    $guess['hourly_template_role'] = $mark === 2
-        ? 'MARK_2_REFERENCE_FLIPPED'
-        : 'MATCH_MARK_2';
-    $guess['hourly_template_flipped'] = $referenceDirection !== $direction;
-    $guess['hourly_template_mark2_selected_v5'] = true;
-    $guess['execution_symbol_locked'] = true;
-    $guess['execution_lock_time'] = $time;
-
-    return $guess;
-}
-
-
-/**
- * Latest-12 numerator momentum controller for the current clock hour.
- *
- * - 80% remains the accuracy target.
- * - 66% is the control line.
- * - While the live RIGHT numerator rises, the hourly template is left alone.
- * - After a rise has armed the controller, a later numerator decline while the
- *   live ratio is below 66% toggles every unresolved current/future mark once.
- * - Repeated refreshes at the same numerator cannot double-flip.
- * - The numerator must rise again before another later decline can act.
- * - Completed marks are immutable.
- */
-function applyConfidenceControlledHourRemainder(
-    string $statePath,
-    array $forecastsByTime,
-    int $boundaryEpoch,
-    float $effectiveConfidence,
-    float $threshold = 66.0,
-    bool $persist = true,
-    int $liveRight = 0,
-    int $liveTotal = 12
-): array {
-    $threshold = max(0.0, min(100.0, $threshold));
-    $target = 80.0;
-    $liveRight = max(0, $liveRight);
-    $liveTotal = max(1, $liveTotal);
-    $effectiveConfidence = max(0.0, min(100.0, $effectiveConfidence));
-    $hourStart = $boundaryEpoch
-        - ((int)gmdate('i', $boundaryEpoch) * 60)
-        - (int)gmdate('s', $boundaryEpoch);
-    $hourKey = gmdate('Y-m-d\\TH:00:00\\Z', $hourStart);
-    $hourEnd = $hourStart + (55 * 60);
-
-    $state = [];
-    if ($persist) {
-        $state = loadLocalJsonArray($statePath);
-        $saved = is_array($state['forecasts'] ?? null) ? $state['forecasts'] : [];
-        foreach ($saved as $time => $guess) {
-            if (!isset($forecastsByTime[$time]) && is_array($guess)) {
-                $forecastsByTime[$time] = $guess;
-            }
-        }
-    }
-
-    $control = is_array($state['confidence_hour_control'] ?? null)
-        ? $state['confidence_hour_control'] : [];
-    $prior = is_array($control[$hourKey] ?? null) ? $control[$hourKey] : [];
-    $priorRight = array_key_exists('live_right', $prior)
-        ? max(0, (int)$prior['live_right'])
-        : null;
-
-    $trend = 'INITIAL';
-    if ($priorRight !== null) {
-        if ($liveRight > $priorRight) $trend = 'RISING';
-        elseif ($liveRight < $priorRight) $trend = 'FALLING';
-        else $trend = 'FLAT';
-    }
-
-    $armed = (($prior['armed_for_break'] ?? false) === true);
-    if ($trend === 'RISING') {
-        $armed = true;
-    }
-
-    $breakCount = max(0, (int)($prior['numerator_break_count'] ?? 0));
-    $belowControl = $effectiveConfidence + 1.0e-12 < $threshold;
-    $numeratorBroke = $trend === 'FALLING' && $armed && $belowControl;
-    $changed = false;
-    $flippedCount = 0;
-    $crossingId = '';
-
-    if ($numeratorBroke) {
-        $breakCount++;
-        $crossingId = $hourKey . '#NUMERATOR-DROP-' . $breakCount
-            . '-' . $priorRight . '-TO-' . $liveRight;
-
-        foreach ($forecastsByTime as $time => $guess) {
-            if (!is_array($guess)) continue;
-            $epoch = yahooTimestamp((string)$time);
-            if ($epoch === null
-                || $epoch < $boundaryEpoch
-                || $epoch < $hourStart
-                || $epoch > $hourEnd
-            ) continue;
-
-            if ((string)($guess['confidence_control_last_crossing_id'] ?? '') === $crossingId) {
-                continue;
-            }
-
-            $direction = (string)($guess['direction'] ?? '');
-            if ($direction !== '+' && $direction !== '-') {
-                $direction = newGuessDirectionFromPair(guessPairLabel($guess));
-            }
-            if ($direction !== '+' && $direction !== '-') continue;
-
-            $guess['confidence_control_pre_flip_direction'] = $direction;
-            $guess['direction'] = $direction === '+' ? '-' : '+';
-            $guess['action'] = $guess['direction'] === '+' ? 'BUY' : 'SELL';
-            $guess['confidence_control_last_crossing_id'] = $crossingId;
-            $guess['confidence_control_hour'] = $hourKey;
-            $guess['confidence_control_line'] = $threshold;
-            $guess['confidence_accuracy_target'] = $target;
-            $guess['confidence_at_crossing'] = round($effectiveConfidence, 4);
-            $guess['confidence_numerator_before'] = $priorRight;
-            $guess['confidence_numerator_after'] = $liveRight;
-            $guess['confidence_live_total'] = $liveTotal;
-            $guess['confidence_control_flip_count'] = max(
-                0,
-                (int)($guess['confidence_control_flip_count'] ?? 0)
-            ) + 1;
-            $guess['confidence_control_reason'] = 'LIVE RIGHT COUNT BROKE '
-                . $priorRight . '→' . $liveRight
-                . ' WHILE BELOW ' . number_format($threshold, 1, '.', '')
-                . '% · UNRESOLVED REMAINDER TOGGLED'
-                . ' · TARGET ' . number_format($target, 1, '.', '') . '%';
-            $guess['execution_symbol_locked'] = true;
-            $guess['execution_lock_time'] = (string)$time;
-            $forecastsByTime[$time] = $guess;
-            $changed = true;
-            $flippedCount++;
-        }
-
-        // A new rise is required before another later decline can act.
-        $armed = false;
-    }
-
-    if ($trend === 'RISING') {
-        $decision = 'RIGHT COUNT RISING ' . $priorRight . '→' . $liveRight
-            . ' · TEMPLATE KEPT · BREAK CONTROLLER ARMED';
-    } elseif ($numeratorBroke) {
-        $decision = $flippedCount > 0
-            ? 'RIGHT COUNT BROKE ' . $priorRight . '→' . $liveRight
-                . ' BELOW 66% · UNRESOLVED REMAINDER TOGGLED ONCE'
-            : 'RIGHT COUNT BROKE BELOW 66% · NO UNRESOLVED MARKS TO TOGGLE';
-    } elseif ($trend === 'FALLING') {
-        $decision = $belowControl
-            ? 'RIGHT COUNT FALLING · NO NEW RISE SINCE LAST FLIP · HELD'
-            : 'RIGHT COUNT FALLING BUT STILL AT/ABOVE 66% · TEMPLATE KEPT';
-    } elseif ($trend === 'FLAT') {
-        $decision = 'RIGHT COUNT FLAT AT ' . $liveRight . '/' . $liveTotal
-            . ' · TEMPLATE KEPT';
-    } else {
-        $decision = 'INITIAL LIVE SCORE ' . $liveRight . '/' . $liveTotal
-            . ' · WAITING FOR NUMERATOR MOVEMENT';
-    }
-
-    $newControl = [
-        'target' => round($target, 4),
-        'threshold' => round($threshold, 4),
-        'confidence' => round($effectiveConfidence, 4),
-        'target_met' => $effectiveConfidence + 1.0e-12 >= $target,
-        'live_right' => $liveRight,
-        'live_total' => $liveTotal,
-        'previous_live_right' => $priorRight,
-        'numerator_trend' => $trend,
-        'below_control' => $belowControl,
-        'armed_for_break' => $armed,
-        'numerator_break_count' => $breakCount,
-        'last_crossing_id' => $crossingId !== ''
-            ? $crossingId
-            : (string)($prior['last_crossing_id'] ?? ''),
-        'last_crossing_flipped_marks' => $numeratorBroke ? $flippedCount
-            : (int)($prior['last_crossing_flipped_marks'] ?? 0),
-        'remaining_flipped' => ($breakCount % 2) === 1,
-        'decision' => $decision,
-        'updated_at' => gmdate('Y-m-d\\TH:i:s\\Z'),
-    ];
-
-    $controlChanged = $newControl != $prior;
-    $control[$hourKey] = $newControl;
-
-    if ($persist && ($changed || $controlChanged)) {
-        $state['forecasts'] = $forecastsByTime;
-        $state['confidence_hour_control'] = $control;
-        saveLocalJsonArray($statePath, $state);
-    }
-
-    return [
-        'forecasts' => $forecastsByTime,
-        'hour' => $hourKey,
-        'target' => $target,
-        'threshold' => $threshold,
-        'confidence' => $effectiveConfidence,
-        'target_met' => $effectiveConfidence + 1.0e-12 >= $target,
-        'live_right' => $liveRight,
-        'live_total' => $liveTotal,
-        'previous_live_right' => $priorRight,
-        'numerator_trend' => $trend,
-        'below_control' => $belowControl,
-        'armed_for_break' => $armed,
-        'numerator_break_count' => $breakCount,
-        'crossed_down' => $numeratorBroke,
-        'crossing_id' => $crossingId,
-        'flipped_count' => $flippedCount,
-        'changed' => $changed,
-        'decision' => $decision,
-    ];
-}
-
-
 /**
  * Find a high-confidence transition after a run of identical pair calls.
  * Example: -+, -+, -+, ++.  The transition is eligible when the same
@@ -6962,6 +5118,46 @@ function standardNormalCdf(float $z): float
     return $z >= 0.0 ? $positiveCdf : 1.0 - $positiveCdf;
 }
 
+// === CASH OUT LOGIC - PROTECT INITIAL CAPITAL ===
+function performCashOut($state, $profitMultiplier = 1.5) {
+    $initialSeed = 10000.0;           // Total bootstrap
+    $protectedCash = 5000.0;          // Hard floor
+
+    $currentEquity = (float)($state['equity_value'] ?? 0);
+    $currentCash = (float)($state['cash_left'] ?? 0);
+    $currentAssetsValue = (float)($state['holding_value'] ?? 0);
+
+    $profitAboveSeed = max(0, $currentEquity - $initialSeed);
+
+    if ($profitAboveSeed <= 0) {
+        return ['success' => false, 'message' => 'No profits above initial seed to cash out.'];
+    }
+
+    // Sell only enough assets to realize profit
+    $amountToSell = min($currentAssetsValue, $profitAboveSeed);
+    
+    // Estimate fees & slippage (example - adjust as needed)
+    $fees = $amountToSell * 0.0025;        // 0.25%
+    $slippage = $amountToSell * 0.003;     // 0.3%
+    
+    $netProceeds = $amountToSell - $fees - $slippage;
+
+    // Update state
+    $newCash = $currentCash + $netProceeds;
+    $newAssetValue = $currentAssetsValue - $amountToSell;
+
+    return [
+        'success' => true,
+        'cashed_out' => $netProceeds,
+        'new_cash' => $newCash,
+        'new_asset_value' => $newAssetValue,
+        'message' => "Cashed out $$netProceeds (after fees/slippage)"
+    ];
+}
+    function getProfitMultiplierTarget(float $entryPrice, float $multiplier = 1.5): float
+    {
+        return $entryPrice * $multiplier;
+    }
 /**
  * Convert a binary RIGHT/WRONG history into sample-aware Gaussian evidence.
  *
@@ -7079,16 +5275,10 @@ function buildForecastObservationState(array $resolvedResultsByTime): array
     $verified = array_filter(
         $resolvedResultsByTime,
         static fn($result, $time): bool => is_array($result)
-            && isResolvedGuessResult($result, (string)$time),
+            && isStrictForwardResult($result, (string)$time),
         ARRAY_FILTER_USE_BOTH
     );
     uksort($verified, static fn(string $left, string $right): int => strcmp($left, $right));
-
-    // Guess percentage is a strict rolling window: only the newest 12
-    // resolved, timestamp-locked guesses are allowed to influence it.
-    if (count($verified) > ONE_HOUR_CANDLE_COUNT) {
-        $verified = array_slice($verified, -ONE_HOUR_CANDLE_COUNT, null, true);
-    }
 
     $right = 0;
     foreach ($verified as $result) {
@@ -7096,7 +5286,6 @@ function buildForecastObservationState(array $resolvedResultsByTime): array
     }
     $total = count($verified);
     $wrong = max(0, $total - $right);
-    $rawPercent = $total > 0 ? round(($right / $total) * 100.0, 4) : null;
     $bellCurve = gaussianHistoricalEvidence($right, $total);
     $latest = null;
     if ($verified) {
@@ -7114,20 +5303,17 @@ function buildForecastObservationState(array $resolvedResultsByTime): array
 
     return [
         'schema' => 'forecast-observation-v1',
-        'source' => 'latest-visible-resolved-results',
+        'source' => 'cngn-forward-results-v2',
         'independent_of_execution' => true,
         'trade_events_consulted' => false,
         'scored' => $total > 0,
         'right' => $right,
         'wrong' => $wrong,
         'total' => $total,
-        'historical_percent' => $rawPercent,
-        // No nominal/bell weighting: the displayed and executable guess %
-        // is exactly RIGHT / TOTAL for the latest 12 resolved guesses.
-        'effective_percent' => $rawPercent,
-        'window_size' => ONE_HOUR_CANDLE_COUNT,
-        'window_rule' => 'LATEST_12_VISIBLE_RESOLVED_ONLY',
-        'audit_reflection_mode' => 'SINGLE_PERSISTENT_CONFIDENCE_CONTROLLER',
+        'historical_percent' => $total > 0 ? round(($right / $total) * 100.0, 4) : null,
+        'effective_percent' => $total > 0
+            ? round((float)($bellCurve['effective_percent'] ?? 0.0), 4)
+            : null,
         'flipped' => ($bellCurve['observation_flipped'] ?? false) === true,
         'eligible' => ($bellCurve['observation_eligible'] ?? false) === true,
         'orientation' => (string)($bellCurve['observation_orientation'] ?? 'HOLD'),
@@ -7139,10 +5325,9 @@ function buildForecastObservationState(array $resolvedResultsByTime): array
 }
 
 /**
- * Audit-only late-wrong observation: after the most recent strict-forward
- * five-minute forecast resolves WRONG and the delay expires, report whether
- * the observed direction confirms or suggests the opposite of the locked
- * executable action. This function never changes the executable action.
+ * Execution-only guard: when the most recent strict-forward five-minute
+ * forecast resolves WRONG, wait until one minute after that candle closes,
+ * then flip the current execution direction to the observed direction.
  */
 function buildLateWrongMarkFlipState(array $forecastObservationState, int $nowEpoch): array
 {
@@ -7194,7 +5379,10 @@ function buildLateWrongMarkFlipState(array $forecastObservationState, int $nowEp
 
 function buildTrackedForecastObservationState(array $trackedIndexTargets, string $tickerDirectory): array
 {
-    $rows = [];
+    $right = 0;
+    $total = 0;
+    $latest = null;
+    $latestEpoch = null;
     foreach ($trackedIndexTargets as $trackedTarget) {
         if (!is_array($trackedTarget)) continue;
         $trackedMarketType = strtolower(trim((string)($trackedTarget['market_type'] ?? '')));
@@ -7205,46 +5393,26 @@ function buildTrackedForecastObservationState(array $trackedIndexTargets, string
         $results = is_array($state['results'] ?? null) ? $state['results'] : [];
         foreach ($results as $time => $result) {
             if (!is_array($result) || !isStrictForwardResult($result, (string)$time)) continue;
+            $total++;
+            if (($result['right'] ?? false) === true) $right++;
             $epoch = yahooTimestamp((string)$time) ?? 0;
-            $rows[] = [
-                'epoch' => $epoch,
-                'time' => (string)$time,
-                'right' => (($result['right'] ?? false) === true),
-                'pair' => (string)($result['pair'] ?? ''),
-                'predicted' => (string)($result['predicted'] ?? ''),
-                'actual' => (string)($result['actual'] ?? ''),
-                'forecast_fingerprint' => (string)($result['forecast_fingerprint'] ?? ''),
-                'market_type' => $trackedMarketType,
-                'symbol' => $trackedSymbol,
-            ];
+            if ($latestEpoch === null || $epoch >= $latestEpoch) {
+                $latestEpoch = $epoch;
+                $latest = [
+                    'time' => (string)$time,
+                    'pair' => (string)($result['pair'] ?? ''),
+                    'predicted' => (string)($result['predicted'] ?? ''),
+                    'actual' => (string)($result['actual'] ?? ''),
+                    'result' => (($result['right'] ?? false) === true) ? 'RIGHT' : 'WRONG',
+                    'forecast_fingerprint' => (string)($result['forecast_fingerprint'] ?? ''),
+                    'market_type' => $trackedMarketType,
+                    'symbol' => $trackedSymbol,
+                ];
+            }
         }
     }
-
-    usort($rows, static fn(array $left, array $right): int => ((int)$left['epoch']) <=> ((int)$right['epoch']));
-    if (count($rows) > ONE_HOUR_CANDLE_COUNT) {
-        $rows = array_slice($rows, -ONE_HOUR_CANDLE_COUNT);
-    }
-
-    $total = count($rows);
-    $right = 0;
-    foreach ($rows as $row) {
-        if (($row['right'] ?? false) === true) $right++;
-    }
     $wrong = max(0, $total - $right);
-    $rawPercent = $total > 0 ? round(($right / $total) * 100.0, 4) : null;
     $bellCurve = gaussianHistoricalEvidence($right, $total);
-    $latestRow = $rows ? $rows[array_key_last($rows)] : null;
-    $latest = is_array($latestRow) ? [
-        'time' => (string)($latestRow['time'] ?? ''),
-        'pair' => (string)($latestRow['pair'] ?? ''),
-        'predicted' => (string)($latestRow['predicted'] ?? ''),
-        'actual' => (string)($latestRow['actual'] ?? ''),
-        'result' => (($latestRow['right'] ?? false) === true) ? 'RIGHT' : 'WRONG',
-        'forecast_fingerprint' => (string)($latestRow['forecast_fingerprint'] ?? ''),
-        'market_type' => (string)($latestRow['market_type'] ?? ''),
-        'symbol' => (string)($latestRow['symbol'] ?? ''),
-    ] : null;
-
     return [
         'schema' => 'global-forecast-observation-v1',
         'source' => 'global-cngn-forward-results-v2',
@@ -7256,15 +5424,15 @@ function buildTrackedForecastObservationState(array $trackedIndexTargets, string
         'right' => $right,
         'wrong' => $wrong,
         'total' => $total,
-        'historical_percent' => $rawPercent,
-        'effective_percent' => $rawPercent,
-        'window_size' => ONE_HOUR_CANDLE_COUNT,
-        'window_rule' => 'LATEST_12_RESOLVED_ONLY',
-        'flipped' => false,
-        'eligible' => $total > 0,
-        'orientation' => 'HOLD',
-        'execution_eligible' => $total > 0,
-        'execution_orientation' => 'HOLD',
+        'historical_percent' => $total > 0 ? round(($right / $total) * 100.0, 4) : null,
+        'effective_percent' => $total > 0
+            ? round((float)($bellCurve['effective_percent'] ?? 0.0), 4)
+            : null,
+        'flipped' => ($bellCurve['observation_flipped'] ?? false) === true,
+        'eligible' => ($bellCurve['observation_eligible'] ?? false) === true,
+        'orientation' => (string)($bellCurve['observation_orientation'] ?? 'HOLD'),
+        'execution_eligible' => ($bellCurve['eligible'] ?? false) === true,
+        'execution_orientation' => (string)($bellCurve['orientation'] ?? 'HOLD'),
         'bell_curve' => $bellCurve,
         'latest' => $latest,
     ];
@@ -7366,26 +5534,6 @@ function recomputeRealizedPnlFromTrades(array $trades): float
         $realized += (float)$trade['realized_pnl'];
     }
     return $realized;
-}
-
-function minimumRealizedProfitAmount(): float
-{
-    return 50.0;
-}
-
-function realizedProfitBelowMinimum(float $realizedPnl): bool
-{
-    $minimum = minimumRealizedProfitAmount();
-    return $realizedPnl > 0.00000001 && $realizedPnl + 1.0e-8 < $minimum;
-}
-
-function minimumRealizedProfitLabel(float $previewPnl): string
-{
-    $minimum = minimumRealizedProfitAmount();
-    $needed = max(0.0, $minimum - max(0.0, $previewPnl));
-    return 'WAITING · NET PROFIT $' . number_format(max(0.0, $previewPnl), 2)
-        . ' · NEEDS $' . number_format($needed, 2)
-        . ' MORE TO REACH $' . number_format($minimum, 2);
 }
 
 function sellLossExceedsHardLimit(float $realizedPnl): bool
@@ -7498,7 +5646,6 @@ function cashOutAndRebalancePaperWallet(
     string $eventTime,
     array $executionContext
 ): array {
-    $KEEP_HOLDINGS = 5000.0;
     $state = loadLocalJsonArray($walletStatePath);
     $state = is_array($state) ? $state : [];
     $state = normalizeTraderDisplayState($state);
@@ -7506,114 +5653,150 @@ function cashOutAndRebalancePaperWallet(
     $cashBefore = max(0.0, (float)($state['cash_left'] ?? 0.0));
     $unitsBefore = max(0.0, (float)($state['asset_units'] ?? 0.0));
     $costBasisBefore = max(0.0, (float)($state['asset_cost_basis'] ?? 0.0));
-    $price = max(0.0, $currentPrice);
-    $holdingValueBefore = $unitsBefore * $price;
-    $excessHoldings = max(0.0, $holdingValueBefore - $KEEP_HOLDINGS);
-    if ($excessHoldings <= 0.00001 || $unitsBefore <= 0.0 || $price <= 0.0) {
-        $state['display_action'] = 'CASH OUT · HOLDINGS ALREADY ≤ $' . number_format($KEEP_HOLDINGS, 0);
-        $state['last_trade_result'] = 'NO_EXCESS_HOLDINGS';
-        $state['cash_out_refill_pending'] = false;
-        $state['cash_out_summary'] = ['schema' => 'paper-cash-out-v4-kitty', 'mode' => 'EXCESS_HOLDINGS_TO_KITTY', 'keep_holdings' => $KEEP_HOLDINGS, 'to_kitty' => 0.0, 'paper_only' => true];
-        saveLocalJsonArray($walletStatePath, normalizeTraderDisplayState($state));
-        return $state;
+    $holdingValueBefore = $unitsBefore * max(0.0, $currentPrice);
+    $sellEvent = null;
+    $realizedPnl = 0.0;
+    $cashAfterSale = $cashBefore;
+    if ($currentPrice > 0.0 && $unitsBefore > 0.0 && $holdingValueBefore > 0.0) {
+        $sellFill = paperExecutionFill(
+            'SELL',
+            exchangeFloorTradeRequestAmount('SELL', $holdingValueBefore, (float)($executionContext['minimum_funds'] ?? MIN_TRADE_AMOUNT)),
+            $holdingValueBefore,
+            $currentPrice,
+            $executionContext,
+            $unitsBefore,
+            true
+        );
+        if (($sellFill['eligible'] ?? false) === true && (float)($sellFill['units'] ?? 0.0) > 0.0) {
+            $sellUnits = (float)$sellFill['units'];
+            $costPortion = $unitsBefore > 0.0 ? $costBasisBefore * ($sellUnits / $unitsBefore) : 0.0;
+            $realizedPnl = (float)$sellFill['net_cash_amount'] - $costPortion;
+            if (sellLossExceedsHardLimit($realizedPnl)) {
+                $state['display_action'] = sellLossLimitLabel($realizedPnl);
+                $state['last_trade_result'] = 'BLOCKED';
+                $state['last_trade_pnl'] = 0.0;
+                $state['cash_out_blocked_reason'] = 'SELL_LOSS_LIMIT';
+                $state['cash_out_blocked_preview_pnl'] = round($realizedPnl, 8);
+                $state['sell_loss_limit_amount'] = round(abs((float)MAX_REALIZED_SELL_LOSS_AMOUNT), 2);
+                $state['events_by_time'][$eventTime] = [
+                    'action' => 'SELL',
+                    'label' => sellLossLimitLabel($realizedPnl),
+                    'class' => 'result-neutral-cell',
+                    'executed' => false,
+                    'amount' => 0.0,
+                    'realized_pnl' => null,
+                    'preview_realized_pnl' => $realizedPnl,
+                    'loss_limit_amount' => abs((float)MAX_REALIZED_SELL_LOSS_AMOUNT),
+                    'loss_limit_blocked' => true,
+                    'requested_amount' => $sellFill['requested_amount'],
+                    'available_amount' => $sellFill['available_amount'],
+                    'shortfall' => 0.0,
+                    'entry_price' => $sellUnits > 0.0 ? ($costPortion / $sellUnits) : null,
+                    'exit_price' => (float)$sellFill['fill_price'],
+                ];
+                saveLocalJsonArray($walletStatePath, normalizeTraderDisplayState($state));
+                return normalizeTraderDisplayState($state);
+            }
+            $sellEvent = array_merge($sellFill, [
+                'action' => 'SELL',
+                'side' => 'SELL',
+                'trade_side' => 'SELL',
+                'label' => 'CASH OUT SELL · REALIZE WALLET',
+                'class' => $realizedPnl >= 0.0 ? 'result-gain-cell' : 'result-loss-cell',
+                'executed' => true,
+                'amount' => (float)$sellFill['executed_amount'],
+                'units' => $sellUnits,
+                'realized_pnl' => $realizedPnl,
+                'pnl_contributes' => true,
+                'time' => $eventTime,
+                'price' => (float)$sellFill['fill_price'],
+                'entry_price' => $sellUnits > 0.0 ? ($costPortion / $sellUnits) : null,
+                'exit_price' => (float)$sellFill['fill_price'],
+            ]);
+            $cashAfterSale += (float)$sellFill['net_cash_amount'];
+        }
     }
-    $sellRequest = exchangeFloorTradeRequestAmount('SELL', $excessHoldings, (float)($executionContext['minimum_funds'] ?? MIN_TRADE_AMOUNT));
-    $sellRequest = min($sellRequest, $holdingValueBefore);
-    $fillFn = function_exists('resolvePaperOrSandboxFill') ? 'resolvePaperOrSandboxFill' : 'paperExecutionFill';
-    $sellFill = $fillFn('SELL', $sellRequest, $holdingValueBefore, $price, $executionContext, $unitsBefore, true);
-    if (($sellFill['eligible'] ?? false) !== true || (float)($sellFill['units'] ?? 0.0) <= 0.0) {
-        $state['display_action'] = 'CASH OUT · SELL BLOCKED';
-        $state['cash_out_refill_pending'] = false;
-        saveLocalJsonArray($walletStatePath, normalizeTraderDisplayState($state));
-        return $state;
-    }
-    $sellUnits = (float)$sellFill['units'];
-    $maxSellUnits = max(0.0, $unitsBefore - ($price > 0.0 ? ($KEEP_HOLDINGS / $price) : 0.0));
-    if ($maxSellUnits > 0.0 && $sellUnits > $maxSellUnits * 1.001) {
-        $tighter = min($excessHoldings, $maxSellUnits * $price);
-        $sellFill = $fillFn('SELL', exchangeFloorTradeRequestAmount('SELL', $tighter, (float)($executionContext['minimum_funds'] ?? MIN_TRADE_AMOUNT)), $holdingValueBefore, $price, $executionContext, $unitsBefore, true);
-        if (($sellFill['eligible'] ?? false) === true) $sellUnits = (float)($sellFill['units'] ?? 0.0);
-    }
-    $costPortion = $unitsBefore > 0.0 ? $costBasisBefore * ($sellUnits / $unitsBefore) : 0.0;
-    $realizedPnl = (float)$sellFill['net_cash_amount'] - $costPortion;
-    if (function_exists('sellLossExceedsHardLimit') && sellLossExceedsHardLimit($realizedPnl)) {
-        $state['display_action'] = function_exists('sellLossLimitLabel') ? sellLossLimitLabel($realizedPnl) : 'HOLD · LOSS LIMIT';
-        $state['cash_out_blocked_reason'] = 'SELL_LOSS_LIMIT';
-        $state['cash_out_refill_pending'] = false;
-        saveLocalJsonArray($walletStatePath, normalizeTraderDisplayState($state));
-        return $state;
-    }
-    $netProceeds = (float)$sellFill['net_cash_amount'];
 
-    // Cash-out proceeds leave the active paper wallet. They must not be added
-    // back to cash_left, or the strategy can spend the same dollars again.
-    $cashAfter = $cashBefore;
-    $withdrawnBefore = max(0.0, (float)($state['cash_out_withdrawn_total'] ?? 0.0));
-    $withdrawnAfter = $withdrawnBefore + $netProceeds;
-
-    $unitsAfter = max(0.0, $unitsBefore - $sellUnits);
-    $costAfter = max(0.0, $costBasisBefore - $costPortion);
-    $holdingAfter = $unitsAfter * $price;
-    $sellEvent = [
-        'action' => 'SELL', 'label' => 'CASH OUT · TO KITTY', 'executed' => true,
-        'amount' => round($netProceeds, 8), 'units' => round($sellUnits, 12),
-        'price' => (float)($sellFill['fill_price'] ?? $price),
-        'fee_amount' => (float)($sellFill['fee_amount'] ?? 0.0),
-        'realized_pnl' => round($realizedPnl, 8), 'to_kitty' => true, 'time' => $eventTime,
+    $seedAsset = 0.0;
+    $seedCash = $cashAfterSale;
+    $seedUnits = 0.0;
+    $newBootstrap = [
+        'market_type' => strtolower(trim($marketType)),
+        'symbol' => strtoupper(trim($symbol)),
+        'started_at' => $eventTime,
+        'entry_price' => $currentPrice,
+        'starting_pot' => 10000.0,
+        'cash_seed' => $seedCash,
+        'asset_seed' => 0.0,
+        'created_at' => gmdate('Y-m-d\TH:i:s\Z'),
+        'source' => 'CASH_OUT_REBALANCE',
     ];
-    $position = $unitsAfter > 0.00000001 ? 'long' : 'flat';
-    $avgCost = ($unitsAfter > 0.0 && $costAfter > 0.0) ? ($costAfter / $unitsAfter) : null;
-    $events = is_array($state['events_by_time'] ?? null) ? $state['events_by_time'] : [];
-    $events[$eventTime] = function_exists('canonicalPaperWalletEvent') ? canonicalPaperWalletEvent($sellEvent) : $sellEvent;
-    $trades = is_array($state['trades'] ?? null) ? $state['trades'] : [];
-    $trades[] = $sellEvent;
-    $state['position'] = $position;
-    $state['entry_price'] = $avgCost;
-    if ($position === 'flat') $state['entry_time'] = null;
-    $state['display_action'] = 'CASH OUT · $' . number_format($netProceeds, 2) . ' WITHDRAWN · KEPT ~$' . number_format($KEEP_HOLDINGS, 0) . ' HOLDINGS';
-    $state['cash_left'] = round($cashAfter, 8);
-    $state['asset_units'] = round($unitsAfter, 12);
-    $state['asset_cost_basis'] = round($costAfter, 8);
-    $state['holding_value'] = round($holdingAfter, 8);
-    $state['external_kitty_total'] = round($withdrawnAfter, 8);
-    $state['active_wallet_value'] = round($cashAfter + $holdingAfter, 8);
-    $state['equity_value'] = round(paperWalletTotalEquity($state, $cashAfter, $holdingAfter), 8);
-    $state['last_trade'] = $sellEvent;
-    $state['last_trade_pnl'] = round($realizedPnl, 8);
-    $state['trades'] = $trades;
-    $state['events_by_time'] = $events;
-    $state['cash_out_refill_pending'] = false;
-    $state['cash_out_cash_kitty_reserve'] = round($cashAfter, 8);
-    $state['cash_out_withdrawn_amount'] = round($netProceeds, 8);
-    $state['cash_out_withdrawn_total'] = round($withdrawnAfter, 8);
-    $state['cash_out_summary'] = [
-        'schema' => 'paper-cash-out-v5-separated-pools',
-        'mode' => 'EXCESS_HOLDINGS_WITHDRAWN',
-        'keep_holdings' => $KEEP_HOLDINGS,
-        // Keep to_kitty for older display code, but it now means money removed
-        // from the active wallet rather than spendable cash_left.
-        'to_kitty' => round($netProceeds, 8),
-        'withdrawn_amount' => round($netProceeds, 8),
-        'withdrawn_total' => round($withdrawnAfter, 8),
-        'cash_left_before_cash_out' => round($cashBefore, 8),
-        'cash_left_after_cash_out' => round($cashAfter, 8),
-        'holding_value_after' => round($holdingAfter, 8),
-        'kitty_cash' => round($cashAfter, 8),
+    $newState = [
+        'position' => 'flat',
+        'entry_price' => null,
+        'entry_time' => null,
+        'display_action' => 'CASH OUT · WAITING TO REFILL',
+        'starting_pot' => 10000.0,
+        'current_price' => $currentPrice,
+        'observed_time' => $eventTime,
+        'cash_left' => $seedCash,
+        'asset_units' => 0.0,
+        'asset_cost_basis' => 0.0,
+        'holding_value' => 0.0,
+        'equity_value' => $seedCash,
+        'net_pnl' => $seedCash - 10000.0,
+        'open_pnl' => 0.0,
+        'realized_move' => 0.0,
+        'wins' => 0,
+        'losses' => 0,
+        'last_trade' => $sellEvent,
+        'last_trade_result' => $sellEvent === null ? 'REBALANCED' : ($realizedPnl > 0.00000001 ? 'PROFIT' : ($realizedPnl < -0.00000001 ? 'LOSS' : 'BREAKEVEN')),
+        'last_trade_pnl' => $sellEvent === null ? 0.0 : $realizedPnl,
+        'trades' => $sellEvent === null ? [] : [$sellEvent],
+        'events_by_time' => $sellEvent === null ? [] : [$eventTime => canonicalPaperWalletEvent($sellEvent)],
+        'first_buy_amount' => 0.0,
+        'first_buy_units' => 0.0,
+        'first_buy_price' => null,
+        'total_bought_units' => 0.0,
+        'total_bought_amount' => 0.0,
+        'total_sold_units' => $sellEvent === null ? 0.0 : (float)$sellEvent['units'],
+        'total_sold_amount' => $sellEvent === null ? 0.0 : (float)$sellEvent['amount'],
+        'bootstrap_started_at' => $eventTime,
+        'bootstrap_entry_price' => null,
+        'bootstrap_cash_amount' => $seedCash,
+        'bootstrap_asset_amount' => 0.0,
+        'portfolio_cash_neutral_baseline' => $seedCash,
+        'portfolio_pnl_basis' => 0.0,
+        'portfolio_pnl_basis_label' => 'CASH OUT FLAT · CASH NEUTRAL',
+        'rebuy_pending' => false,
+        'cash_out_refill_pending' => true,
+        'cash_out_refill_target_amount' => 5000.0,
+        'cash_out_asset_refill_target_amount' => 5000.0,
+        'cash_out_cash_kitty_reserve' => 5000.0,
+        'cash_out_refill_reason' => 'WAIT_FOR_MODEL_BUY_AFTER_CASH_OUT',
+        'cash_out_summary' => [
+            'schema' => 'paper-cash-out-v1',
+            'time' => $eventTime,
+            'cash_before' => round($cashBefore, 8),
+            'asset_units_before' => round($unitsBefore, 12),
+            'holding_value_before' => round($holdingValueBefore, 8),
+            'cash_after_sale' => round($cashAfterSale, 8),
+            'realized_pnl' => round($realizedPnl, 8),
+            'cash_left_after_cash_out' => round($seedCash, 8),
+            'asset_refill_value' => 0.0,
+            'target_asset_refill_value' => 5000.0,
+            'asset_refill_target_amount' => 5000.0,
+            'cash_kitty_reserve' => 5000.0,
+            'refill_status' => 'WAITING_FOR_MODEL_BUY',
+            'paper_only' => true,
+        ],
         'paper_only' => true,
+        'live_orders' => false,
     ];
-    $bootstrap = loadLocalJsonArray($bootstrapPath);
-    $bootstrap = is_array($bootstrap) ? $bootstrap : [];
-    // Bootstrap only the two active pools. Withdrawn proceeds are deliberately
-    // excluded so a reload cannot recreate them as cash or holdings.
-    $bootstrap['cash_seed'] = round($cashAfter, 8);
-    $bootstrap['asset_seed'] = round($holdingAfter, 8);
-    $bootstrap['withdrawn_total'] = round($withdrawnAfter, 8);
-    $bootstrap['source'] = 'CASH_OUT_EXCESS_WITHDRAWN';
-    saveLocalJsonArray($bootstrapPath, $bootstrap);
-    saveLocalJsonArray($walletStatePath, normalizeTraderDisplayState($state));
-    return $state;
+    saveLocalJsonArray($bootstrapPath, $newBootstrap);
+    saveLocalJsonArray($walletStatePath, normalizeTraderDisplayState($newState));
+    return $newState;
 }
-
 
 function buyBackInPaperWallet(
     string $walletStatePath,
@@ -7639,7 +5822,7 @@ function buyBackInPaperWallet(
         saveLocalJsonArray($walletStatePath, $state);
         return $state;
     }
-    $buyFill = resolvePaperOrSandboxFill(
+    $buyFill = paperExecutionFill(
         'BUY',
         exchangeFloorTradeRequestAmount('BUY', $amount, $minimumFunds),
         $cash,
@@ -7730,13 +5913,11 @@ function attachCashOutRejoinFeeEstimate(array $state, float $currentPrice, array
         return $state;
     }
 
-    $cashOutAmount = is_numeric($summary['withdrawn_amount'] ?? null)
-        ? max(0.0, (float)$summary['withdrawn_amount'])
-        : (is_numeric($state['cash_out_withdrawn_amount'] ?? null)
-            ? max(0.0, (float)$state['cash_out_withdrawn_amount'])
-            : (is_numeric($summary['to_kitty'] ?? null)
-                ? max(0.0, (float)$summary['to_kitty'])
-                : 0.0));
+    $cashOutAmount = is_numeric($summary['cash_left_after_cash_out'] ?? null)
+        ? max(0.0, (float)$summary['cash_left_after_cash_out'])
+        : (is_numeric($summary['cash_after_sale'] ?? null)
+            ? max(0.0, (float)$summary['cash_after_sale'])
+            : max(0.0, (float)($state['cash_left'] ?? 0.0)));
     $minimumFunds = max(MIN_TRADE_AMOUNT, (float)($executionContext['minimum_funds'] ?? MIN_TRADE_AMOUNT));
     $refillTarget = max(0.0, (float)($state['cash_out_refill_target_amount'] ?? ($summary['target_asset_refill_value'] ?? 5000.0)));
     if ($refillTarget <= 0.0) $refillTarget = 5000.0;
@@ -7790,104 +5971,6 @@ function attachCashOutRejoinFeeEstimate(array $state, float $currentPrice, array
 }
 
 /** Separate passive 50/50 market movement from the strategy's incremental result. */
-
-function paperWalletSoldIntoCashKittyTotal(array $state): float
-{
-    $stored = is_numeric($state['sold_into_cash_kitty_total'] ?? null)
-        ? max(0.0, (float)$state['sold_into_cash_kitty_total'])
-        : 0.0;
-
-    $derived = 0.0;
-    foreach ((array)($state['trades'] ?? []) as $trade) {
-        if (!is_array($trade)) continue;
-        $action = strtoupper(trim((string)($trade['action'] ?? '')));
-        if (preg_match('/\bSELL\b/', $action) !== 1) continue;
-        if (($trade['to_kitty'] ?? false) === true || stripos((string)($trade['label'] ?? ''), 'CASH OUT') !== false) continue;
-        $amount = is_numeric($trade['net_cash_amount'] ?? null)
-            ? (float)$trade['net_cash_amount']
-            : (is_numeric($trade['amount'] ?? null) ? (float)$trade['amount'] : 0.0);
-        $derived += max(0.0, $amount);
-    }
-
-    return max($stored, $derived);
-}
-
-function paperWalletPrincipalSelloffCashedOutTotal(array $state): float
-{
-    $total = 0.0;
-    foreach ((array)($state['trades'] ?? []) as $trade) {
-        if (!is_array($trade) || ($trade['executed'] ?? false) !== true) continue;
-        $reason = strtoupper(trim((string)($trade['reason'] ?? '')));
-        $label = strtoupper(trim((string)($trade['label'] ?? '')));
-        $isPrincipalSelloff = $reason === 'PRINCIPAL_INCOME_LOCK'
-            || $label === 'PRINCIPAL GAIN SELL-OFF';
-        if (!$isPrincipalSelloff) continue;
-
-        $amount = is_numeric($trade['income_locked'] ?? null)
-            ? (float)$trade['income_locked']
-            : (is_numeric($trade['net_cash_amount'] ?? null)
-                ? (float)$trade['net_cash_amount']
-                : 0.0);
-        // These are the $50+ gain-removal trades. Allow a tiny tolerance for
-        // fee/increment rounding around the configured $50 threshold.
-        if ($amount + 0.01 < 50.0) continue;
-        $total += max(0.0, $amount);
-    }
-
-    // Preserve the persisted accumulator for wallets whose older trade history
-    // was compacted, but never substitute ordinary SELL proceeds.
-    $persisted = is_numeric($state['principal_income_locked_total'] ?? null)
-        ? max(0.0, (float)$state['principal_income_locked_total'])
-        : 0.0;
-    return max($total, $persisted);
-}
-
-function paperWalletExternalKittyTotal(array $state): float
-{
-    $direct = is_numeric($state['cash_out_withdrawn_total'] ?? null)
-        ? max(0.0, (float)$state['cash_out_withdrawn_total'])
-        : 0.0;
-    $explicit = is_numeric($state['external_kitty_total'] ?? null)
-        ? max(0.0, (float)$state['external_kitty_total'])
-        : 0.0;
-    $summary = is_array($state['cash_out_summary'] ?? null) ? $state['cash_out_summary'] : [];
-    $summaryTotal = is_numeric($summary['withdrawn_total'] ?? null)
-        ? max(0.0, (float)$summary['withdrawn_total'])
-        : 0.0;
-    return max($direct, $summaryTotal, $explicit);
-}
-
-function paperWalletTotalEquity(array $state, ?float $cash = null, ?float $holdingValue = null): float
-{
-    $activeCash = $cash !== null ? max(0.0, $cash) : max(0.0, (float)($state['cash_left'] ?? 0.0));
-    $activeHolding = $holdingValue !== null
-        ? max(0.0, $holdingValue)
-        : max(0.0, (float)($state['holding_value'] ?? 0.0));
-    return $activeCash + $activeHolding + paperWalletExternalKittyTotal($state);
-}
-
-/** Normalize all wallet totals from the real component pools. */
-function normalizePaperWalletTotals(array $state, ?float $currentPrice = null): array
-{
-    if ($currentPrice !== null && is_finite($currentPrice) && $currentPrice >= 0.0) {
-        $state['current_price'] = $currentPrice;
-        $state['holding_value'] = max(0.0, (float)($state['asset_units'] ?? 0.0)) * $currentPrice;
-    } else {
-        $state['holding_value'] = max(0.0, (float)($state['holding_value'] ?? 0.0));
-    }
-    $state['cash_left'] = max(0.0, (float)($state['cash_left'] ?? 0.0));
-    $state['external_kitty_total'] = paperWalletExternalKittyTotal($state);
-    $state['sold_into_cash_kitty_total'] = paperWalletSoldIntoCashKittyTotal($state);
-    $state['active_wallet_value'] = $state['cash_left'] + $state['holding_value'];
-    $state['equity_value'] = $state['active_wallet_value'] + $state['external_kitty_total'];
-    $state['total_portfolio_value'] = $state['equity_value'];
-    $state['pot_value'] = $state['equity_value'];
-    if (is_numeric($state['starting_pot'] ?? null)) {
-        $state['net_pnl'] = $state['equity_value'] - (float)$state['starting_pot'];
-    }
-    return $state;
-}
-
 function applyPortfolioBenchmark(array $state, ?float $currentPrice = null): array
 {
     $price = is_numeric($currentPrice)
@@ -7908,12 +5991,9 @@ function applyPortfolioBenchmark(array $state, ?float $currentPrice = null): arr
     $benchmarkEquity = $bootstrapPrice > 0.0 && $price > 0.0
         ? $cashNeutralBaseline + ($benchmarkUnits * $price)
         : $portfolioPnlBaseline;
-    // Benchmarks and alpha use the same canonical wallet total as execution.
-    $equity = paperWalletTotalEquity($state);
-    if ($equity <= 0.0 && $portfolioPnlBaseline > 0.0) {
-        $equity = $portfolioPnlBaseline;
-    }
-    $state['equity_value'] = $equity;
+    $equity = is_numeric($state['equity_value'] ?? null)
+        ? (float)$state['equity_value']
+        : $portfolioPnlBaseline;
     $portfolioPnl = $equity - $portfolioPnlBaseline;
     $benchmarkPnl = $benchmarkEquity - $portfolioPnlBaseline;
     $strategyAlpha = $equity - $benchmarkEquity;
@@ -8055,11 +6135,10 @@ function applySpiralDownCircuitBreaker(
     );
     $guard['thresholds'] = $defaultGuard['thresholds'];
 
-    // Risk uses the canonical total, marked at the supplied live price.
-    $riskHoldingValue = max(0.0, (float)($state['asset_units'] ?? 0.0)) * max(0.0, $currentPrice);
-    $currentEquity = paperWalletTotalEquity($state, null, $riskHoldingValue);
-    $state['holding_value'] = $riskHoldingValue;
-    $state['equity_value'] = $currentEquity;
+    $currentEquity = is_numeric($state['equity_value'] ?? null)
+        ? max(0.0, (float)$state['equity_value'])
+        : max(0.0, (float)($state['cash_left'] ?? 0.0)
+            + (max(0.0, (float)($state['asset_units'] ?? 0.0)) * max(0.0, $currentPrice)));
     $strategyAlphaPercent = is_numeric($state['strategy_alpha_percent'] ?? null)
         ? (float)$state['strategy_alpha_percent']
         : 0.0;
@@ -8250,23 +6329,14 @@ function markPaperWalletToMarket(array $state, float $currentPrice): array
     $state['current_price'] = $currentPrice;
     $state['holding_value'] = max(0.0, (float)$state['asset_units']) * $currentPrice;
     $state['open_pnl'] = (float)$state['holding_value'] - max(0.0, (float)($state['asset_cost_basis'] ?? 0.0));
-    $state['active_wallet_value'] = max(0.0, (float)$state['cash_left']) + (float)$state['holding_value'];
-    $state['external_kitty_total'] = paperWalletExternalKittyTotal($state);
-    $state = normalizePaperWalletTotals($state);
-    return finalizeCanonicalTradingState($state, $currentPrice);
+    $state['equity_value'] = max(0.0, (float)$state['cash_left']) + (float)$state['holding_value'];
+    return applyPortfolioBenchmark($state, $currentPrice);
 }
 
 /** Normalize wallet display state fields that should always be derivable from trades. */
 function normalizeTraderDisplayState(array $state): array
 {
-    $state['minimum_realized_profit'] = minimumRealizedProfitAmount();
-    $state['minimum_realized_profit_policy'] = 'PROFITABLE EXITS WAIT UNTIL PREVIEW NET IS AT LEAST $50; EMERGENCY LOSS SAFEGUARDS REMAIN SEPARATE';
     $state['trades'] = is_array($state['trades'] ?? null) ? $state['trades'] : [];
-    $state['open_lots'] = function_exists('paperWalletOpenLots') ? paperWalletOpenLots($state) : [];
-    $state['open_lot_count'] = count($state['open_lots']);
-    $state['pending_rebuys'] = function_exists('paperWalletPendingRebuys') ? paperWalletPendingRebuys($state) : [];
-    $state['pending_rebuy_total'] = round(array_sum(array_column($state['pending_rebuys'], 'remaining_amount')), 8);
-    $state['rebuy_pending'] = count($state['pending_rebuys']) > 0;
     $state = normalizePaperTradeLedger($state);
     $tradeDecisionCount = max(0, (int)($state['wins'] ?? 0)) + max(0, (int)($state['losses'] ?? 0));
     $state['trade_profit_rate'] = $tradeDecisionCount > 0
@@ -8289,8 +6359,7 @@ function normalizeTraderDisplayState(array $state): array
     }
     $state['accuracy_source'] = 'FORECAST_OBSERVATION';
     $state['accuracy_independent_of_execution'] = true;
-    $state = normalizePaperWalletTotals($state);
-    if (is_numeric($state['starting_pot'] ?? null)) {
+    if (is_numeric($state['equity_value'] ?? null) && is_numeric($state['starting_pot'] ?? null)) {
         $state['net_pnl'] = (float)$state['equity_value'] - (float)$state['starting_pot'];
         $state['sim_net_move'] = (float)$state['net_pnl'];
     }
@@ -8846,220 +6915,6 @@ function formatSignedMoney(float $amount, int $precision = 4): string
 }
 
 /** Mark a partially realized phase with #fraction or #count. */
-
-/**
- * Build one definitive three-voter decision room.
- *
- * Strategy approval happens exactly once here. Downstream code may apply only
- * operational hard gates (funds, duplicate key, circuit breaker, broker fill),
- * never a new hidden strategy veto.
- */
-function buildThreeVoterDecisionRoom(
-    string $proposedAction,
-    float $eligibleLotUnits,
-    array $riskMetricContext,
-    array $context = []
-): array {
-    $action = strtoupper(trim($proposedAction));
-    if ($action !== 'BUY' && $action !== 'SELL') $action = 'NO TRADE';
-
-    $compressionAction = strtoupper(trim((string)($riskMetricContext['compression_candle_branch_action'] ?? 'NO TRADE')));
-    $evidenceOrientation = strtoupper(trim((string)($riskMetricContext['evidence_orientation'] ?? 'HOLD')));
-    $alternationEligible = (($riskMetricContext['alternation_eligible'] ?? false) === true);
-    $compressionAlternation = (($riskMetricContext['compression_allows_alternation'] ?? false) === true);
-    $lockedAction = strtoupper(trim((string)($context['locked_action'] ?? $action)));
-
-    $cumulativeMoveAction = strtoupper(trim((string)($riskMetricContext['cumulative_open_close_action'] ?? 'NO TRADE')));
-    $cumulativeMoveTriggered = (($riskMetricContext['cumulative_open_close_triggered'] ?? false) === true);
-    $sellDensityTriggered = (($riskMetricContext['sell_density_accumulation_triggered'] ?? false) === true);
-    $sellDensityAction = strtoupper(trim((string)($riskMetricContext['sell_density_accumulation_action'] ?? 'NO TRADE')));
-    $sellDensityOverride = $sellDensityTriggered && $sellDensityAction === 'BUY';
-
-    // SELL-DENSITY OVERRIDE: sufficient recent SELL concentration plus the
-    // configured decline is an explicit accumulation authority. It owns the
-    // executable action for this boundary even when the ordinary template,
-    // compression branch, or previous proposed action says SELL/HOLD.
-    if ($sellDensityOverride) {
-        $action = 'BUY';
-        $lockedAction = 'BUY';
-    }
-
-    $auditSupportsAction = $action !== 'NO TRADE' && (
-        ($sellDensityTriggered && $sellDensityAction === $action)
-        || ($cumulativeMoveTriggered && $cumulativeMoveAction === $action)
-        || $compressionAction === $action
-        || ($action === 'SELL' && ($alternationEligible || $compressionAlternation))
-        || $evidenceOrientation === 'KEEP'
-    );
-
-    $voters = [
-        'signal' => [
-            'name' => 'SIGNAL',
-            'yes' => $action !== 'NO TRADE' && $lockedAction === $action,
-            'reason' => $sellDensityOverride
-                ? 'sell-density override locked executable action to BUY'
-                : ($action !== 'NO TRADE' && $lockedAction === $action
-                    ? 'locked five-minute model action is ' . $action
-                    : 'no matching locked model action'),
-            'details' => [
-                'proposed_action' => $action,
-                'locked_action' => $lockedAction,
-                'sell_density_override' => $sellDensityOverride,
-            ],
-        ],
-        'lot' => [
-            'name' => 'LOT',
-            'yes' => $action === 'BUY' ? true : ($action === 'SELL' && $eligibleLotUnits > 1.0e-12),
-            'reason' => $action === 'BUY'
-                ? 'buy does not require a sell-lot break'
-                : ($eligibleLotUnits > 1.0e-12
-                    ? 'global sell break reached across open BUY inventory'
-                    : ('global sell break not reached · current $'
-                        . number_format((float)($context['lot_current_price'] ?? 0.0), 2, '.', ',')
-                        . ' · target $' . number_format((float)($context['lot_target_price'] ?? 0.0), 2, '.', ',')
-                        . ' · break ' . number_format((float)($context['lot_break_percent'] ?? 0.0), 3, '.', '') . '%')),
-            'details' => [
-                'eligible_units' => round(max(0.0, $eligibleLotUnits), 12),
-                'open_lot_count' => (int)($context['open_lot_count'] ?? 0),
-                'holding_value' => round(max(0.0, (float)($context['holding_value'] ?? 0.0)), 8),
-                'global_break_percent' => round(max(0.0, (float)($context['lot_break_percent'] ?? 0.0)), 6),
-                'global_average_entry' => round(max(0.0, (float)($context['lot_average_entry'] ?? 0.0)), 8),
-                'global_target_price' => round(max(0.0, (float)($context['lot_target_price'] ?? 0.0)), 8),
-                'global_current_price' => round(max(0.0, (float)($context['lot_current_price'] ?? 0.0)), 8),
-                'global_move_percent' => round((float)($context['lot_move_percent'] ?? 0.0), 6),
-            ],
-        ],
-        'audit' => [
-            'name' => 'AUDIT',
-            'yes' => $auditSupportsAction,
-            'reason' => $auditSupportsAction
-                ? 'audit/compression evidence supports ' . $action
-                : 'audit/compression evidence does not support ' . $action,
-            'details' => [
-                'compression_action' => $compressionAction,
-                'evidence_orientation' => $evidenceOrientation,
-                'alternation_eligible' => $alternationEligible,
-                'compression_override' => $compressionAlternation,
-                'sell_density_accumulation_triggered' => $sellDensityTriggered,
-                'sell_density_accumulation_action' => $sellDensityAction,
-                'sell_density_sell_count' => (int)($riskMetricContext['sell_density_sell_count'] ?? 0),
-                'sell_density_sample_count' => (int)($riskMetricContext['sell_density_sample_count'] ?? 0),
-                'sell_density_percent' => round((float)($riskMetricContext['sell_density_percent'] ?? 0.0), 4),
-                'sell_density_move_percent' => round((float)($riskMetricContext['sell_density_move_percent'] ?? 0.0), 8),
-                'sell_density_threshold_percent' => round((float)($riskMetricContext['sell_density_threshold_percent'] ?? 0.0), 8),
-                'sell_density_stage_multiplier' => round((float)($riskMetricContext['sell_density_stage_multiplier'] ?? 1.0), 4),
-                'sell_density_reason' => (string)($riskMetricContext['sell_density_reason'] ?? ''),
-                'cumulative_open_close_triggered' => $cumulativeMoveTriggered,
-                'cumulative_open_close_action' => $cumulativeMoveAction,
-                'cumulative_open_close_move_percent' => round((float)($riskMetricContext['cumulative_open_close_move_percent'] ?? 0.0), 8),
-                'cumulative_open_close_candle_count' => (int)($riskMetricContext['cumulative_open_close_candle_count'] ?? 0),
-                'cumulative_open_close_reason' => (string)($riskMetricContext['cumulative_open_close_reason'] ?? ''),
-            ],
-        ],
-    ];
-
-    $yesVotes = 0;
-    foreach ($voters as $voter) {
-        if (($voter['yes'] ?? false) === true) $yesVotes++;
-    }
-    $requiredVotes = 2;
-    $approved = $action !== 'NO TRADE' && $yesVotes >= $requiredVotes;
-
-    $parts = [];
-    foreach ($voters as $voter) {
-        $parts[] = $voter['name'] . ' ' . (($voter['yes'] ?? false) ? 'YES' : 'NO')
-            . ' (' . $voter['reason'] . ')';
-    }
-
-    return [
-        'schema' => 'three-voter-decision-room-v1',
-        'action' => $action,
-        'approved' => $approved,
-        'override_active' => $sellDensityOverride,
-        'override_source' => $sellDensityOverride ? 'SELL_DENSITY_ACCUMULATION' : '',
-        'override_reason' => $sellDensityOverride
-            ? (string)($riskMetricContext['sell_density_reason'] ?? 'SELL-DENSITY PICKUP OVERRIDE')
-            : '',
-        'yes_votes' => $yesVotes,
-        'total_voters' => count($voters),
-        'required_votes' => $requiredVotes,
-        'voters' => $voters,
-        'summary' => 'VOTERS ' . $yesVotes . '/' . count($voters)
-            . ' · REQUIRED ' . $requiredVotes
-            . ' · ' . ($approved ? $action . ' APPROVED' : $action . ' DECLINED'),
-        'explanation' => implode(' · ', $parts),
-        'final_reason' => $approved
-            ? 'at least two independent voters approved the same locked action'
-            : 'fewer than two independent voters approved the same locked action',
-        'frozen_at' => gmdate('Y-m-d\\TH:i:s\\Z'),
-    ];
-}
-
-function threeVoterDecisionRoomLabel(array $room, bool $includeDetails = true): string
-{
-    $summary = trim((string)($room['summary'] ?? 'VOTERS UNSCORED'));
-    if (!$includeDetails) return $summary;
-    $explanation = trim((string)($room['explanation'] ?? ''));
-    return $summary . ($explanation !== '' ? ' · ' . $explanation : '');
-}
-
-
-/**
- * Read the frozen decision-room authority without depending on mutable helper flags.
- * This is the only strategy-approval lookup downstream execution code may use.
- */
-function threeVoterDecisionApprovesAction(array $state, string $action, ?array $room = null): bool
-{
-    $action = strtoupper(trim($action));
-    if ($action !== 'BUY' && $action !== 'SELL') return false;
-    $room = is_array($room) ? $room : (is_array($state['trade_decision_room'] ?? null) ? $state['trade_decision_room'] : []);
-    if ($room) {
-        return (($room['approved'] ?? false) === true)
-            && strtoupper(trim((string)($room['action'] ?? ''))) === $action
-            && (int)($room['yes_votes'] ?? 0) >= (int)($room['required_votes'] ?? 2);
-    }
-    return (($state['trade_decision_approved'] ?? false) === true)
-        && strtoupper(trim((string)($state['trade_decision_action'] ?? ''))) === $action
-        && (int)($state['trade_decision_yes_votes'] ?? 0) >= (int)($state['trade_decision_required_votes'] ?? 2);
-}
-
-/** Build one canonical blocked event with truthful shortage versus strategy-blocked accounting. */
-function canonicalBlockedTradeEvent(
-    string $action,
-    string $label,
-    float $requested,
-    float $available,
-    array $extra = []
-): array {
-    $requested = max(0.0, $requested);
-    $available = max(0.0, $available);
-    $shortfall = max(0.0, $requested - $available);
-    $blocked = min($requested, $available);
-    return array_merge([
-        'action' => strtoupper(trim($action)),
-        'label' => $label,
-        'class' => 'result-neutral-cell',
-        'executed' => false,
-        'amount' => 0.0,
-        'realized_pnl' => null,
-        'requested_amount' => round($requested, 8),
-        'available_amount' => round($available, 8),
-        'shortfall' => round($shortfall, 8),
-        'blocked_amount' => round($blocked, 8),
-        'operational_gate' => $label,
-    ], $extra);
-}
-
-/**
- * A two-vote decision is executable strategy authority. This helper intentionally
- * excludes operational conditions; those are checked only by sizing, duplicate,
- * minimum, risk-limit, and broker layers after this returns true.
- */
-function twoVoteExecutionAuthority(array $state, string $action, ?array $room = null): bool
-{
-    return threeVoterDecisionApprovesAction($state, $action, $room);
-}
-
 function formatPhaseRealizationLabel(string $label): string
 {
     return preg_replace('/\bx(?=\d)/i', '#', $label) ?? $label;
@@ -9199,8 +7054,6 @@ function buildPaperExecutionContext(string $marketType, array $quote = [], array
         'coinbase_min_market_funds' => $productMinimumFunds,
         'local_minimum_trade_amount' => MIN_TRADE_AMOUNT,
         'product_id' => (string)($productRules['product_id'] ?? ($quote['product_id'] ?? '')),
-        'symbol' => (string)($quote['symbol'] ?? ($productRules['product_id'] ?? ($quote['product_id'] ?? ''))),
-        'client_order_id' => '',
         'product_status' => (string)($productRules['status'] ?? 'UNKNOWN'),
         'trading_disabled' => (($productRules['trading_disabled'] ?? false) === true),
     ];
@@ -9290,18 +7143,14 @@ function paperExecutionFill(
         $gross = $units * $fillPrice;
         $fee = $gross * $feeRate;
         $cashSpent = $gross + $fee;
-        // Preserve the unspendable increment remainder as cash. Never inflate
-        // the fee merely to consume the full requested budget.
-        $cashRemainder = max(0.0, $cashBudget - $cashSpent);
+        if ($units > 0.0 && $cashSpent < $cashBudget) {
+            $fee += ($cashBudget - $cashSpent);
+            $cashSpent = $cashBudget;
+        }
         if ($cashSpent < $minimumFunds || $units <= 0.0) return $result;
         $result['gross_notional'] = round($gross, 8);
         $result['fee_amount'] = round($fee, 8);
         $result['net_cash_amount'] = round($cashSpent, 8);
-        $result['cash_budget'] = round($cashBudget, 8);
-        $result['cash_remainder'] = round($cashRemainder, 8);
-        $result['unit_price_with_fee'] = $units > 0.0 ? round($cashSpent / $units, 12) : 0.0;
-        $result['units_before_increment'] = $fillPrice > 0.0 ? round($grossBudget / $fillPrice, 12) : 0.0;
-        $result['units_after_increment'] = round($units, 12);
         $result['cash_delta'] = round(-$cashSpent, 8);
         $result['units'] = round($units, 12);
         $result['asset_units_delta'] = round($units, 12);
@@ -9663,43 +7512,23 @@ function centeredTimelineWindow(array $records, string $focusAction, string $bou
     $focusIndex = null;
     $bestDistance = null;
 
-    // The visible window must always retain the actual current five-minute row.
-    // Previously this searched only for the requested action (and the caller
-    // hard-coded BUY), which allowed a current SELL row to disappear on refresh.
     foreach ($records as $index => $record) {
         if (!is_array($record)) continue;
-        $phase = strtolower(trim((string)($record['phase'] ?? '')));
+        $action = strtoupper(trim((string)($record['guessAction'] ?? 'NO TRADE')));
+        if ($action !== $focusAction) continue;
         $time = (string)($record['displayTime'] ?? $record['time'] ?? '');
         $epoch = yahooTimestamp($time);
-        $isExactBoundary = $boundaryEpoch !== null && $epoch !== null && $epoch === $boundaryEpoch;
-        if ($phase === 'current' || $isExactBoundary) {
+        $distance = ($boundaryEpoch !== null && $epoch !== null)
+            ? abs($epoch - $boundaryEpoch)
+            : abs($index - (int)floor($count / 2));
+        if ($focusIndex === null || $bestDistance === null || $distance < $bestDistance) {
             $focusIndex = $index;
-            $bestDistance = 0;
-            break;
-        }
-    }
-
-    // Compatibility fallback for malformed/legacy timeline records that do not
-    // carry a current phase marker.
-    if ($focusIndex === null) {
-        foreach ($records as $index => $record) {
-            if (!is_array($record)) continue;
-            $action = strtoupper(trim((string)($record['guessAction'] ?? 'NO TRADE')));
-            if ($focusAction !== '' && $action !== $focusAction) continue;
-            $time = (string)($record['displayTime'] ?? $record['time'] ?? '');
-            $epoch = yahooTimestamp($time);
-            $distance = ($boundaryEpoch !== null && $epoch !== null)
-                ? abs($epoch - $boundaryEpoch)
-                : abs($index - (int)floor($count / 2));
-            if ($focusIndex === null || $bestDistance === null || $distance < $bestDistance) {
-                $focusIndex = $index;
-                $bestDistance = $distance;
-            }
+            $bestDistance = $distance;
         }
     }
 
     if ($focusIndex === null) {
-        $focusIndex = (int)floor($count / 2);
+        return $records;
     }
 
     $half = (int)floor($windowSize / 2);
@@ -9859,9 +7688,9 @@ function updatePaperBreakTrader(
         $exitAction = null;
         if ($movePercent >= $takeGainPercent) {
             $exitAction = 'SELL GAIN';
+        } elseif ($movePercent <= -$stopLossPercent) {
+            $exitAction = 'SELL LOSS';
         }
-        // Loss events never release a lot. It remains open until its own
-        // break/take threshold is met or beaten.
 
         if ($exitAction !== null && !$sameBarAction($lastTrade, $observedTime, $exitAction)) {
             $unitsHeldBefore = max(0.0, (float)$state['asset_units']);
@@ -9878,12 +7707,6 @@ function updatePaperBreakTrader(
                 $state['last_trade_pnl'] = 0.0;
                 $state['sell_loss_limit_amount'] = round(abs((float)MAX_REALIZED_SELL_LOSS_AMOUNT), 2);
                 $state['sell_loss_blocked_preview_pnl'] = round($realizedPnl, 8);
-            } elseif (realizedProfitBelowMinimum($realizedPnl)) {
-                $state['display_action'] = minimumRealizedProfitLabel($realizedPnl);
-                $state['last_trade_result'] = 'WAITING_FOR_MINIMUM_PROFIT';
-                $state['last_trade_pnl'] = 0.0;
-                $state['minimum_realized_profit'] = minimumRealizedProfitAmount();
-                $state['preview_realized_pnl'] = round($realizedPnl, 8);
             } elseif (!REALIZE_LOSS_TRADES && $realizedPnl < 0.0) {
                 $state['display_action'] = 'HOLD LONG';
             } else {
@@ -9943,69 +7766,38 @@ function updatePaperBreakTrader(
         $state['drop_from_high_percent'] = max(0.0, $dropPercent);
 
         if ($dropPercent >= $buyDropPercent && !$sameBarAction($lastTrade, $observedTime, 'BUY BREAK')) {
-            $requestedBuyAmount = min(
+            $buyAmount = min(
                 (float)$state['cash_left'],
                 (float)$state['cash_left'] * ($buyAllocationPercent / 100)
             );
-            $breakExecutionContext = [
-                'fee_bps' => 0.0,
-                'slippage_bps' => 0.0,
-                'spread_bps' => 0.0,
-                'base_increment' => 0.00000001,
-                'quote_increment' => 0.01,
-                'minimum_funds' => MIN_TRADE_AMOUNT,
-                'minimum_funds_source' => 'BREAK_TRADER_LOCAL',
-                'source' => 'BREAK_TRADER_PAPER',
-                'quote_source' => 'CURRENT_PRICE',
+            $buyUnits = $currentPrice > 0.0 ? ($buyAmount / $currentPrice) : 0.0;
+            if ($buyAmount > 0.0 && $buyUnits > 0.0) {
+            $trade = [
+                'action' => 'BUY BREAK',
+                'time' => $observedTime,
+                'price' => $currentPrice,
+                'anchor_price' => $anchorPrice,
+                'drop_percentage' => $dropPercent,
+                'amount' => $buyAmount,
+                'units' => $buyUnits,
             ];
-            $buyFill = paperExecutionFill(
-                'BUY',
-                $requestedBuyAmount,
-                (float)$state['cash_left'],
-                $currentPrice,
-                $breakExecutionContext,
-                0.0,
-                false
-            );
-            $buyAmount = (float)($buyFill['executed_amount'] ?? 0.0);
-            $buyUnits = (float)($buyFill['units'] ?? 0.0);
-            if (($buyFill['eligible'] ?? false) === true && $buyAmount > 0.0 && $buyUnits > 0.0) {
-                $trade = array_merge($buyFill, [
-                    'action' => 'BUY BREAK',
-                    'time' => $observedTime,
-                    'price' => (float)($buyFill['fill_price'] ?? $currentPrice),
-                    'anchor_price' => $anchorPrice,
-                    'drop_percentage' => $dropPercent,
-                    'amount' => $buyAmount,
-                    'units' => $buyUnits,
-                ]);
-                $state['trades'][] = $trade;
-                $state['trades'] = array_slice($state['trades'], -200);
-                $state['last_trade'] = $trade;
-                $state['position'] = 'long';
-                $state['cash_left'] = max(0.0, (float)$state['cash_left'] + (float)$buyFill['cash_delta']);
-                $state['asset_units'] = (float)$state['asset_units'] + $buyUnits;
-                $state['asset_cost_basis'] = (float)$state['asset_cost_basis'] + $buyAmount;
-                $state['entry_price'] = $state['asset_cost_basis'] / max(0.00000001, $state['asset_units']);
-                $state['entry_time'] = $observedTime;
-                $state['current_move_percent'] = 0.0;
-                $state['display_action'] = 'BUY BREAK';
+            $state['trades'][] = $trade;
+            $state['trades'] = array_slice($state['trades'], -200);
+            $state['last_trade'] = $trade;
+            $state['position'] = 'long';
+            $state['cash_left'] = max(0.0, (float)$state['cash_left'] - $buyAmount);
+            $state['asset_units'] = (float)$state['asset_units'] + $buyUnits;
+            $state['asset_cost_basis'] = (float)$state['asset_cost_basis'] + $buyAmount;
+            $state['entry_price'] = $state['asset_cost_basis'] / max(0.00000001, $state['asset_units']);
+            $state['entry_time'] = $observedTime;
+            $state['current_move_percent'] = 0.0;
+            $state['display_action'] = 'BUY BREAK';
                 $state['total_bought_units'] = (float)$state['total_bought_units'] + $buyUnits;
                 $state['total_bought_amount'] = (float)$state['total_bought_amount'] + $buyAmount;
-                if (function_exists('paperWalletRecordBuyLot')) {
-                    $state = paperWalletRecordBuyLot(
-                        $state,
-                        $buyUnits,
-                        (float)($buyFill['fill_price'] ?? $currentPrice),
-                        $buyAmount,
-                        $observedTime,
-                        max($anchorPrice, $currentPrice)
-                    );
-                }
                 if ((float)$state['first_buy_amount'] <= 0.0) {
                     $state['first_buy_amount'] = $buyAmount;
                     $state['first_buy_units'] = $buyUnits;
-                    $state['first_buy_price'] = (float)($buyFill['fill_price'] ?? $currentPrice);
+                    $state['first_buy_price'] = $currentPrice;
                 }
             }
         }
@@ -10013,9 +7805,7 @@ function updatePaperBreakTrader(
 
     $state['holding_value'] = (float)$state['asset_units'] * $currentPrice;
     $state['open_pnl'] = (float)$state['holding_value'] - (float)$state['asset_cost_basis'];
-    $state['active_wallet_value'] = max(0.0, (float)$state['cash_left']) + max(0.0, (float)$state['holding_value']);
-    $state['external_kitty_total'] = paperWalletExternalKittyTotal($state);
-    $state = normalizePaperWalletTotals($state);
+    $state['equity_value'] = (float)$state['cash_left'] + (float)$state['holding_value'];
     $state['net_pnl'] = (float)$state['equity_value'] - (float)$state['starting_pot'];
     $state['reserved_cash'] = 0.0;
     $state['reserved_asset_units'] = 0.0;
@@ -10045,206 +7835,6 @@ function updatePaperBreakTrader(
     fclose($handle);
     return $state;
 }
-
-
-/**
- * Canonical post-engine refactor layer.
- *
- * This intentionally does not alter bitcoin() or any of its mathematics.
- * It consolidates state produced by the legacy calculation sections into one
- * deterministic wallet, break, event, and ledger representation.
- */
-function canonicalConfiguredBreakPercent(array $state, string $side): float
-{
-    $side = strtoupper(trim($side));
-    $key = $side === 'BUY' ? 'configured_buy_break_percent' : 'configured_sell_gain_percent';
-    $fallback = $side === 'BUY'
-        ? ($state['settings']['buy_drop_percent'] ?? 0.50)
-        : ($state['settings']['take_gain_percent'] ?? 0.50);
-    return min(25.0, max(0.01, (float)($state[$key] ?? $fallback)));
-}
-
-function canonicalTradeAction($value): string
-{
-    $action = strtoupper(trim((string)$value));
-    if (preg_match('/\\bBUY\\b/', $action) === 1) return 'BUY';
-    if (preg_match('/\\bSELL\\b/', $action) === 1) return 'SELL';
-    return 'NO TRADE';
-}
-
-function canonicalEventBoundary(array $event, string $fallback = ''): string
-{
-    foreach (['boundary_time', 'timestamp', 'time', 'observed_time'] as $key) {
-        $value = trim((string)($event[$key] ?? ''));
-        if ($value !== '') return $value;
-    }
-    return $fallback;
-}
-
-function canonicalizeTradeLedger(array $state): array
-{
-    $trades = [];
-    $seen = [];
-    foreach ((array)($state['trades'] ?? []) as $index => $trade) {
-        if (!is_array($trade)) continue;
-        $action = canonicalTradeAction($trade['action'] ?? $trade['label'] ?? '');
-        if ($action === 'NO TRADE') continue;
-        $units = max(0.0, (float)($trade['units'] ?? $trade['executed_units'] ?? 0.0));
-        $fill = max(0.0, (float)($trade['fill_price'] ?? $trade['price'] ?? 0.0));
-        $gross = max(0.0, (float)($trade['gross_notional'] ?? $trade['executed_amount'] ?? $trade['amount'] ?? 0.0));
-        $fee = max(0.0, (float)($trade['fee_amount'] ?? 0.0));
-        if ($gross <= 0.0 && $units > 0.0 && $fill > 0.0) $gross = $units * $fill;
-        $executed = ($trade['executed'] ?? true) === true && $units > 0.0 && $fill > 0.0;
-        if (!$executed) continue;
-        $boundary = canonicalEventBoundary($trade, (string)($trade['sold_at'] ?? $trade['bought_at'] ?? ''));
-        $id = trim((string)($trade['id'] ?? $trade['execution_id'] ?? $trade['idempotency_key'] ?? ''));
-        if ($id === '') $id = substr(hash('sha256', $boundary.'|'.$action.'|'.$units.'|'.$fill.'|'.$index), 0, 16);
-        if (isset($seen[$id])) continue;
-        $seen[$id] = true;
-        $trade['id'] = $id;
-        $trade['action'] = $action;
-        $trade['units'] = round($units, 12);
-        $trade['fill_price'] = round($fill, 12);
-        $trade['gross_notional'] = round($gross, 8);
-        $trade['fee_amount'] = round($fee, 8);
-        $trade['executed_amount'] = round($action === 'BUY' ? ($gross + $fee) : max(0.0, $gross - $fee), 8);
-        $trade['executed'] = true;
-        $trade['boundary_time'] = $boundary;
-        $trades[] = $trade;
-    }
-    $state['trades'] = $trades;
-    $state['last_trade'] = $trades ? $trades[array_key_last($trades)] : null;
-    return $state;
-}
-
-function canonicalizeBreakLedgers(array $state, float $currentPrice): array
-{
-    $sellBreak = canonicalConfiguredBreakPercent($state, 'SELL');
-    $buyBreak = canonicalConfiguredBreakPercent($state, 'BUY');
-    $state['configured_sell_gain_percent'] = $sellBreak;
-    $state['configured_buy_break_percent'] = $buyBreak;
-    if (!is_array($state['settings'] ?? null)) $state['settings'] = [];
-    $state['settings']['take_gain_percent'] = $sellBreak;
-    $state['settings']['buy_drop_percent'] = $buyBreak;
-
-    $state['open_lots'] = paperWalletOpenLots($state);
-    $state['open_lot_count'] = count($state['open_lots']);
-    $state['pending_rebuys'] = paperWalletPendingRebuys($state);
-    $state['pending_rebuy_count'] = count($state['pending_rebuys']);
-    $state['reserved_cash'] = round(array_sum(array_map(
-        static fn($row) => is_array($row) ? max(0.0, (float)($row['remaining_amount'] ?? 0.0)) : 0.0,
-        $state['pending_rebuys']
-    )), 8);
-
-    $eligibility = paperWalletLotsEligibleToSell($state, $currentPrice);
-    $state['global_sell_break'] = $eligibility;
-    $state['eligible_sell_units'] = round(max(0.0, (float)($eligibility['eligible_units'] ?? 0.0)), 12);
-    return $state;
-}
-
-function canonicalizeDecisionEvents(array $state): array
-{
-    $events = [];
-    foreach ((array)($state['events_by_time'] ?? []) as $boundary => $event) {
-        if (!is_array($event)) continue;
-        $boundary = canonicalEventBoundary($event, (string)$boundary);
-        if ($boundary === '') continue;
-        $event = canonicalPaperWalletEvent($event);
-        $locked = canonicalTradeAction($event['locked_template_action'] ?? $event['model_action'] ?? $event['action'] ?? '');
-        $eventAction = canonicalTradeAction($event['action'] ?? $locked);
-        $room = is_array($event['decision_room'] ?? null) ? $event['decision_room'] : [];
-        if ($room) {
-            $roomAction = canonicalTradeAction($room['action'] ?? '');
-            // A voter room belongs only to the exact locked action on this exact boundary.
-            if ($locked !== 'NO TRADE' && $roomAction !== $locked) {
-                $event['stale_decision_room_removed'] = true;
-                $event['stale_decision_room_action'] = $roomAction;
-                unset($event['decision_room'], $event['decision_banks']);
-                $room = [];
-            }
-        }
-        if ($locked !== 'NO TRADE' && $eventAction !== $locked && (($event['executed'] ?? false) !== true)) {
-            $eventAction = $locked;
-            $event['action_corrected_to_locked_template'] = true;
-        }
-        $event['boundary_time'] = $boundary;
-        $event['action'] = $eventAction;
-        $available = max(0.0, (float)($event['available_amount'] ?? $event['available'] ?? 0.0));
-        $requested = max(0.0, (float)($event['requested_amount'] ?? 0.0));
-        $executed = max(0.0, (float)($event['executed_amount'] ?? 0.0));
-        $event['shortfall_amount'] = round(max(0.0, $requested - $available), 8);
-        $event['blocked_amount'] = round((($event['executed'] ?? false) === true) ? 0.0 : max(0.0, min($requested, $available) - $executed), 8);
-        $events[$boundary] = $event;
-    }
-    ksort($events);
-    $state['events_by_time'] = $events;
-    return $state;
-}
-
-function canonicalizeExecutionKeys(array $state): array
-{
-    $keys = [];
-    foreach ((array)($state['execution_idempotency_keys'] ?? []) as $key => $row) {
-        if (!is_array($row)) continue;
-        $boundary = trim((string)($row['boundary'] ?? ''));
-        $action = canonicalTradeAction($row['action'] ?? '');
-        if ($boundary === '' || $action === 'NO TRADE') continue;
-        $canonicalKey = $boundary.'|'.$action;
-        if (!isset($keys[$canonicalKey]) || (($row['executed'] ?? false) === true)) $keys[$canonicalKey] = $row;
-    }
-    $state['execution_idempotency_keys'] = $keys;
-    return $state;
-}
-
-function canonicalTradingInvariantReport(array $state): array
-{
-    $cash = max(0.0, (float)($state['cash_left'] ?? 0.0));
-    $units = max(0.0, (float)($state['asset_units'] ?? 0.0));
-    $holding = max(0.0, (float)($state['holding_value'] ?? 0.0));
-    $kitty = paperWalletExternalKittyTotal($state);
-    $equity = paperWalletTotalEquity($state, $cash, $holding);
-    $lotUnits = array_sum(array_map(static fn($lot) => is_array($lot) ? max(0.0, (float)($lot['units'] ?? 0.0)) : 0.0, (array)($state['open_lots'] ?? [])));
-    $issues = [];
-    if (abs($lotUnits - $units) > max(1.0e-8, $units * 1.0e-8)) $issues[] = 'OPEN_LOT_UNITS_DO_NOT_MATCH_ASSET_UNITS';
-    if (abs((float)($state['equity_value'] ?? 0.0) - $equity) > 0.01) $issues[] = 'EQUITY_NOT_CANONICAL';
-    if ($cash < 0.0 || $units < 0.0 || $holding < 0.0 || $kitty < 0.0) $issues[] = 'NEGATIVE_WALLET_COMPONENT';
-    return [
-        'ok' => !$issues,
-        'issues' => $issues,
-        'cash' => round($cash, 8),
-        'asset_units' => round($units, 12),
-        'open_lot_units' => round($lotUnits, 12),
-        'holding_value' => round($holding, 8),
-        'external_kitty' => round($kitty, 8),
-        'canonical_equity' => round($equity, 8),
-    ];
-}
-
-function finalizeCanonicalTradingState(array $state, float $currentPrice): array
-{
-    $state = canonicalizeTradeLedger($state);
-    $state = canonicalizeBreakLedgers($state, $currentPrice);
-    $state = canonicalizeDecisionEvents($state);
-    $state = canonicalizeExecutionKeys($state);
-
-    // Retired phase/hour allocation must never be an execution authority.
-    unset(
-        $state['allocated_phase_action'],
-        $state['allocated_phase_hour'],
-        $state['last_regime_trade_hour'],
-        $state['sell_bank_override_active'],
-        $state['sell_bank_override_reason']
-    );
-
-    $state = normalizePaperWalletTotals($state, $currentPrice);
-    $state = applyPortfolioBenchmark($state, $currentPrice);
-    $state = normalizePaperWalletTotals($state, $currentPrice);
-    $state['canonical_state_schema'] = 'trading-state-v2';
-    $state['canonicalized_at'] = gmdate('Y-m-d\\TH:i:s\\Z');
-    $state['invariants'] = canonicalTradingInvariantReport($state);
-    return $state;
-}
-
 
 /** Simulate the POT directly from saved BUY/SELL model actions across real candles. */
 function buildModelPaperTraderState(
@@ -10423,7 +8013,7 @@ function buildModelPaperTraderState(
             $phaseSignalHistory = array_slice($phaseSignalHistory, -4);
             $allocatedPhaseAction = 'NO TRADE';
         }
-        $phaseEntry = true; // canonical engine: every five-minute mark is independent
+        $phaseEntry = $allocatedPhaseAction !== $action;
         $unstableAlternation = count($phaseSignalHistory) === 4
             && $phaseSignalHistory[0] !== $phaseSignalHistory[1]
             && $phaseSignalHistory[1] !== $phaseSignalHistory[2]
@@ -10440,7 +8030,7 @@ function buildModelPaperTraderState(
         $lastAction = $action;
         $compressionAllowsUnstableAlternation = $unstableAlternation
             && compressionAllowsAlternation($compressionState, $action);
-        if (false) { // legacy phase/alternation throttle retired; the three-voter room owns strategy approval
+        if (!$phaseEntry || ($unstableAlternation && !$compressionAllowsUnstableAlternation)) {
             $heldRequested = requestedPaperTradeAmountForAction(
                 $action,
                 (float)($state['fixed_trade_amount'] ?? $initialTradeAmount),
@@ -10469,8 +8059,7 @@ function buildModelPaperTraderState(
                 'realized_pnl' => null,
                 'requested_amount' => $heldSizing['requested_amount'],
                 'available_amount' => $heldSizing['available_amount'],
-                'shortfall' => round(max(0.0, (float)$heldSizing['requested_amount'] - (float)$heldSizing['available_amount']), 8),
-                    'blocked_amount' => round(min((float)$heldSizing['requested_amount'], (float)$heldSizing['available_amount']), 8),
+                'shortfall' => $heldSizing['requested_amount'],
                 'entry_price' => is_numeric($state['entry_price'] ?? null) ? (float)$state['entry_price'] : null,
                 'exit_price' => null,
             ];
@@ -10571,9 +8160,6 @@ function buildModelPaperTraderState(
                     $state['entry_time'] = $time;
                     $state['total_bought_units'] += $buyUnits;
                     $state['total_bought_amount'] += $buyAmount;
-                    if (function_exists('paperWalletRecordBuyLot')) {
-                        $state = paperWalletRecordBuyLot($state, $buyUnits, (float)($buyFill['fill_price'] ?? $currentPrice), $buyAmount, isset($boundaryTime) ? (string)$boundaryTime : '', (float)($state['session_high_price'] ?? $currentPrice), ($forcedRebuy && is_array($eligibleRebuy ?? null)) ? (string)($eligibleRebuy['id'] ?? '') : null);
-                    }
                     if ($state['first_buy_amount'] <= 0.0) {
                         $state['first_buy_amount'] = $buyAmount;
                         $state['first_buy_units'] = $buyUnits;
@@ -10593,14 +8179,6 @@ function buildModelPaperTraderState(
                         'realized_pnl' => null,
                         'entry_price' => (float)$buyFill['fill_price'],
                         'exit_price' => null,
-                        'decision_yes_votes' => $tradeDecisionYesVotes,
-                        'decision_required_votes' => (int)($tradeDecisionRoom['required_votes'] ?? 2),
-                        'decision_total_voters' => (int)($tradeDecisionRoom['total_voters'] ?? 3),
-                        'decision_banks' => $tradeDecisionBanks,
-                        'decision_room' => $tradeDecisionRoom,
-                        'buy_break_percent' => (float)($state['buy_break_percent'] ?? $buyPct),
-                        'buy_break_met' => (bool)($state['buy_break_met'] ?? false),
-                        'buy_break_reason' => (string)($state['buy_break_reason'] ?? ''),
                     ]);
                     $allocatedPhaseAction = 'BUY';
                 }
@@ -10646,46 +8224,19 @@ function buildModelPaperTraderState(
             if ($sneakEligible) {
                 $sellBaseAmount *= $sneakFactor;
             }
-            $lotEligibility = function_exists('paperWalletLotsEligibleToSell')
-                ? paperWalletLotsEligibleToSell($state, $tradePrice)
-                : ['eligible_units' => 0.0, 'reasons' => []];
-            $eligibleLotUnits = max(0.0, (float)($lotEligibility['eligible_units'] ?? 0.0));
-            $bankSellOverride = threeVoterDecisionApprovesAction($state, 'SELL', is_array($tradeDecisionRoom ?? null) ? $tradeDecisionRoom : null); // A frozen 2-of-3 SELL is final strategy authority.
-            if ($bankSellOverride && $eligibleLotUnits <= 1.0e-12) {
-                $eligibleLotUnits = $unitsHeldBefore;
-            }
-            $sellAvailableAmount = min($unitsHeldBefore, $eligibleLotUnits) * $tradePrice;
+            $sellAvailableAmount = $unitsHeldBefore * $tradePrice;
             $averageCost = $costBasisBefore / max(0.00000001, $unitsHeldBefore);
             $minimumSellPrice = $averageCost * (1.0 + (MIN_SELL_EDGE_PERCENT / 100.0));
-            $state['lot_sell_eligible_units'] = round($eligibleLotUnits, 12);
-            $state['lot_sell_reasons'] = $lotEligibility['reasons'] ?? [];
-            if ($eligibleLotUnits <= 1.0e-12 && !$bankSellOverride) {
-                $state['events_by_time'][$time] = [
-                    'action' => 'SELL',
-                    'label' => 'SELL BLOCKED · NO LOT MET BREAK',
-                    'class' => 'result-neutral-cell',
-                    'executed' => false,
-                    'amount' => 0.0,
-                    'realized_pnl' => null,
-                    'requested_amount' => exchangeFloorTradeRequestAmount('SELL', $sellBaseAmount, $minimumFunds),
-                    'available_amount' => 0.0,
-                    'shortfall' => exchangeFloorTradeRequestAmount('SELL', $sellBaseAmount, $minimumFunds),
-                    'entry_price' => $averageCost,
-                    'exit_price' => $tradePrice,
-                ];
-                $state['display_action'] = 'HOLD LONG · EACH LOT MUST MEET BREAK';
-                continue;
-            }
             $sellFill = paperExecutionFill(
                 'SELL',
                 exchangeFloorTradeRequestAmount('SELL', $sellBaseAmount, $minimumFunds),
                 $sellAvailableAmount,
                 $tradePrice,
                 $executionContext,
-                $eligibleLotUnits,
+                $unitsHeldBefore,
                 false
             );
-            if (!$bankSellOverride && (float)$sellFill['fill_price'] < $minimumSellPrice) {
+            if ((float)$sellFill['fill_price'] < $minimumSellPrice) {
                 $blockedSellSizing = canonicalTradeSizing(
                     'SELL',
                     exchangeFloorTradeRequestAmount('SELL', $sellBaseAmount, $minimumFunds),
@@ -10702,8 +8253,7 @@ function buildModelPaperTraderState(
                     'realized_pnl' => null,
                     'requested_amount' => $blockedSellSizing['requested_amount'],
                     'available_amount' => $blockedSellSizing['available_amount'],
-                    'shortfall' => round(max(0.0, (float)$blockedSellSizing['requested_amount'] - (float)$blockedSellSizing['available_amount']), 8),
-                    'blocked_amount' => round(min((float)$blockedSellSizing['requested_amount'], (float)$blockedSellSizing['available_amount']), 8),
+                    'shortfall' => $blockedSellSizing['requested_amount'],
                     'entry_price' => $averageCost,
                     'exit_price' => (float)$sellFill['fill_price'],
                 ];
@@ -10712,63 +8262,11 @@ function buildModelPaperTraderState(
             }
             $sellUnits = (float)$sellFill['units'];
             $sellAmount = (float)$sellFill['executed_amount'];
-            $lotPreview = function_exists('paperWalletPreviewSellLots')
-                ? paperWalletPreviewSellLots($state, $sellUnits, $tradePrice, $bankSellOverride)
-                : ['sold_units' => 0.0, 'cost_portion' => 0.0, 'lot_results' => []];
-            $sellUnits = min($sellUnits, max(0.0, (float)$lotPreview['sold_units']));
-            $costPortion = max(0.0, (float)$lotPreview['cost_portion']);
+            $costPortion = $unitsHeldBefore > 0.0
+                ? $costBasisBefore * ($sellUnits / $unitsHeldBefore)
+                : 0.0;
             $realizedPnl = (float)$sellFill['net_cash_amount'] - $costPortion;
-            $globalSellTarget = max(0.0, (float)($lotEligibility['global_target_price'] ?? 0.0));
-            $actualSellFillPrice = max(0.0, (float)($sellFill['fill_price'] ?? 0.0));
-            $fillBelowGlobalBreak = !$bankSellOverride
-                && $globalSellTarget > 0.0
-                && $actualSellFillPrice + 1.0e-12 < $globalSellTarget;
-            $netBreakBlocked = $sellUnits <= 0.0
-                || $fillBelowGlobalBreak
-                || (!$bankSellOverride && (float)$sellFill['net_cash_amount'] + 1.0e-8 < $costPortion);
-            if ($netBreakBlocked) {
-                $state['events_by_time'][$time] = [
-                    'action' => 'SELL',
-                    'label' => $bankSellOverride
-                            ? 'SELL BLOCKED · NO SELLABLE LOT UNITS AFTER FIFO MAPPING'
-                            : 'SELL WAITING · FEWER THAN 2 VOTES OR GLOBAL BREAK NOT REACHED',
-                    'class' => 'result-neutral-cell',
-                    'executed' => false,
-                    'amount' => 0.0,
-                    'realized_pnl' => null,
-                    'preview_realized_pnl' => $realizedPnl,
-                    'requested_amount' => $sellFill['requested_amount'],
-                    'available_amount' => $sellFill['available_amount'],
-                    'shortfall' => round(max(0.0, (float)$sellFill['requested_amount'] - (float)$sellFill['available_amount']), 8),
-                        'blocked_amount' => round(min((float)$sellFill['requested_amount'], (float)$sellFill['available_amount']), 8),
-                    'entry_price' => $sellUnits > 0.0 ? ($costPortion / $sellUnits) : null,
-                    'exit_price' => (float)$sellFill['fill_price'],
-                    'lot_results' => $lotPreview['lot_results'],
-                        'global_sell_target' => $globalSellTarget,
-                        'actual_fill_price' => $actualSellFillPrice,
-                        'fill_below_global_break' => $fillBelowGlobalBreak,
-                ];
-                $state['display_action'] = 'HOLD LONG · WAITING FOR MATCHED BUY LOT GAIN BREAK';
-            } elseif (realizedProfitBelowMinimum($realizedPnl)) {
-                $state['events_by_time'][$time] = [
-                    'action' => 'SELL',
-                    'label' => minimumRealizedProfitLabel($realizedPnl),
-                    'class' => 'result-neutral-cell',
-                    'executed' => false,
-                    'amount' => 0.0,
-                    'realized_pnl' => null,
-                    'preview_realized_pnl' => round($realizedPnl, 8),
-                    'minimum_realized_profit' => minimumRealizedProfitAmount(),
-                    'profit_remaining' => round(max(0.0, minimumRealizedProfitAmount() - $realizedPnl), 8),
-                    'requested_amount' => $sellFill['requested_amount'],
-                    'available_amount' => $sellFill['available_amount'],
-                    'shortfall' => 0.0,
-                    'blocked_amount' => round(min((float)$sellFill['requested_amount'], (float)$sellFill['available_amount']), 8),
-                    'entry_price' => $sellUnits > 0.0 ? ($costPortion / $sellUnits) : null,
-                    'exit_price' => (float)$sellFill['fill_price'],
-                ];
-                $state['display_action'] = minimumRealizedProfitLabel($realizedPnl);
-            } elseif (sellLossExceedsHardLimit($realizedPnl)) {
+            if (sellLossExceedsHardLimit($realizedPnl)) {
                 $state['events_by_time'][$time] = [
                     'action' => 'SELL',
                     'label' => sellLossLimitLabel($realizedPnl),
@@ -10796,8 +8294,7 @@ function buildModelPaperTraderState(
                     'realized_pnl' => null,
                     'requested_amount' => $sellFill['requested_amount'],
                     'available_amount' => $sellFill['available_amount'],
-                    'shortfall' => round(max(0.0, (float)$sellFill['requested_amount'] - (float)$sellFill['available_amount']), 8),
-                        'blocked_amount' => round(min((float)$sellFill['requested_amount'], (float)$sellFill['available_amount']), 8),
+                    'shortfall' => $sellFill['requested_amount'],
                     'entry_price' => $sellUnits > 0.0 ? ($costPortion / $sellUnits) : null,
                     'exit_price' => (float)$sellFill['fill_price'],
                 ];
@@ -10821,17 +8318,6 @@ function buildModelPaperTraderState(
                 $state['last_trade'] = $trade;
                 $state['realized_move'] += $realizedPnl;
                 $state['cash_left'] += (float)$sellFill['net_cash_amount'];
-                $soldLotResults = [];
-                if (function_exists('paperWalletConsumeSellLots')) {
-                    $lotConsumption = paperWalletConsumeSellLots($state, $sellUnits, $tradePrice, $bankSellOverride);
-                    $state = $lotConsumption['state'];
-                    $sellUnits = (float)$lotConsumption['sold_units'];
-                    $costPortion = (float)$lotConsumption['cost_portion'];
-                    $soldLotResults = is_array($lotConsumption['lot_results'] ?? null) ? $lotConsumption['lot_results'] : [];
-                }
-                if (function_exists('paperWalletRecordSellFundedRebuy')) {
-                    $state = paperWalletRecordSellFundedRebuy($state, $sellFill, $soldLotResults, $buyMultiplier, (string)$time, isset($break_buy_drop_pct) ? (float)$break_buy_drop_pct : null);
-                }
                 $state['asset_units'] = max(0.0, $unitsHeldBefore - $sellUnits);
                 $state['asset_cost_basis'] = max(0.0, $costBasisBefore - $costPortion);
                 $state['total_sold_units'] += $sellUnits;
@@ -10880,8 +8366,7 @@ function buildModelPaperTraderState(
                     'amount' => 0.0,
                     'requested_amount' => $sellFill['requested_amount'],
                     'available_amount' => $sellFill['available_amount'],
-                    'shortfall' => round(max(0.0, (float)$sellFill['requested_amount'] - (float)$sellFill['available_amount']), 8),
-                        'blocked_amount' => round(min((float)$sellFill['requested_amount'], (float)$sellFill['available_amount']), 8),
+                    'shortfall' => $sellFill['requested_amount'],
                     'realized_pnl' => null,
                     'entry_price' => $averageCost,
                     'exit_price' => (float)$sellFill['fill_price'],
@@ -10928,9 +8413,7 @@ function buildModelPaperTraderState(
 
     $state['holding_value'] = (float)$state['asset_units'] * $currentPrice;
     $state['open_pnl'] = (float)$state['holding_value'] - (float)$state['asset_cost_basis'];
-    $state['active_wallet_value'] = max(0.0, (float)$state['cash_left']) + max(0.0, (float)$state['holding_value']);
-    $state['external_kitty_total'] = paperWalletExternalKittyTotal($state);
-    $state = normalizePaperWalletTotals($state);
+    $state['equity_value'] = (float)$state['cash_left'] + (float)$state['holding_value'];
     $state['net_pnl'] = (float)$state['equity_value'] - (float)$state['starting_pot'];
     $decisionCount = (int)$state['wins'] + (int)$state['losses'];
     $state['trade_profit_rate'] = $decisionCount > 0
@@ -10955,131 +8438,6 @@ function buildModelPaperTraderState(
 }
 
 /** Persist one live BUY/SELL decision per five-minute boundary for the wallet card. */
-
-/**
- * Lock active-wallet income once it reaches the configured threshold above the
- * original principal. The excess is sold from the asset position and moved
- * directly into the non-spendable external kitty, so it cannot trigger again.
- */
-function applyPrincipalIncomeLock(
-    array $state,
-    float $currentPrice,
-    string $boundaryTime,
-    array $executionContext = [],
-    float $threshold = 50.0
-): array {
-    $principal = max(0.0, (float)($state['starting_pot'] ?? 10000.0));
-    $threshold = max(0.01, $threshold);
-    $cash = max(0.0, (float)($state['cash_left'] ?? 0.0));
-    $units = max(0.0, (float)($state['asset_units'] ?? 0.0));
-    $holding = $units * max(0.0, $currentPrice);
-    $active = $cash + $holding;
-    $excess = max(0.0, $active - $principal);
-
-    $state['principal_income_threshold'] = round($threshold, 2);
-    $state['principal_initial'] = round($principal, 8);
-    $state['principal_active_equity'] = round($active, 8);
-    $state['principal_active_excess'] = round($excess, 8);
-    $state['principal_next_lock_needed'] = round(max(0.0, $threshold - $excess), 8);
-    $state['principal_income_locked_total'] = max(
-        0.0,
-        (float)($state['principal_income_locked_total'] ?? $state['gain_kitty_total'] ?? 0.0)
-    );
-    $state['principal_income_last_lock'] = 0.0;
-    $state['principal_income_status'] = $excess >= $threshold
-        ? 'ELIGIBLE · PREPARING PRINCIPAL LOCK'
-        : 'WAITING · NEEDS $' . number_format(max(0.0, $threshold - $excess), 2);
-
-    if ($excess + 1.0e-8 < $threshold || $units <= 1.0e-12 || $currentPrice <= 0.0) {
-        return $state;
-    }
-
-    $eventKey = 'principal-lock|' . $boundaryTime . '|' . number_format($principal, 2, '.', '');
-    $seen = is_array($state['principal_income_lock_keys'] ?? null)
-        ? $state['principal_income_lock_keys']
-        : [];
-    if (isset($seen[$eventKey])) {
-        $state['principal_income_status'] = 'LOCK ALREADY PROCESSED FOR THIS MARK';
-        return $state;
-    }
-
-    // Request enough gross notional to externalize the complete active excess.
-    $requested = min($holding, $excess);
-    $fill = paperExecutionFill(
-        'SELL',
-        $requested,
-        $holding,
-        $currentPrice,
-        $executionContext,
-        $units,
-        true
-    );
-    $sellUnits = max(0.0, (float)($fill['units'] ?? 0.0));
-    $net = max(0.0, (float)($fill['net_cash_amount'] ?? 0.0));
-    if (($fill['eligible'] ?? false) !== true || $sellUnits <= 1.0e-12 || $net <= 0.0) {
-        $state['principal_income_status'] = 'ELIGIBLE · SELL COULD NOT FILL';
-        return $state;
-    }
-
-    $consumed = paperWalletConsumeSellLots($state, $sellUnits, $currentPrice, true);
-    $actualUnits = max(0.0, (float)($consumed['sold_units'] ?? 0.0));
-    if ($actualUnits <= 1.0e-12) {
-        $state['principal_income_status'] = 'ELIGIBLE · NO FIFO UNITS MAPPED';
-        return $state;
-    }
-    $state = is_array($consumed['state'] ?? null) ? $consumed['state'] : $state;
-    $cost = max(0.0, (float)($consumed['cost_portion'] ?? 0.0));
-    $actualNet = $sellUnits > 0.0 ? $net * ($actualUnits / $sellUnits) : 0.0;
-    $actualGross = max(0.0, (float)($fill['gross_notional'] ?? 0.0)) * ($actualUnits / max($sellUnits, 1.0e-12));
-    $actualFee = max(0.0, (float)($fill['fee_amount'] ?? 0.0)) * ($actualUnits / max($sellUnits, 1.0e-12));
-    $realized = $actualNet - $cost;
-
-    $state['asset_units'] = max(0.0, (float)($state['asset_units'] ?? 0.0) - $actualUnits);
-    $state['asset_cost_basis'] = max(0.0, (float)($state['asset_cost_basis'] ?? 0.0) - $cost);
-    $state['total_sold_units'] = max(0.0, (float)($state['total_sold_units'] ?? 0.0)) + $actualUnits;
-    $state['total_sold_amount'] = max(0.0, (float)($state['total_sold_amount'] ?? 0.0)) + $actualGross;
-    $state['total_fees'] = max(0.0, (float)($state['total_fees'] ?? 0.0)) + $actualFee;
-    $state['cash_out_withdrawn_total'] = max(0.0, (float)($state['cash_out_withdrawn_total'] ?? 0.0)) + $actualNet;
-    $state['external_kitty_total'] = paperWalletExternalKittyTotal($state);
-    $state['principal_income_locked_total'] += $actualNet;
-    $state['principal_income_last_lock'] = $actualNet;
-    $state['principal_income_status'] = 'LOCKED $' . number_format($actualNet, 2) . ' ABOVE PRINCIPAL';
-    $state['principal_income_lock_count'] = max(0, (int)($state['principal_income_lock_count'] ?? 0)) + 1;
-    $seen[$eventKey] = gmdate('c');
-    $state['principal_income_lock_keys'] = array_slice($seen, -200, 200, true);
-
-    $trade = array_merge($fill, [
-        'action' => 'SELL',
-        'executed' => true,
-        'units' => round($actualUnits, 12),
-        'executed_amount' => round($actualGross, 8),
-        'gross_notional' => round($actualGross, 8),
-        'fee_amount' => round($actualFee, 8),
-        'net_cash_amount' => round($actualNet, 8),
-        'cost_basis' => round($cost, 8),
-        'realized_pnl' => round($realized, 8),
-        'time' => $boundaryTime,
-        'reason' => 'PRINCIPAL_INCOME_LOCK',
-        'label' => 'PRINCIPAL GAIN SELL-OFF',
-        'income_locked' => round($actualNet, 8),
-        'principal' => round($principal, 8),
-        'active_excess_before' => round($excess, 8),
-    ]);
-    $state['trades'] = is_array($state['trades'] ?? null) ? $state['trades'] : [];
-    $state['trades'][] = $trade;
-    $state['last_trade'] = $trade;
-    $state['events_by_time'] = is_array($state['events_by_time'] ?? null) ? $state['events_by_time'] : [];
-    $state['events_by_time'][$boundaryTime . ' principal-lock'] = canonicalPaperWalletEvent($trade);
-
-    // Rebuild active-wallet figures after moving proceeds outside the wallet.
-    $state['holding_value'] = max(0.0, (float)$state['asset_units']) * $currentPrice;
-    $state['active_wallet_value'] = max(0.0, (float)($state['cash_left'] ?? 0.0)) + $state['holding_value'];
-    $state['principal_active_equity'] = round($state['active_wallet_value'], 8);
-    $state['principal_active_excess'] = round(max(0.0, $state['active_wallet_value'] - $principal), 8);
-    $state['principal_next_lock_needed'] = round(max(0.0, $threshold - $state['principal_active_excess']), 8);
-    return $state;
-}
-
 function updateBoundaryModelTraderState(
     string $statePath,
     string $boundaryTime,
@@ -11163,6 +8521,7 @@ function updateBoundaryModelTraderState(
         'last_signal_action' => 'NO TRADE',
         'last_executed_action' => 'NO TRADE',
         'last_executed_boundary' => null,
+        'allocated_phase_action' => 'NO TRADE',
         'allocated_phase_hour' => null,
         'signal_history' => [],
         'alternation_control' => [
@@ -11262,15 +8621,24 @@ function updateBoundaryModelTraderState(
         $state['last_executed_action'] = $latestExecutedAction;
         $state['last_executed_boundary'] = $latestExecutedTime !== '' ? $latestExecutedTime : null;
     }
-    // Retired: phase/hour allocation is incompatible with one independent
-    // action per five-minute boundary. Keep legacy keys neutral for old states.
-    $state['last_regime_trade_hour'] = null;
+    if (!array_key_exists('allocated_phase_action', $decodedState)) {
+        $lastModelAction = strtoupper(trim((string)($state['last_signal_action'] ?? 'NO TRADE')));
+        $state['allocated_phase_action'] = $latestExecutedAction === $lastModelAction
+            ? $latestExecutedAction
+            : 'NO TRADE';
+        $state['allocated_phase_hour'] = $state['allocated_phase_action'] !== 'NO TRADE' && $latestExecutedTime !== ''
+            ? substr($latestExecutedTime, 0, 13)
+            : null;
+        $state['last_regime_trade_hour'] = $state['allocated_phase_hour'];
+    }
     if ($latestExecutedTime === '' && count($state['trades']) === 0) {
         // Migrate old request-only states that incorrectly consumed an hourly
         // allocation even though no BUY or SELL ever executed.
         $state['last_executed_action'] = 'NO TRADE';
         $state['last_executed_boundary'] = null;
-                $state['last_regime_trade_hour'] = null;
+        $state['allocated_phase_action'] = 'NO TRADE';
+        $state['allocated_phase_hour'] = null;
+        $state['last_regime_trade_hour'] = null;
         foreach ($state['events_by_time'] as $eventTime => $event) {
             if (!is_array($event) || (($event['executed'] ?? false) === true)) continue;
             if (str_contains(strtoupper((string)($event['label'] ?? '')), 'ALREADY ALLOCATED')) {
@@ -11285,10 +8653,6 @@ function updateBoundaryModelTraderState(
         static fn($value): bool => $value === 'BUY' || $value === 'SELL'
     ));
     $state['rebuy_pending'] = (bool)($state['rebuy_pending'] ?? false);
-    $state['realized_support_edge'] = is_numeric($state['realized_support_edge'] ?? null)
-        ? (float)$state['realized_support_edge']
-        : 0.0;
-    $state['support_cycles_completed'] = max(0, (int)($state['support_cycles_completed'] ?? 0));
     $state['starting_pot'] = max(0.0, (float)($state['starting_pot'] ?? $startingPot));
     $state['cash_left'] = max(0.0, (float)($state['cash_left'] ?? $state['starting_pot']));
     $state['asset_units'] = max(0.0, (float)($state['asset_units'] ?? 0.0));
@@ -11302,17 +8666,6 @@ function updateBoundaryModelTraderState(
     $state['fixed_trade_amount'] = max(0.0, (float)($state['fixed_trade_amount'] ?? $initialTradeAmount));
     $state['buy_multiplier'] = max(0.0, $buyMultiplier);
     $state['sell_multiplier'] = max(0.0, $sellMultiplier);
-    // Canonical matched-cycle break contracts. These values control the exact
-    // SELL target above each BUY and the exact rebuy target below each SELL.
-    $state['configured_buy_break_percent'] = min(25.0, max(0.01, isset($break_buy_drop_pct) ? (float)$break_buy_drop_pct : 0.50));
-    $state['configured_sell_gain_percent'] = min(25.0, max(0.01, isset($break_take_gain_pct) ? (float)$break_take_gain_pct : 0.50));
-    $state['consistency_audit_schema'] = 'global-breaks-boundary-isolated-v1';
-    // Reprice every existing BUY lot and SELL-funded rebuy reserve against the
-    // current global controls before any voter, sizing, or execution check.
-    $state['open_lots'] = paperWalletOpenLots($state);
-    $state['pending_rebuys'] = paperWalletPendingRebuys($state);
-    $state['pending_rebuy_total'] = round(array_sum(array_column($state['pending_rebuys'], 'remaining_amount')), 8);
-    $state['rebuy_pending'] = count($state['pending_rebuys']) > 0;
     $state['stop_loss_percent'] = max(0.0, (float)($state['stop_loss_percent'] ?? $stopLossPercent));
     // Refresh persisted sizing so changed BUY multiplier settings are used;
     // SELL applies its own multiplier at execution time below.
@@ -11377,16 +8730,7 @@ function updateBoundaryModelTraderState(
         $existingBoundaryEvent = $boundaryTime !== '' && is_array($state['events_by_time'][$boundaryTime] ?? null)
             ? $state['events_by_time'][$boundaryTime]
             : null;
-        $existingBoundaryExecuted = is_array($existingBoundaryEvent)
-            && (float)($existingBoundaryEvent['executed_amount'] ?? 0.0) > 0.0;
-        $existingBoundaryAction = is_array($existingBoundaryEvent)
-            ? strtoupper(trim((string)($existingBoundaryEvent['action'] ?? $existingBoundaryEvent['model_action'] ?? 'NO TRADE')))
-            : 'NO TRADE';
-        $sellDensityRetryEligible = (($riskMetricContext['sell_density_accumulation_triggered'] ?? false) === true)
-            && strtoupper(trim((string)($riskMetricContext['sell_density_accumulation_action'] ?? 'NO TRADE'))) === 'BUY'
-            && !$existingBoundaryExecuted
-            && $existingBoundaryAction !== 'BUY';
-        $boundaryAlreadyDecided = is_array($existingBoundaryEvent) && !$sellDensityRetryEligible;
+        $boundaryAlreadyDecided = is_array($existingBoundaryEvent);
         $processRegimeEntryNow = $immediateRegimeEntry
             && $boundaryTime !== ''
             && !$boundaryAlreadyDecided;
@@ -11397,8 +8741,6 @@ function updateBoundaryModelTraderState(
                 'asset_cost_basis', 'first_buy_amount', 'first_buy_units', 'first_buy_price',
                 'total_bought_units', 'total_bought_amount', 'total_sold_units',
                 'total_sold_amount', 'active_trade_start_wallet', 'rebuy_pending',
-                'pending_rebuys', 'pending_rebuy_total',
-                'realized_support_edge', 'support_cycles_completed',
                 'last_trade', 'last_trade_result', 'last_trade_pnl', 'realized_move',
                 'wins', 'losses', 'trades',
             ] as $accountingField) {
@@ -11410,14 +8752,10 @@ function updateBoundaryModelTraderState(
                 $action = $fallbackAction;
             }
             $previousSignalAction = strtoupper(trim((string)($state['last_signal_action'] ?? 'NO TRADE')));
-            $eligibleRebuy = function_exists('paperWalletEligibleRebuy')
-                ? paperWalletEligibleRebuy($state, $currentPrice)
-                : null;
-            $forcedRebuy = is_array($eligibleRebuy)
-                && (float)$state['cash_left'] >= $minimumFunds;
-            $rebuyAmount = $forcedRebuy
-                ? min((float)$eligibleRebuy['remaining_amount'], (float)$state['cash_left'])
-                : 0.0;
+            $forcedRebuy = $state['rebuy_pending'] === true
+                && (float)$state['asset_units'] <= 0.00000001
+                && (float)$state['cash_left'] >= 5000.0;
+            $rebuyAmount = $forcedRebuy ? min(5000.0, (float)$state['cash_left']) : 0.0;
             $cashOutCashKittyReserve = max(0.0, (float)($state['cash_out_cash_kitty_reserve'] ?? 5000.0));
             $cashOutAssetRefillAvailable = max(0.0, (float)$state['cash_left'] - $cashOutCashKittyReserve);
             $cashOutRefillPending = (($state['cash_out_refill_pending'] ?? false) === true)
@@ -11457,8 +8795,8 @@ function updateBoundaryModelTraderState(
                 }
             }
             $phaseAction = ($action === 'BUY' || $action === 'SELL') ? $action : 'NO TRADE';
-            $executionGateState = ($spiralGuardPaused && $phaseAction === 'SELL')
-                ? 'SPIRAL_GUARD_SELL_PAUSED'
+            $executionGateState = $spiralGuardPaused
+                ? 'SPIRAL_GUARD_PAUSED'
                 : ($forcedStopSell
                     ? 'FORCED_STOP'
                     : ($forcedRebuy
@@ -11490,16 +8828,18 @@ function updateBoundaryModelTraderState(
                 // move or reserve anything in the wallet.
                 $allocatedPhaseAction = 'NO TRADE';
                 $allocatedPhaseHour = '';
-                                        $state['last_regime_trade_hour'] = null;
+                $state['allocated_phase_action'] = 'NO TRADE';
+                $state['allocated_phase_hour'] = null;
+                $state['last_regime_trade_hour'] = null;
             }
-            // Each five-minute boundary is its own trading opportunity.
-            // Same-direction marks may execute again on later boundaries; the
-            // boundary idempotency key prevents duplicates within one mark.
             $newRegimeHour = $regimeActive
+                && $allocatedPhaseAction === $phaseAction
                 && $regimeHourKey !== ''
                 && $allocatedPhaseHour !== $regimeHourKey;
-            $phaseAlreadyAllocated = false;
-            $phaseEntry = $phaseAction !== 'NO TRADE';
+            $phaseAlreadyAllocated = $phaseAction !== 'NO TRADE'
+                && $allocatedPhaseAction === $phaseAction
+                && (!$regimeActive || !$newRegimeHour);
+            $phaseEntry = $phaseAction !== 'NO TRADE' && !$phaseAlreadyAllocated;
             if ($forcedRebuy || ($cashOutRefillPending && $phaseAction === 'BUY')) $phaseEntry = true;
             if ($modelPhaseChanged) {
                 $state['signal_history'][] = $phaseAction;
@@ -11531,24 +8871,21 @@ function updateBoundaryModelTraderState(
                 'reason' => (string)($riskMetricContext['alternation_reason'] ?? 'UNSCORED'),
                 'forward_only' => true,
             ];
-            // Each five-minute boundary is an independent opportunity.
-            // Duplicate calls inside the same boundary are stopped by idempotency.
+            // A run is one phase: execute only on its first BUY/SELL call.
+            // Later identical calls are informational HOLDs, not duplicate trades.
             $phaseHoldReason = '';
             if ($idempotencyAlreadyConsumed) {
                 $phaseHoldReason = 'HOLD · IDEMPOTENCY KEY ALREADY SET';
                 $action = 'NO TRADE';
-            } elseif ($spiralGuardPaused && $phaseAction === 'SELL' && !$forcedStopSell) {
-                $phaseHoldReason = 'HOLD SELL · SPIRAL GUARD · '
+            } elseif ($spiralGuardPaused && ($phaseAction === 'BUY' || $phaseAction === 'SELL')) {
+                $phaseHoldReason = 'HOLD · SPIRAL GUARD · '
                     . (string)($state['spiral_guard']['reason'] ?? 'DRAWDOWN PAUSE');
                 $action = 'NO TRADE';
-            } elseif (!$forcedRebuy && !$forcedStopSell
-                && ($alternationBlocked && $phaseAction !== 'SELL')
-            ) {
-                // Alternation is evidence for the audit voter, not a hidden BUY veto.
-                // Keep the BUY selected so the frozen three-voter room can make the
-                // definitive strategy decision for this five-minute mark.
-                $state['alternation_control']['would_have_blocked_buy'] = true;
-                $state['alternation_control']['execution_policy'] = 'VOTER_EVIDENCE_ONLY';
+            } elseif (!$forcedRebuy && !$forcedStopSell && ($alternationBlocked || $phaseAlreadyAllocated)) {
+                $phaseHoldReason = $alternationBlocked
+                    ? 'HOLD · ALTERNATION UNVERIFIED'
+                    : 'HOLD · SAME PHASE ALREADY ALLOCATED';
+                $action = 'NO TRADE';
             }
             $sneakEligible = is_array($sneakProfile)
                 && (($sneakProfile['eligible'] ?? false) === true)
@@ -11559,225 +8896,13 @@ function updateBoundaryModelTraderState(
             $sneakFactor = $sneakEligible && is_numeric($sneakProfile['factor'] ?? null)
                 ? max(0.10, min(1.00, (float)$sneakProfile['factor']))
                 : 1.0;
-            $lossSpreeThreshold = max(1, min(50, (int)($riskMetricContext['loss_buy_spree_percent'] ?? 10)));
-            $lossSpreeLookback = 4;
-            $lossSpreeAverageCost = ((float)($state['asset_units'] ?? 0.0) > 1e-12)
-                ? ((float)($state['asset_cost_basis'] ?? 0.0) / (float)$state['asset_units']) : 0.0;
-            $lossSpreeAverageCostDropPercent = ($lossSpreeAverageCost > 0.0 && $currentPrice < $lossSpreeAverageCost)
-                ? (($lossSpreeAverageCost - $currentPrice) / $lossSpreeAverageCost) * 100.0 : 0.0;
-
-            // The loss BUY override now evaluates exactly four completed candles.
-            // The first completed candle open is compared with the newest completed
-            // candle close. The stronger of this four-candle decline and the
-            // inventory-average decline controls the configured integer threshold.
-            $lossSpreeCandles = is_array($riskMetricContext['loss_buy_spree_candles'] ?? null)
-                ? array_values($riskMetricContext['loss_buy_spree_candles']) : [];
-            $lossSpreeCandles = array_slice($lossSpreeCandles, -$lossSpreeLookback);
-            $lossSpreeFourOpen = is_numeric($lossSpreeCandles[0]['open'] ?? null)
-                ? (float)$lossSpreeCandles[0]['open'] : 0.0;
-            $lossSpreeFourClose = $lossSpreeCandles && is_numeric($lossSpreeCandles[count($lossSpreeCandles) - 1]['close'] ?? null)
-                ? (float)$lossSpreeCandles[count($lossSpreeCandles) - 1]['close'] : 0.0;
-            $lossSpreeFourDropPercent = ($lossSpreeFourOpen > 0.0 && $lossSpreeFourClose < $lossSpreeFourOpen)
-                ? (($lossSpreeFourOpen - $lossSpreeFourClose) / $lossSpreeFourOpen) * 100.0 : 0.0;
-            $lossSpreeDropPercent = max($lossSpreeAverageCostDropPercent, $lossSpreeFourDropPercent);
-            $lossSpreeTriggerSource = $lossSpreeFourDropPercent >= $lossSpreeAverageCostDropPercent
-                ? 'FOUR_CANDLE_OPEN_TO_CLOSE' : 'GLOBAL_AVERAGE_COST';
-            $lossSpreeTriggered = count($lossSpreeCandles) === $lossSpreeLookback
-                && $lossSpreeDropPercent + 1e-9 >= $lossSpreeThreshold;
-            $state['loss_buy_spree'] = [
-                'triggered' => $lossSpreeTriggered,
-                'threshold_percent' => $lossSpreeThreshold,
-                'lookback_candles' => $lossSpreeLookback,
-                'completed_candles_seen' => count($lossSpreeCandles),
-                'drop_percent' => round($lossSpreeDropPercent, 6),
-                'average_cost_drop_percent' => round($lossSpreeAverageCostDropPercent, 6),
-                'four_candle_drop_percent' => round($lossSpreeFourDropPercent, 6),
-                'four_candle_open' => round($lossSpreeFourOpen, 8),
-                'four_candle_close' => round($lossSpreeFourClose, 8),
-                'trigger_source' => $lossSpreeTriggerSource,
-                'average_cost' => round($lossSpreeAverageCost, 8),
-                'current_price' => round($currentPrice, 8),
-                'gain_multiplier' => round(max(0.10, (float)($riskMetricContext['loss_buy_spree_gain_multiplier'] ?? $sellMultiplier)), 4),
-                'average_trade_amount' => round(max($minimumFunds, (float)($riskMetricContext['loss_buy_spree_average_amount'] ?? $initialTradeAmount)), 8),
-            ];
-            if ($lossSpreeTriggered && !$forcedStopSell) {
-                // COMPLETE BUY AUTHORITY: once the configured integer loss threshold
-                // is reached, this BUY bypasses every strategy vote and soft BUY gate.
-                // Hard operational protections still apply at sizing/submission time.
-                $phaseAction = 'BUY';
-                $action = 'BUY';
-                $phaseEntry = true;
-                $phaseHoldReason = '';
-                $executionGateState = 'LOSS_BUY_SPREE_OVERRIDE';
-                $boundaryExecutionIdempotencyKey = paperExecutionIdempotencyKey(
-                    $riskMetricContext,
-                    $boundaryTime,
-                    'BUY',
-                    $executionGateState
-                );
-                $idempotencyAlreadyConsumed = is_array(
-                    $state['execution_idempotency_keys'][$boundaryExecutionIdempotencyKey] ?? null
-                );
-                if (!$idempotencyAlreadyConsumed) {
-                    $state['loss_buy_spree_override_active'] = true;
-                    $state['loss_buy_spree_execution_authority'] = true;
-                    $state['loss_buy_spree_strategy_vote_required'] = false;
-                    $state['loss_buy_spree_override_reason'] = 'LOSS BUY SPREE COMPLETE OVERRIDE · '
-                        . number_format($lossSpreeDropPercent, 2)
-                        . '% DROP · 4 COMPLETED CANDLES · SOURCE ' . $lossSpreeTriggerSource
-                        . ' · TRIGGER ' . $lossSpreeThreshold . '%';
-                    // A previously recorded non-fill for this same boundary must not
-                    // suppress the newly-qualified BUY override.
-                    $existingBoundaryEvent = $state['events_by_time'][$boundaryTime] ?? null;
-                    if (is_array($existingBoundaryEvent) && (($existingBoundaryEvent['executed'] ?? false) !== true)) {
-                        unset($state['events_by_time'][$boundaryTime]);
-                    }
-                } else {
-                    $phaseHoldReason = 'HOLD · LOSS BUY SPREE ALREADY EXECUTED FOR THIS MARK';
-                    $action = 'NO TRADE';
-                    $phaseEntry = false;
-                }
-            }
-
-            // Definitive strategy decision room. All strategy checks vote here once.
-            // After this point, only operational hard gates may stop an approved order.
-            $preVoteLotEligibility = function_exists('paperWalletLotsEligibleToSell')
-                ? paperWalletLotsEligibleToSell($state, $currentPrice)
-                : ['eligible_units' => (float)($state['asset_units'] ?? 0.0), 'reasons' => []];
-            $eligibleUnitsForVote = max(0.0, (float)($preVoteLotEligibility['eligible_units'] ?? 0.0));
-            // Boundary isolation: never let a previous mark's frozen room leak
-            // into this timestamp before the new room is built.
-            $state['trade_decision_room'] = null;
-            $state['trade_decision_banks'] = [];
-            $state['trade_decision_yes_votes'] = 0;
-            $state['trade_decision_total_voters'] = 3;
-            $state['trade_decision_required_votes'] = 2;
-            $state['trade_decision_approved'] = false;
-
-            $tradeDecisionRoom = buildThreeVoterDecisionRoom(
-                $phaseAction,
-                $eligibleUnitsForVote,
-                $riskMetricContext,
-                [
-                    'locked_action' => $phaseAction,
-                    'open_lot_count' => function_exists('paperWalletOpenLots') ? count(paperWalletOpenLots($state)) : 0,
-                    'holding_value' => (float)($state['asset_units'] ?? 0.0) * $currentPrice,
-                    'lot_break_percent' => (float)($preVoteLotEligibility['global_break_percent'] ?? 0.0),
-                    'lot_average_entry' => (float)($preVoteLotEligibility['global_average_entry'] ?? 0.0),
-                    'lot_target_price' => (float)($preVoteLotEligibility['global_target_price'] ?? 0.0),
-                    'lot_current_price' => (float)($preVoteLotEligibility['global_current_price'] ?? $currentPrice),
-                    'lot_move_percent' => (float)($preVoteLotEligibility['global_move_percent'] ?? 0.0),
-                ]
-            );
-            $tradeDecisionBanks = $tradeDecisionRoom['voters'];
-            $tradeDecisionYesVotes = (int)$tradeDecisionRoom['yes_votes'];
-            $tradeDecisionApproved = (($tradeDecisionRoom['approved'] ?? false) === true);
-            $state['trade_decision_room'] = $tradeDecisionRoom;
-            $state['trade_decision_banks'] = $tradeDecisionBanks;
-            $state['trade_decision_yes_votes'] = $tradeDecisionYesVotes;
-            $state['trade_decision_total_voters'] = (int)$tradeDecisionRoom['total_voters'];
-            $state['trade_decision_required_votes'] = (int)$tradeDecisionRoom['required_votes'];
-            $state['trade_decision_approved'] = $tradeDecisionApproved;
-
-            if (($state['loss_buy_spree_execution_authority'] ?? false) === true
-                && !$idempotencyAlreadyConsumed
-                && !$forcedStopSell
-            ) {
-                // The threshold itself is the authority. Preserve the room for
-                // explanation, but do not require its votes to approve this BUY.
-                $tradeDecisionApproved = true;
-                $action = 'BUY';
-                $phaseAction = 'BUY';
-                $phaseEntry = true;
-                $phaseHoldReason = '';
-                $state['trade_decision_approved'] = true;
-                $state['trade_decision_override'] = 'LOSS_BUY_SPREE';
-                $state['trade_decision_override_reason'] = (string)($state['loss_buy_spree_override_reason'] ?? 'LOSS BUY SPREE COMPLETE OVERRIDE');
-                if (is_array($state['trade_decision_room'] ?? null)) {
-                    $state['trade_decision_room']['approved'] = true;
-                    $state['trade_decision_room']['action'] = 'BUY';
-                    $state['trade_decision_room']['authority'] = 'LOSS_BUY_SPREE_COMPLETE_OVERRIDE';
-                    $state['trade_decision_room']['vote_required'] = false;
-                    $state['trade_decision_room']['final_reason'] = $state['trade_decision_override_reason'];
-                }
-            }
-
-            // FINAL STRATEGY AUTHORITY: once the frozen room has at least two YES
-            // votes for BUY or SELL, preserve that exact action through every later
-            // strategy stage. Only hard operational gates may stop submission.
-            if ($tradeDecisionApproved) {
-                $approvedRoomAction = strtoupper(trim((string)($tradeDecisionRoom['action'] ?? $phaseAction)));
-                if ($approvedRoomAction === 'BUY' || $approvedRoomAction === 'SELL') {
-                    $action = $approvedRoomAction;
-                    $phaseAction = $approvedRoomAction;
-                    $phaseEntry = true;
-                    $phaseHoldReason = '';
-                    $state['two_vote_execution_authority'] = true;
-                    $state['two_vote_execution_action'] = $approvedRoomAction;
-                    $state['two_vote_execution_reason'] = 'FROZEN 2-OF-3 APPROVAL';
-                }
-            }
-
             $saleBlockedByEdge = false;
             if (!$forcedStopSell && $action === 'SELL' && $state['position'] === 'long' && (float)$state['asset_units'] > 0.0) {
                 $averageCost = (float)$state['asset_cost_basis'] / max(0.00000001, (float)$state['asset_units']);
                 $minimumSellPrice = $averageCost * (1.0 + (MIN_SELL_EDGE_PERCENT / 100.0));
-                $belowPooledEdge = $currentPrice < $minimumSellPrice;
-                // The pooled edge is one bank, not a unilateral veto. The protected
-                // per-lot break remains mandatory below.
-                if ($belowPooledEdge && !$tradeDecisionApproved) {
+                if ($currentPrice < $minimumSellPrice) {
                     $saleBlockedByEdge = true;
                     $action = 'NO TRADE';
-                }
-            }
-            $sessionHigh = is_numeric($state['session_high_price'] ?? null) ? (float)$state['session_high_price'] : 0.0;
-            if ($currentPrice > $sessionHigh) $sessionHigh = $currentPrice;
-            $state['session_high_price'] = $sessionHigh;
-            $dropFromHighPct = ($sessionHigh > 0.0) ? max(0.0, (($sessionHigh - $currentPrice) / $sessionHigh) * 100.0) : 0.0;
-            $state['drop_from_high_percent'] = $dropFromHighPct;
-            if (function_exists('paperWalletOpenLots')) $state['open_lots'] = paperWalletOpenLots($state);
-            $buyPct = min(25.0, max(0.01, (float)($state['configured_buy_break_percent'] ?? (isset($break_buy_drop_pct) ? (float)$break_buy_drop_pct : 0.50))));
-            if ($phaseAction === 'BUY' && !$forcedRebuy && !$cashOutRefillPending) {
-                $state['buy_break_percent'] = $buyPct;
-                $state['buy_drop_from_high_percent'] = $dropFromHighPct;
-                $state['buy_break_met'] = ($dropFromHighPct + 1e-9 >= $buyPct);
-                if (!$state['buy_break_met']) {
-                    // The center-down break is descriptive evidence for ordinary
-                    // signal BUYs. It remains mandatory only for a matched
-                    // sell-funded rebuy, whose own target is enforced by
-                    // paperWalletEligibleRebuy(). A 2-of-3 approved BUY must not be
-                    // silently converted to NO TRADE here.
-                    $state['buy_break_reason'] = 'CENTER-DOWN ' . number_format($dropFromHighPct, 3)
-                        . '% BELOW REQUESTED ' . number_format($buyPct, 3) . '%';
-                    if (!$tradeDecisionApproved) {
-                        $phaseHoldReason = 'HOLD · BUY VOTE NOT APPROVED · ' . $state['buy_break_reason'];
-                        $action = 'NO TRADE';
-                        $phaseEntry = false;
-                    }
-                }
-            }
-            if (function_exists('paperWalletLotsEligibleToSell')) {
-                $lotEligibility = paperWalletLotsEligibleToSell($state, $currentPrice);
-                $state['lot_sell_eligible_units'] = round((float)$lotEligibility['eligible_units'], 12);
-                $state['lot_sell_reasons'] = $lotEligibility['reasons'];
-                if ($phaseAction === 'SELL' && $state['position'] === 'long' && (float)($state['asset_units'] ?? 0.0) > 0.0) {
-                    if ((float)$lotEligibility['eligible_units'] <= 1e-12) {
-                        if (!$tradeDecisionApproved) {
-                            $phaseHoldReason = 'HOLD · NO LOT MET BREAK YET (' . count(paperWalletOpenLots($state)) . ' open lots)';
-                            $action = 'NO TRADE'; $phaseAction = 'NO TRADE'; $phaseEntry = false;
-                            $state['sell_blocked_by_percent'] = true;
-                        } else {
-                            // The lot bank is the single dissenting bank. A 2-of-3
-                            // approval must remain executable instead of becoming a
-                            // hidden mandatory lot veto.
-                            $state['sell_bank_override_active'] = true;
-                            $state['sell_bank_override_reason'] = '2-OF-3 APPROVED · LOT BANK DISSENT OVERRIDDEN';
-                            $phaseHoldReason = '';
-                            $action = 'SELL';
-                            $phaseAction = 'SELL';
-                            $phaseEntry = true;
-                        }
-                    }
                 }
             }
             $state['last_signal_action'] = $phaseAction;
@@ -11802,13 +8927,11 @@ function updateBoundaryModelTraderState(
                 ? 'REQUEST ONLY · KITTY UNCHANGED'
                 : 'CONFIDENCE HOLD · ' . (string)($state['confidence_bell_curve']['reason'] ?? 'HOLD');
             if ($spiralGuardPaused) {
-                $state['hourly_bell_curve_status'] = $bellCurveAction === 'SELL'
-                    ? 'SELL PAUSED · SPIRAL GUARD · BUYS ENABLED · KITTY UNCHANGED'
-                    : 'SPIRAL GUARD ACTIVE · BUYS ENABLED · KITTY UNCHANGED';
+                $state['hourly_bell_curve_status'] = 'PAUSED · SPIRAL GUARD · KITTY UNCHANGED';
             }
             $state['display_action'] = $action === 'NO TRADE'
                 ? ($spiralGuardPaused
-                    ? 'SELLS PAUSED · BUYS ENABLED'
+                    ? 'PAUSED · SPIRAL GUARD'
                     : ($saleBlockedByEdge ? 'HOLD LONG · SALE BELOW EDGE' : ($state['position'] === 'long' ? 'HOLD LONG' : 'WATCHING')))
                 : ($forcedStopSell
                     ? ('STOP SELL @ -' . number_format($stopLossTriggerPercent, 2) . '%')
@@ -11849,8 +8972,7 @@ function updateBoundaryModelTraderState(
                     'realized_pnl' => null,
                     'requested_amount' => $heldSizing['requested_amount'],
                     'available_amount' => $heldSizing['available_amount'],
-                    'shortfall' => round(max(0.0, (float)$heldSizing['requested_amount'] - (float)$heldSizing['available_amount']), 8),
-                    'blocked_amount' => round(min((float)$heldSizing['requested_amount'], (float)$heldSizing['available_amount']), 8),
+                    'shortfall' => $heldSizing['requested_amount'],
                     'entry_price' => is_numeric($state['entry_price'] ?? null) ? (float)$state['entry_price'] : null,
                     'exit_price' => null,
                 ];
@@ -11881,13 +9003,7 @@ function updateBoundaryModelTraderState(
                     'realized_pnl' => null,
                     'requested_amount' => $blockedSellRequested,
                     'available_amount' => $blockedSellAvailable,
-                    'shortfall' => round(max(0.0, $blockedSellRequested - $blockedSellAvailable), 8),
-                    'blocked_amount' => round(min($blockedSellRequested, $blockedSellAvailable), 8),
-                    'decision_yes_votes' => $tradeDecisionYesVotes,
-                    'decision_required_votes' => (int)($tradeDecisionRoom['required_votes'] ?? 2),
-                    'decision_total_voters' => (int)($tradeDecisionRoom['total_voters'] ?? 3),
-                    'decision_banks' => $tradeDecisionBanks,
-                    'decision_room' => $tradeDecisionRoom,
+                    'shortfall' => $blockedSellRequested,
                     'entry_price' => $averageCost ?? null,
                     'exit_price' => $currentPrice,
                 ];
@@ -11909,23 +9025,10 @@ function updateBoundaryModelTraderState(
                     $sellBaseAmount *= $sneakFactor;
                 }
                 $sellBaseAmount = exchangeFloorTradeRequestAmount('SELL', $sellBaseAmount, $minimumFunds);
-                if (function_exists('paperWalletLotsEligibleToSell')) {
-                    $lotEligibility = paperWalletLotsEligibleToSell($state, $currentPrice);
-                    $eligibleLotUnits = max(0.0, (float)($lotEligibility['eligible_units'] ?? 0.0));
-                    $approvedSellAuthority = threeVoterDecisionApprovesAction($state, 'SELL', is_array($tradeDecisionRoom ?? null) ? $tradeDecisionRoom : null);
-                    if ($approvedSellAuthority) {
-                        $eligibleLotUnits = $unitsHeldBefore;
-                    }
-                    // With 2-of-3 approval, all held units are available to FIFO;
-                    // otherwise only globally break-eligible holdings are available.
-                    $sellAvailableAmount = min($unitsHeldBefore, $eligibleLotUnits) * $currentPrice;
-                    $state['lot_sell_reasons'] = $lotEligibility['reasons'] ?? [];
-                } else {
-                    $sellAvailableAmount = $unitsHeldBefore * $currentPrice;
-                }
+                $sellAvailableAmount = $unitsHeldBefore * $currentPrice;
                 $sellSizing = canonicalTradeSizing('SELL', $sellBaseAmount, $sellAvailableAmount, $minimumFunds, $minimumFundsSource);
                 $sellSizing['phase_step_multiplier'] = $aheadSigns;
-                $sellFill = resolvePaperOrSandboxFill(
+                $sellFill = paperExecutionFill(
                     'SELL',
                     (float)$sellSizing['requested_amount'],
                     $sellAvailableAmount,
@@ -11934,96 +9037,13 @@ function updateBoundaryModelTraderState(
                     $unitsHeldBefore,
                     true
                 );
-                $sellUnits = (float)($sellFill['units'] ?? 0.0);
-                $sellAmount = (float)($sellFill['executed_amount'] ?? 0.0);
-                $proposedSellUnits = max(0.0, (float)($sellFill['proposed_units'] ?? $sellUnits));
-                $brokerRequiredAndRejected = (($sellFill['broker_acceptance_required'] ?? false) === true)
-                    && (($sellFill['broker_accepted'] ?? false) !== true);
-                // The frozen decision room is the sole strategy authority.
-                // Do not depend on a mutable state flag that can be normalized or
-                // overwritten before execution. A 2-of-3 approved SELL explicitly
-                // authorizes FIFO lot consumption even when the lot voter dissents.
-                $bankSellOverride = threeVoterDecisionApprovesAction($state, 'SELL', is_array($tradeDecisionRoom ?? null) ? $tradeDecisionRoom : null); // A frozen 2-of-3 SELL is final strategy authority.
-                $state['sell_bank_override_active'] = $bankSellOverride;
-                if ($bankSellOverride) {
-                    $state['sell_bank_override_reason'] = 'FROZEN 2-OF-3 DECISION ROOM APPROVAL';
-                    $state['trade_circle_authority'] = 'DECISION_ROOM_FINAL';
-                    $state['trade_circle_stage'] = 'SELL_SIZING_AND_FIFO';
-                    $state['trading_engine_schema'] = 'canonical-three-voter-circle-v2';
-                }
-                $lotPreview = function_exists('paperWalletPreviewSellLots')
-                    ? paperWalletPreviewSellLots($state, $proposedSellUnits, $currentPrice, $bankSellOverride)
-                    : ['sold_units' => 0.0, 'cost_portion' => 0.0, 'lot_results' => []];
-                $sellUnits = min($sellUnits, max(0.0, (float)$lotPreview['sold_units']));
-                $costPortion = max(0.0, (float)$lotPreview['cost_portion']);
+                $sellUnits = (float)$sellFill['units'];
+                $sellAmount = (float)$sellFill['executed_amount'];
+                $costPortion = $unitsHeldBefore > 0.0
+                    ? $costBasisBefore * ($sellUnits / $unitsHeldBefore)
+                    : 0.0;
                 $realizedPnl = (float)$sellFill['net_cash_amount'] - $costPortion;
-                $globalSellTarget = max(0.0, (float)($lotEligibility['global_target_price'] ?? 0.0));
-                $actualSellFillPrice = max(0.0, (float)($sellFill['fill_price'] ?? 0.0));
-                $fillBelowGlobalBreak = !$bankSellOverride
-                    && $globalSellTarget > 0.0
-                    && $actualSellFillPrice + 1.0e-12 < $globalSellTarget;
-                $netBreakBlocked = $proposedSellUnits <= 0.0
-                    || (float)($lotPreview['sold_units'] ?? 0.0) <= 0.0
-                    || $fillBelowGlobalBreak
-                    || (!$bankSellOverride && (float)($sellFill['proposed_net_cash_amount'] ?? $sellFill['net_cash_amount'] ?? 0.0) + 1.0e-8 < $costPortion);
-                if ($brokerRequiredAndRejected) {
-                    $state['events_by_time'][$boundaryTime] = canonicalBlockedTradeEvent(
-                        'SELL',
-                        'SELL BLOCKED · BROKER ORDER NOT ACCEPTED · ' . trim((string)($sellFill['broker_message'] ?? 'NO BROKER RESPONSE')),
-                        (float)($sellFill['requested_amount'] ?? 0.0),
-                        (float)($sellFill['available_amount'] ?? 0.0),
-                        [
-                            'broker_provider' => (string)($sellFill['broker_provider'] ?? ''),
-                            'broker_mode' => (string)($sellFill['broker_mode'] ?? ''),
-                            'broker_message' => (string)($sellFill['broker_message'] ?? ''),
-                            'proposed_units' => $proposedSellUnits,
-                            'lot_results' => $lotPreview['lot_results'] ?? [],
-                        ]
-                    );
-                    $state['display_action'] = 'HOLD LONG · BROKER ORDER NOT ACCEPTED';
-                } elseif ($netBreakBlocked) {
-                    $state['events_by_time'][$boundaryTime] = [
-                        'action' => 'SELL',
-                        'label' => $bankSellOverride
-                            ? 'SELL BLOCKED · NO SELLABLE LOT UNITS AFTER AGGREGATE FIFO MAPPING'
-                            : 'SELL WAITING · FEWER THAN 2 VOTES OR GLOBAL BREAK NOT REACHED',
-                        'class' => 'result-neutral-cell',
-                        'executed' => false,
-                        'amount' => 0.0,
-                        'realized_pnl' => null,
-                        'preview_realized_pnl' => $realizedPnl,
-                        'requested_amount' => $sellFill['requested_amount'],
-                        'available_amount' => $sellFill['available_amount'],
-                        'shortfall' => round(max(0.0, (float)$sellFill['requested_amount'] - (float)$sellFill['available_amount']), 8),
-                        'blocked_amount' => round(min((float)$sellFill['requested_amount'], (float)$sellFill['available_amount']), 8),
-                        'entry_price' => $sellUnits > 0.0 ? ($costPortion / $sellUnits) : null,
-                        'exit_price' => (float)$sellFill['fill_price'],
-                        'lot_results' => $lotPreview['lot_results'],
-                        'global_sell_target' => $globalSellTarget,
-                        'actual_fill_price' => $actualSellFillPrice,
-                        'fill_below_global_break' => $fillBelowGlobalBreak,
-                    ];
-                    $state['display_action'] = 'HOLD LONG · LOT MUST MEET BREAK AFTER FEES';
-                } elseif (!$forcedStopSell && realizedProfitBelowMinimum($realizedPnl)) {
-                    $state['events_by_time'][$boundaryTime] = [
-                        'action' => 'SELL',
-                        'label' => minimumRealizedProfitLabel($realizedPnl),
-                        'class' => 'result-neutral-cell',
-                        'executed' => false,
-                        'amount' => 0.0,
-                        'realized_pnl' => null,
-                        'preview_realized_pnl' => round($realizedPnl, 8),
-                        'minimum_realized_profit' => minimumRealizedProfitAmount(),
-                        'profit_remaining' => round(max(0.0, minimumRealizedProfitAmount() - $realizedPnl), 8),
-                        'requested_amount' => $sellFill['requested_amount'],
-                        'available_amount' => $sellFill['available_amount'],
-                        'shortfall' => 0.0,
-                        'blocked_amount' => round(min((float)$sellFill['requested_amount'], (float)$sellFill['available_amount']), 8),
-                        'entry_price' => $sellUnits > 0.0 ? ($costPortion / $sellUnits) : null,
-                        'exit_price' => (float)$sellFill['fill_price'],
-                    ];
-                    $state['display_action'] = minimumRealizedProfitLabel($realizedPnl);
-                } elseif (sellLossExceedsHardLimit($realizedPnl)) {
+                if (sellLossExceedsHardLimit($realizedPnl)) {
                     $state['events_by_time'][$boundaryTime] = [
                         'action' => 'SELL',
                         'label' => sellLossLimitLabel($realizedPnl),
@@ -12041,7 +9061,7 @@ function updateBoundaryModelTraderState(
                         'exit_price' => (float)$sellFill['fill_price'],
                     ];
                     $state['display_action'] = 'HOLD LONG · LOSS LIMIT $' . number_format(abs((float)MAX_REALIZED_SELL_LOSS_AMOUNT), 2);
-                } elseif (!REALIZE_LOSS_TRADES && $realizedPnl < 0.0 && !$bankSellOverride) {
+                } elseif (!REALIZE_LOSS_TRADES && $realizedPnl < 0.0) {
                     $state['events_by_time'][$boundaryTime] = [
                         'action' => 'SELL',
                         'label' => 'SELL BLOCKED · LOSS PROTECTION',
@@ -12051,8 +9071,7 @@ function updateBoundaryModelTraderState(
                         'realized_pnl' => null,
                         'requested_amount' => $sellFill['requested_amount'],
                         'available_amount' => $sellFill['available_amount'],
-                        'shortfall' => round(max(0.0, (float)$sellFill['requested_amount'] - (float)$sellFill['available_amount']), 8),
-                        'blocked_amount' => round(min((float)$sellFill['requested_amount'], (float)$sellFill['available_amount']), 8),
+                        'shortfall' => $sellFill['requested_amount'],
                         'entry_price' => $sellUnits > 0.0 ? ($costPortion / $sellUnits) : null,
                         'exit_price' => (float)$sellFill['fill_price'],
                     ];
@@ -12080,29 +9099,12 @@ function updateBoundaryModelTraderState(
                     $state['last_trade'] = $trade;
                     $state['realized_move'] += $realizedPnl;
                     $state['cash_left'] += (float)$sellFill['net_cash_amount'];
-                    if (function_exists('paperWalletConsumeSellLots')) {
-                        $lotConsumption = paperWalletConsumeSellLots($state, $sellUnits, $currentPrice, $bankSellOverride);
-                        $state = $lotConsumption['state'];
-                        $sellUnits = (float)$lotConsumption['sold_units'];
-                        $costPortion = (float)$lotConsumption['cost_portion'];
-                        $trade['lot_results'] = $lotConsumption['lot_results'];
-                    }
-                    if (function_exists('paperWalletRecordSellFundedRebuy')) {
-                        $state = paperWalletRecordSellFundedRebuy(
-                            $state,
-                            $sellFill,
-                            is_array($trade['lot_results'] ?? null) ? $trade['lot_results'] : [],
-                            $buyMultiplier,
-                            (string)$boundaryTime,
-                            isset($break_buy_drop_pct) ? (float)$break_buy_drop_pct : null
-                        );
-                    }
                     $state['asset_units'] = max(0.0, $unitsHeldBefore - $sellUnits);
                     $state['asset_cost_basis'] = max(0.0, $costBasisBefore - $costPortion);
                     $state['total_sold_units'] += $sellUnits;
                     $state['total_sold_amount'] += $sellAmount;
                     $walletDrained = paperWalletIsDrained((float)$state['asset_units'], $currentPrice, $executionContext);
-                    // Sell-funded rebuy remains pending whether the wallet is fully drained or not.
+                    $state['rebuy_pending'] = $walletDrained;
                     if ($walletDrained) {
                         $state['asset_dust_units'] = (float)$state['asset_units'];
                         $state['asset_dust_value'] = (float)$state['asset_units'] * $currentPrice;
@@ -12157,22 +9159,15 @@ function updateBoundaryModelTraderState(
                         'amount' => 0.0,
                         'requested_amount' => $sellFill['requested_amount'],
                         'available_amount' => $sellFill['available_amount'],
-                        'shortfall' => round(max(0.0, (float)$sellFill['requested_amount'] - (float)$sellFill['available_amount']), 8),
-                        'blocked_amount' => round(min((float)$sellFill['requested_amount'], (float)$sellFill['available_amount']), 8),
+                        'shortfall' => $sellFill['requested_amount'],
                         'realized_pnl' => null,
                         'entry_price' => $averageCost ?? null,
                         'exit_price' => (float)$sellFill['fill_price'],
                     ];
                 }
             } elseif ($action === 'BUY'
-                && ($forcedRebuy
-                    ? (float)$state['cash_left']
-                    : max(0.0, (float)$state['cash_left'] - (float)($state['pending_rebuy_total'] ?? 0.0))) >= $minimumFunds
+                && $state['cash_left'] >= $minimumFunds
             ) {
-                $reservedRebuyCash = max(0.0, (float)($state['pending_rebuy_total'] ?? 0.0));
-                $buyCashAvailable = $forcedRebuy
-                    ? min((float)$state['cash_left'], max(0.0, (float)($eligibleRebuy['remaining_amount'] ?? 0.0)))
-                    : max(0.0, (float)$state['cash_left'] - $reservedRebuyCash);
                 $entryWallet = (float)$state['cash_left'] + ((float)$state['asset_units'] * $currentPrice);
                 $buyAmount = $bellCurveActive && $bellCurveBuyAmount > 0.0
                     ? $bellCurveBuyAmount
@@ -12183,26 +9178,18 @@ function updateBoundaryModelTraderState(
                             : ($state['fixed_trade_amount'] > 0.0
                                 ? (float)$state['fixed_trade_amount'] * max(0.0, $buyMultiplier)
                                 : (float)$state['cash_left'])));
-                if (($state['loss_buy_spree_override_active'] ?? false) === true) {
-                    $lossSpreeGainMultiplier = max(0.10, (float)($riskMetricContext['loss_buy_spree_gain_multiplier'] ?? $sellMultiplier));
-                    $lossSpreeAverageAmount = max($minimumFunds, (float)($riskMetricContext['loss_buy_spree_average_amount'] ?? $initialTradeAmount));
-                    $buyAmount = $lossSpreeGainMultiplier * $lossSpreeAverageAmount;
-                    $state['loss_buy_spree']['requested_amount'] = round($buyAmount, 8);
-                    $state['loss_buy_spree']['formula'] = 'gain_multiplier × average_trade_amount';
-                }
                 $buySequenceMultiplier = $regimeActive ? 1 : ($sequenceEnabled ? max(1, (int)($sequenceSignal['trade_count'] ?? 1)) : 1);
                 $buyAmount *= $buySequenceMultiplier;
                 if ($sneakEligible) {
                     $buyAmount *= $sneakFactor;
                 }
                 $buyAmount = exchangeFloorTradeRequestAmount('BUY', $buyAmount, $minimumFunds);
-                $buyAmount = min($buyAmount, $buyCashAvailable);
-                $buySizing = canonicalTradeSizing('BUY', $buyAmount, $buyCashAvailable, $minimumFunds, $minimumFundsSource);
+                $buySizing = canonicalTradeSizing('BUY', $buyAmount, (float)$state['cash_left'], $minimumFunds, $minimumFundsSource);
                 $buySizing['phase_step_multiplier'] = $buySequenceMultiplier;
-                $buyFill = resolvePaperOrSandboxFill(
+                $buyFill = paperExecutionFill(
                     'BUY',
                     (float)$buySizing['requested_amount'],
-                    $buyCashAvailable,
+                    (float)$state['cash_left'],
                     $currentPrice,
                     $executionContext,
                     0.0,
@@ -12212,9 +9199,7 @@ function updateBoundaryModelTraderState(
                 $buyUnits = (float)$buyFill['units'];
                 if (($buyFill['eligible'] ?? false) === true && $buyUnits > 0.0) {
                     $trade = array_merge($buyFill, [
-                        'action' => (($state['loss_buy_spree_execution_authority'] ?? false) === true
-                            ? 'LOSS BUY SPREE OVERRIDE'
-                            : ($sneakEligible ? 'SNEAK BUY' : 'BUY ENTERED')) . ($sequenceEnabled ? ' SEQUENCE' : ''),
+                        'action' => ($sneakEligible ? 'SNEAK BUY' : 'BUY ENTERED') . ($sequenceEnabled ? ' SEQUENCE' : ''),
                         'side' => 'BUY',
                         'trade_side' => 'BUY',
                         'executed' => true,
@@ -12241,28 +9226,7 @@ function updateBoundaryModelTraderState(
                     $state['entry_time'] = $boundaryTime;
                     $state['total_bought_units'] += $buyUnits;
                     $state['total_bought_amount'] += $buyAmount;
-                    if (function_exists('paperWalletRecordBuyLot')) {
-                        $state = paperWalletRecordBuyLot($state, $buyUnits, (float)($buyFill['fill_price'] ?? $currentPrice), $buyAmount, isset($boundaryTime) ? (string)$boundaryTime : '', (float)($state['session_high_price'] ?? $currentPrice), ($forcedRebuy && is_array($eligibleRebuy ?? null)) ? (string)($eligibleRebuy['id'] ?? '') : null);
-                    }
-                    $capturedSupportEdge = 0.0;
-                    if ($forcedRebuy && function_exists('paperWalletConsumeRebuyReserve')) {
-                        $sourceSellPrice = max(0.0, (float)($eligibleRebuy['sell_price'] ?? 0.0));
-                        $actualRebuyPrice = max(0.0, (float)($buyFill['fill_price'] ?? $currentPrice));
-                        $capturedSupportEdge = max(0.0, ($sourceSellPrice - $actualRebuyPrice) * $buyUnits);
-                        $state['realized_support_edge'] = round(
-                            max(0.0, (float)($state['realized_support_edge'] ?? 0.0)) + $capturedSupportEdge,
-                            8
-                        );
-                        $state['support_cycles_completed'] = max(0, (int)($state['support_cycles_completed'] ?? 0)) + 1;
-                        $eligibleIds = is_array($eligibleRebuy['ids'] ?? null)
-                            ? array_values(array_map('strval', $eligibleRebuy['ids']))
-                            : [(string)($eligibleRebuy['id'] ?? '')];
-                        $state = paperWalletConsumeEligibleRebuyReserves($state, $eligibleIds, abs((float)$buyFill['cash_delta']));
-                        $state['last_rebuy_source_sell_id'] = (string)($eligibleRebuy['id'] ?? '');
-                        $state['last_rebuy_target_price'] = (float)($eligibleRebuy['target_price'] ?? 0.0);
-                        $state['last_rebuy_amount'] = $buyAmount;
-                        $state['last_rebuy_support_edge'] = round($capturedSupportEdge, 8);
-                    }
+                    if ($forcedRebuy) $state['rebuy_pending'] = false;
                     if ($cashOutRefillPending) {
                         $state['cash_out_refill_pending'] = false;
                         $state['cash_out_refilled_at'] = $boundaryTime;
@@ -12285,27 +9249,18 @@ function updateBoundaryModelTraderState(
                     }
                     $state['events_by_time'][$boundaryTime] = array_merge($buyFill, [
                         'action' => 'BUY',
-                        'label' => $forcedRebuy
-                            ? ('SELL-FUNDED REBUY · RESERVED $' . number_format($buyAmount, 2)
-                                . ' · SOLD @ $' . number_format((float)($eligibleRebuy['sell_price'] ?? 0.0), 4)
-                                . ' · BOUGHT @ $' . number_format((float)($buyFill['fill_price'] ?? $currentPrice), 4)
-                                . ' · CONCURRENT RESERVES ' . max(1, (int)($eligibleRebuy['concurrent_count'] ?? 1))
-                                . ' · SUPPORT CAPTURE +$' . number_format($capturedSupportEdge, 2))
-                            : ($cashOutRefillPending
+                        'label' => $cashOutRefillPending
                             ? 'CASH OUT REFILL BUY · MAX $5,000 ASSET · $5K CASH RESERVED'
                             : ($sneakEligible
                             ? 'SNEAK BUY x' . number_format($sneakFactor, 2)
                             : (($sequenceEnabled
                                 ? 'BUY SEQUENCE x' . (int)($sequenceSignal['trade_count'] ?? 1) . ' (' . number_format((float)($sequenceSignal['accuracy'] ?? 0.0), 1) . '%)'
-                                : 'BUY ENTERED')))),
+                                : 'BUY ENTERED'))),
                         'class' => 'result-neutral-cell',
                         'executed' => true,
                         'amount' => $buyAmount,
                         'units' => $buyUnits,
                         'realized_pnl' => null,
-                        'captured_support_edge' => round($capturedSupportEdge, 8),
-                        'support_edge_total' => round((float)($state['realized_support_edge'] ?? 0.0), 8),
-                        'support_cycles_completed' => (int)($state['support_cycles_completed'] ?? 0),
                         'entry_price' => (float)$buyFill['fill_price'],
                         'exit_price' => null,
                     ]);
@@ -12402,8 +9357,7 @@ function updateBoundaryModelTraderState(
                     'realized_pnl' => null,
                     'requested_amount' => $blockedSellSizing['requested_amount'],
                     'available_amount' => $blockedSellSizing['available_amount'],
-                    'shortfall' => round(max(0.0, (float)$blockedSellSizing['requested_amount'] - (float)$blockedSellSizing['available_amount']), 8),
-                    'blocked_amount' => round(min((float)$blockedSellSizing['requested_amount'], (float)$blockedSellSizing['available_amount']), 8),
+                    'shortfall' => $blockedSellSizing['requested_amount'],
                     'entry_price' => is_numeric($state['entry_price'] ?? null) ? (float)$state['entry_price'] : null,
                     'exit_price' => $currentPrice,
                 ];
@@ -12411,74 +9365,20 @@ function updateBoundaryModelTraderState(
             }
 
             if (!is_array($state['events_by_time'][$boundaryTime] ?? null)) {
-                $fallbackEventAction = ($tradeDecisionApproved && $phaseAction === 'SELL') ? 'SELL' : $phaseAction;
-                $fallbackAvailable = $fallbackEventAction === 'SELL'
-                    ? (float)$state['asset_units'] * $currentPrice
-                    : (float)$state['cash_left'];
-                $fallbackRequested = ($fallbackEventAction === 'BUY' || $fallbackEventAction === 'SELL')
-                    ? requestedPaperTradeAmountForAction(
-                        $fallbackEventAction,
-                        (float)$state['fixed_trade_amount'],
-                        $sellMultiplier,
-                        (int)($sequenceSignal['trade_count'] ?? 1),
-                        $regimeActive,
-                        $bellCurveBuyAmount,
-                        $bellCurveSellAmount,
-                        $forcedRebuy,
-                        $rebuyAmount,
-                        $sneakEligible,
-                        $sneakFactor,
-                        $buyMultiplier
-                    )
-                    : 0.0;
-                $fallbackRequested = ($fallbackEventAction === 'BUY' || $fallbackEventAction === 'SELL')
-                    ? exchangeFloorTradeRequestAmount($fallbackEventAction, $fallbackRequested, $minimumFunds)
-                    : 0.0;
-                $fallbackSizing = canonicalTradeSizing(
-                    $fallbackEventAction === 'BUY' ? 'BUY' : 'SELL',
-                    $fallbackRequested,
-                    $fallbackAvailable,
-                    $minimumFunds,
-                    $minimumFundsSource
-                );
                 $state['events_by_time'][$boundaryTime] = [
-                    'action' => $fallbackEventAction,
-                    'label' => ($tradeDecisionApproved && $fallbackEventAction === 'SELL')
-                        ? 'SELL APPROVED · EXECUTION PATH DID NOT RETURN A FILL'
-                        : ($fallbackEventAction === 'BUY' || $fallbackEventAction === 'SELL'
-                            ? $fallbackEventAction . ' SELECTED · EXECUTION EVENT MISSING'
-                            : 'NO ACTION SELECTED'),
+                    'action' => $phaseAction,
+                    'label' => 'WAITING FOR LONG',
                     'class' => 'result-neutral-cell',
                     'executed' => false,
                     'amount' => 0.0,
-                    'requested_amount' => (float)$fallbackSizing['requested_amount'],
-                    'available_amount' => (float)$fallbackSizing['available_amount'],
-                    'shortfall' => round(max(0.0, (float)$fallbackSizing['requested_amount'] - (float)$fallbackSizing['available_amount']), 8),
-                    'blocked_amount' => round(min((float)$fallbackSizing['requested_amount'], (float)$fallbackSizing['available_amount']), 8),
+                    'requested_amount' => 0.0,
+                    'available_amount' => $phaseAction === 'SELL'
+                        ? (float)$state['asset_units'] * $currentPrice
+                        : (float)$state['cash_left'],
                     'realized_pnl' => null,
                     'entry_price' => is_numeric($state['entry_price'] ?? null) ? (float)$state['entry_price'] : null,
-                    'exit_price' => $fallbackEventAction === 'SELL' ? $currentPrice : null,
+                    'exit_price' => null,
                 ];
-            }
-            if (is_array($state['events_by_time'][$boundaryTime] ?? null)) {
-                $state['events_by_time'][$boundaryTime]['boundary_time'] = $boundaryTime;
-                $state['events_by_time'][$boundaryTime]['locked_template_action'] = $phaseAction;
-                $state['events_by_time'][$boundaryTime]['event_action'] = strtoupper(trim((string)($state['events_by_time'][$boundaryTime]['action'] ?? 'NO TRADE')));
-            }
-            $decisionRoom = is_array($state['trade_decision_room'] ?? null)
-                ? $state['trade_decision_room']
-                : [];
-            if ($decisionRoom && is_array($state['events_by_time'][$boundaryTime] ?? null)) {
-                $roomLabel = threeVoterDecisionRoomLabel($decisionRoom, true);
-                $eventLabel = trim((string)($state['events_by_time'][$boundaryTime]['label'] ?? ''));
-                if ($roomLabel !== '' && !str_contains($eventLabel, (string)($decisionRoom['summary'] ?? ''))) {
-                    $state['events_by_time'][$boundaryTime]['label'] = trim(
-                        $eventLabel . ($eventLabel !== '' ? ' · ' : '') . $roomLabel
-                    );
-                }
-                $state['events_by_time'][$boundaryTime]['decision_room'] = $decisionRoom;
-                $state['events_by_time'][$boundaryTime]['decision_banks'] = $decisionRoom['voters'] ?? [];
-                $state['events_by_time'][$boundaryTime]['decision_final_reason'] = $decisionRoom['final_reason'] ?? '';
             }
             $alternationControl = is_array($state['alternation_control'] ?? null)
                 ? $state['alternation_control']
@@ -12500,7 +9400,7 @@ function updateBoundaryModelTraderState(
                 $state['events_by_time'][$boundaryTime]['alternation_control'] = $alternationControl;
             }
             if (($riskMetricContext['compression_candle_branch_flip_active'] ?? false) === true) {
-                $compressionFlipLabel = 'COMPRESSION CANDLE AUDIT '
+                $compressionFlipLabel = 'COMPRESSION CANDLE FLIP '
                     . strtoupper(trim((string)($riskMetricContext['compression_pre_flip_action'] ?? 'NO TRADE')))
                     . '→'
                     . strtoupper(trim((string)($riskMetricContext['compression_candle_branch_action'] ?? 'NO TRADE')))
@@ -12514,12 +9414,10 @@ function updateBoundaryModelTraderState(
                 }
             }
             if (($riskMetricContext['late_wrong_mark_flip_active'] ?? false) === true) {
-                $lateWrongFrom = strtoupper(trim((string)($riskMetricContext['late_wrong_mark_pre_flip_action'] ?? 'NO TRADE')));
-                $lateWrongTo = strtoupper(trim((string)($riskMetricContext['late_wrong_mark_flip_action'] ?? 'NO TRADE')));
-                $lateWrongRelation = $lateWrongFrom === $lateWrongTo ? 'CONFIRMS' : 'SUGGESTS';
-                $lateWrongFlipLabel = 'LATE WRONG MARK AUDIT '
-                    . $lateWrongRelation . ' '
-                    . $lateWrongTo
+                $lateWrongFlipLabel = 'LATE WRONG MARK FLIP '
+                    . strtoupper(trim((string)($riskMetricContext['late_wrong_mark_pre_flip_action'] ?? 'NO TRADE')))
+                    . '→'
+                    . strtoupper(trim((string)($riskMetricContext['late_wrong_mark_flip_action'] ?? 'NO TRADE')))
                     . ' @ +6M';
                 $eventLabel = trim((string)($state['events_by_time'][$boundaryTime]['label'] ?? ''));
                 if ($eventLabel === '' || !str_contains($eventLabel, $lateWrongFlipLabel)) {
@@ -12601,11 +9499,16 @@ function updateBoundaryModelTraderState(
                 $executedAction = strtoupper(trim((string)($boundaryEvent['action'] ?? 'NO TRADE')));
                 $state['last_executed_action'] = $executedAction;
                 $state['last_executed_boundary'] = $boundaryTime;
+                $state['allocated_phase_action'] = $executedAction;
+                $state['allocated_phase_hour'] = $regimeHourKey !== '' ? $regimeHourKey : null;
+                $state['last_regime_trade_hour'] = $regimeActive && $regimeHourKey !== ''
+                    ? $regimeHourKey
+                    : null;
                 $state['hourly_bell_curve_executed_amount'] = $bellCurveActive
                     ? (float)($boundaryEvent['executed_amount'] ?? 0.0)
                     : 0.0;
                 $state['hourly_bell_curve_status'] = $bellCurveActive
-                    ? 'EXECUTED · RESERVED $' . number_format(max(0.0, (float)($state['reserved_cash'] ?? 0.0)), 2)
+                    ? 'EXECUTED · RESERVED $0.00'
                     : 'INACTIVE';
             } else {
                 // A request, HOLD, or safety block is not an escrow operation.
@@ -12638,7 +9541,7 @@ function updateBoundaryModelTraderState(
                 : 0.0;
             $state['hourly_bell_curve_reserved_amount'] = 0.0;
             $state['hourly_bell_curve_status'] = (($existingBoundaryEvent['executed'] ?? false) === true)
-                ? 'EXECUTED · RESERVED $' . number_format(max(0.0, (float)($state['reserved_cash'] ?? 0.0)), 2)
+                ? 'EXECUTED · RESERVED $0.00'
                 : 'REQUEST ONLY · KITTY UNCHANGED';
         }
 
@@ -12652,9 +9555,7 @@ function updateBoundaryModelTraderState(
 
     $state['holding_value'] = (float)$state['asset_units'] * max(0.0, $currentPrice);
     $state['open_pnl'] = (float)$state['holding_value'] - (float)$state['asset_cost_basis'];
-    $state['active_wallet_value'] = max(0.0, (float)$state['cash_left']) + max(0.0, (float)$state['holding_value']);
-    $state['external_kitty_total'] = paperWalletExternalKittyTotal($state);
-    $state = normalizePaperWalletTotals($state);
+    $state['equity_value'] = (float)$state['cash_left'] + (float)$state['holding_value'];
     $state['net_pnl'] = (float)$state['equity_value'] - (float)$state['starting_pot'];
     $state['reserved_cash'] = 0.0;
     $state['reserved_asset_units'] = 0.0;
@@ -12677,8 +9578,6 @@ function updateBoundaryModelTraderState(
     $state['accuracy_independent_of_execution'] = true;
     $state['current_price'] = $currentPrice;
     $state['observed_time'] = $boundaryTime;
-    $state = applyPrincipalIncomeLock($state, $currentPrice, $boundaryTime, $executionContext, 50.0);
-    $state = normalizePaperWalletTotals($state, $currentPrice);
     $state = applyPortfolioBenchmark($state, $currentPrice);
     $state = applySpiralDownCircuitBreaker(
         $state,
@@ -12687,10 +9586,8 @@ function updateBoundaryModelTraderState(
         $riskMetricContext
     );
     if (($state['spiral_guard']['paused'] ?? false) === true) {
-        $state['spiral_guard']['blocks_actions'] = ['SELL'];
-        $state['spiral_guard']['buy_enabled'] = true;
-        $state['display_action'] = 'SELLS PAUSED · BUYS ENABLED';
-        $state['hourly_bell_curve_status'] = 'SPIRAL GUARD ACTIVE · SELLS PAUSED · BUYS ENABLED · KITTY UNCHANGED';
+        $state['display_action'] = 'PAUSED · SPIRAL GUARD';
+        $state['hourly_bell_curve_status'] = 'PAUSED · SPIRAL GUARD · KITTY UNCHANGED';
     }
     $state['paper_only'] = true;
     $state['live_orders'] = false;
@@ -13067,7 +9964,7 @@ $accuracy_total = 0;
 $accuracy_wrong = 0;
 $accuracy_passed = 0;
 $accuracy_class = 'medium';
-$accuracy_note = '0 RIGHT / 0 WRONG / 0 TOTAL • UNSCORED • LATEST VISIBLE RESOLVED ONLY';
+$accuracy_note = '0 RIGHT / 0 WRONG / 0 TOTAL • UNSCORED • VERIFIED FORWARD ONLY';
 $completed_candle = completedCandleDirection($actual_data_path);
 $current_cngn_guess = currentCngnGuess((string)$rets_sofar[0]);
 $internal_agreement = internalAgreementStatsFromTableHtml((string)$rets_sofar[0], ONE_HOUR_CANDLE_COUNT);
@@ -13149,8 +10046,6 @@ $paper_execution_context = buildPaperExecutionContext(
     is_array($market_quote) ? $market_quote : [],
     $coinbase_product_rules
 );
-$paper_execution_context['symbol'] = strtoupper($ticker);
-$paper_execution_context['broker_health_url'] = detectedIndexBaseUrl() . '?broker_health=1';
 $paper_minimum_trade_funds = max(
     MIN_TRADE_AMOUNT,
     (float)($paper_execution_context['minimum_funds'] ?? MIN_TRADE_AMOUNT)
@@ -13201,16 +10096,6 @@ if ($carry_forward_reset_time === '' && !file_exists($dir . $ticker . '-forward-
     if ($loop_update_allowed) {
         saveLocalJsonArray($carry_forward_reset_path, [
             'symbol' => $ticker,
-    'sell_density_accumulation_triggered' => (($sell_density_accumulation['triggered'] ?? false) === true),
-    'sell_density_accumulation_action' => $sell_density_action,
-    'sell_density_override_active' => $sell_density_action === 'BUY',
-    'sell_density_sell_count' => (int)($sell_density_accumulation['sell_count'] ?? 0),
-    'sell_density_sample_count' => (int)($sell_density_accumulation['sample_count'] ?? 0),
-    'sell_density_percent' => (float)($sell_density_accumulation['sell_density_percent'] ?? 0.0),
-    'sell_density_move_percent' => (float)($sell_density_accumulation['move_percent'] ?? 0.0),
-    'sell_density_threshold_percent' => (float)($sell_density_accumulation['threshold_percent'] ?? 0.0),
-    'sell_density_stage_multiplier' => (float)($sell_density_accumulation['stage_multiplier'] ?? 1.0),
-    'sell_density_reason' => (string)($sell_density_accumulation['reason'] ?? ''),
             'market_type' => $market_type,
             'started_at' => $carry_forward_reset_time,
             'created_at' => gmdate('Y-m-d\TH:i:s\Z'),
@@ -13227,15 +10112,11 @@ $early_locked_forecasts = $loop_update_allowed
         0
     )
     : (is_array($guess_history_state['forecasts'] ?? null) ? $guess_history_state['forecasts'] : []);
-$locked_current_guess = applyHourlyLockedFlipTemplate(
-    normalizeCngnGuess(
-        is_array($early_locked_forecasts[$early_boundary_key] ?? null)
-            && isStrictForwardForecast($early_locked_forecasts[$early_boundary_key], $early_boundary_key)
-            ? $early_locked_forecasts[$early_boundary_key]
-            : null
-    ),
-    $early_boundary_key,
-    $early_locked_forecasts
+$locked_current_guess = normalizeCngnGuess(
+    is_array($early_locked_forecasts[$early_boundary_key] ?? null)
+        && isStrictForwardForecast($early_locked_forecasts[$early_boundary_key], $early_boundary_key)
+        ? $early_locked_forecasts[$early_boundary_key]
+        : null
 );
 $guess_state = $loop_update_allowed
     ? updateGuessHistory($guess_history_path, $completed_candle, $locked_current_guess)
@@ -13498,18 +10379,6 @@ $verified_audit_forecasts = array_filter(
 $hour_audit_guesses = cachedGuessesForHour($hour_audit_candles, $verified_audit_forecasts, []);
 $hour_audit_summary = buildHourAuditSummary($ticker, $hour_audit_candles, $hour_audit_guesses);
 $hour_audit_table_html = renderHourAuditTable($hour_audit_summary);
-// At :05, establish the remaining hour's exact template directions and candle
-// geometry from the completed adjusted audit.  The returned ledger replaces
-// the in-memory copy immediately so the chart does not wait for another reload.
-$depth_locked_forecasts = lockHourlyAuditDepthProfile(
-    $guess_history_path,
-    $current_boundary_epoch,
-    $hour_audit_summary
-);
-if ($depth_locked_forecasts) {
-    $forecast_by_time = $depth_locked_forecasts;
-}
-
 $hour_audit_guess = $hour_audit_summary['guess_accuracy'] ?? ['right' => 0, 'wrong' => 0, 'percent' => 0.0];
 $hour_audit_strategy = $hour_audit_summary['strategy'] ?? ['wins' => 0, 'losses' => 0, 'net_pnl' => 0.0];
 $hour_audit_long = $hour_audit_summary['long'] ?? ['wins' => 0, 'losses' => 0, 'net_pnl' => 0.0];
@@ -13550,9 +10419,6 @@ $make_guess_candle = static function (string $time, float $open, ?array $guess, 
     $direction = ($stored_direction === '+' || $stored_direction === '-')
         ? $stored_direction
         : newGuessDirectionFromPair($symbol);
-
-    // Every hourly mark is inverted once when its timestamp is locked.
-    // Do not flip it again while rendering; chart, table and execution share one action.
     if ($direction !== '+' && $direction !== '-') {
         if ($symbol !== '%') return null;
         return [
@@ -13570,19 +10436,13 @@ $make_guess_candle = static function (string $time, float $open, ?array $guess, 
         ];
     }
     $storedChange = guessStoredChange($guess, $latent_guess_change);
-    $profileBody = isset($guess['audit_body_depth']) && is_numeric($guess['audit_body_depth'])
-        ? abs((float)$guess['audit_body_depth']) : 0.0;
-    $change = $profileBody > 0.0 ? $profileBody : $storedChange;
-    $upperWick = isset($guess['audit_upper_wick_depth']) && is_numeric($guess['audit_upper_wick_depth'])
-        ? max(0.0, (float)$guess['audit_upper_wick_depth']) : ($change * .12);
-    $lowerWick = isset($guess['audit_lower_wick_depth']) && is_numeric($guess['audit_lower_wick_depth'])
-        ? max(0.0, (float)$guess['audit_lower_wick_depth']) : ($change * .12);
+    $change = $storedChange;
     $close = $open + ($direction === '+' ? $change : -$change);
     return [
         'time' => $time,
         'open' => $open,
-        'high' => max($open, $close) + $upperWick,
-        'low' => min($open, $close) - $lowerWick,
+        'high' => max($open, $close) + ($change * .12),
+        'low' => min($open, $close) - ($change * .12),
         'close' => $close,
         'direction' => $direction,
         'symbol' => $symbol,
@@ -13592,13 +10452,6 @@ $make_guess_candle = static function (string $time, float $open, ?array $guess, 
         'stored_change' => $storedChange,
         'elasticity_basis' => 'CURRENT_AVERAGE_MOVE',
         'elasticity_step' => abs($average_change) > 0.00000001 ? abs($average_change) : $storedChange,
-        'mark_position' => hourlyFiveMinuteMark($time),
-        'mark_flipped' => !empty($guess['hourly_template_flipped']),
-        'audit_depth_profile_locked' => !empty($guess['audit_depth_profile_locked']),
-        'audit_depth_profile_hour' => (string)($guess['audit_depth_profile_hour'] ?? ''),
-        'audit_depth_source_time' => (string)($guess['audit_depth_source_time'] ?? ''),
-        'audit_upper_wick_depth' => $upperWick,
-        'audit_lower_wick_depth' => $lowerWick,
         'forming' => $forming,
     ];
 };
@@ -13633,9 +10486,9 @@ for ($slotIndex = 0; $slotIndex < 6; $slotIndex++) {
         'phase' => $isCurrent ? 'current' : 'elapsed',
         'actual' => $actual,
         'guess' => $connected_guess,
-        'guessSymbol' => is_array($connected_guess) ? (string)($connected_guess['symbol'] ?? '%') : '%',
-        'guessPair' => is_array($connected_guess) ? (string)($connected_guess['pair'] ?? '%') : '%',
-        'guessAction' => is_array($connected_guess) ? (string)($connected_guess['action'] ?? 'NO TRADE') : 'NO TRADE',
+        'guessSymbol' => guessPairLabel(is_array($guess) ? $guess : null),
+        'guessPair' => guessPairLabel(is_array($guess) ? $guess : null),
+        'guessAction' => guessStoredAction(is_array($guess) ? $guess : null),
         'guessChange' => is_array($connected_guess) ? (float)($connected_guess['change'] ?? 0.0) : 0.0,
     ];
     if ($isCurrent && is_array($connected_guess)) $current_guess_close = (float)$connected_guess['close'];
@@ -13660,9 +10513,9 @@ for ($step = 1; $step <= TRADE_ANALYSIS_HORIZON; $step++) {
         'phase' => 'future',
         'actual' => null,
         'guess' => $guess_candle,
-        'guessSymbol' => is_array($guess_candle) ? (string)($guess_candle['symbol'] ?? '%') : '%',
-        'guessPair' => is_array($guess_candle) ? (string)($guess_candle['pair'] ?? '%') : '%',
-        'guessAction' => is_array($guess_candle) ? (string)($guess_candle['action'] ?? 'NO TRADE') : 'NO TRADE',
+        'guessSymbol' => guessPairLabel(is_array($future_guess) ? $future_guess : null),
+        'guessPair' => guessPairLabel(is_array($future_guess) ? $future_guess : null),
+        'guessAction' => guessStoredAction(is_array($future_guess) ? $future_guess : null),
         'guessChange' => is_array($guess_candle) ? (float)($guess_candle['change'] ?? 0.0) : 0.0,
     ];
     if (is_array($guess_candle)) $future_open = (float)$guess_candle['close'];
@@ -14072,7 +10925,7 @@ $resolved_results_by_time = $loop_update_allowed
     : (is_array($settled_results_state['results'] ?? null) ? $settled_results_state['results'] : []);
 $resolved_results_by_time = array_filter(
     $resolved_results_by_time,
-    static fn($result, $time): bool => is_array($result) && isResolvedGuessResult($result, (string)$time),
+    static fn($result, $time): bool => is_array($result) && isStrictForwardResult($result, (string)$time),
     ARRAY_FILTER_USE_BOTH
 );
 $verified_results_state = loadLocalJsonArray($settled_results_path);
@@ -14098,76 +10951,8 @@ foreach ($pair_stats as &$pair_stat) {
 unset($pair_stat);
 $forecast_observation_state = buildForecastObservationState($resolved_results_by_time);
 $late_wrong_mark_flip = buildLateWrongMarkFlipState($forecast_observation_state, time());
-
-// LIVE latest-12 accuracy: start from settled rows, then provisionally include
-// the current forming five-minute candle.  This keeps the dashboard current
-// instead of one mark behind.  The hourly template is already applied to the
-// stored forecast before this point; the 65% controller therefore evaluates
-// the template-adjusted current direction and may only modify unresolved marks.
-$settled_accuracy_total = (int)($forecast_observation_state['total'] ?? 0);
-$settled_accuracy_right = (int)($forecast_observation_state['right'] ?? 0);
-$live_accuracy_rows = $resolved_results_by_time;
-$current_live_guess = is_array($forecast_by_time[$early_boundary_key] ?? null)
-    ? normalizeCngnGuess($forecast_by_time[$early_boundary_key])
-    : $locked_current_guess;
-$current_live_direction = is_array($current_live_guess)
-    ? (string)($current_live_guess['direction'] ?? '')
-    : '';
-$current_live_candle = null;
-foreach ($candle_chart as $candidate_live_candle) {
-    if (!is_array($candidate_live_candle)) continue;
-    $candidate_epoch = yahooTimestamp((string)($candidate_live_candle['time'] ?? ''));
-    if ($candidate_epoch !== null && $candidate_epoch === $early_boundary_epoch) {
-        $current_live_candle = $candidate_live_candle;
-        break;
-    }
-}
-$live_current_included = false;
-if (is_array($current_live_candle)
-    && ($current_live_direction === '+' || $current_live_direction === '-')
-    && is_numeric($current_live_candle['open'] ?? null)
-    && is_numeric($current_live_candle['close'] ?? null)
-) {
-    $live_actual_direction = candleDirection(
-        (float)$current_live_candle['open'],
-        (float)$current_live_candle['close']
-    );
-    if ($live_actual_direction === '+' || $live_actual_direction === '-') {
-        $live_accuracy_rows[$early_boundary_key] = [
-            'time' => $early_boundary_key,
-            'target_open' => $early_boundary_key,
-            'predicted' => $current_live_direction,
-            'actual' => $live_actual_direction,
-            'right' => $current_live_direction === $live_actual_direction,
-            'pair' => guessPairLabel($current_live_guess),
-            'provisional' => true,
-            'forming' => true,
-            'source' => 'current-live-candle',
-        ];
-        $live_current_included = true;
-    }
-}
-uksort($live_accuracy_rows, static fn(string $left, string $right): int => strcmp($left, $right));
-if (count($live_accuracy_rows) > ONE_HOUR_CANDLE_COUNT) {
-    $live_accuracy_rows = array_slice($live_accuracy_rows, -ONE_HOUR_CANDLE_COUNT, null, true);
-}
-$accuracy_total = count($live_accuracy_rows);
-$accuracy_right = 0;
-foreach ($live_accuracy_rows as $live_accuracy_row) {
-    if (is_array($live_accuracy_row) && (($live_accuracy_row['right'] ?? false) === true)) {
-        $accuracy_right++;
-    }
-}
-$live_accuracy_percent = $accuracy_total > 0
-    ? round(($accuracy_right / $accuracy_total) * 100.0, 4)
-    : 0.0;
-$forecast_observation_state['live_right'] = $accuracy_right;
-$forecast_observation_state['live_wrong'] = max(0, $accuracy_total - $accuracy_right);
-$forecast_observation_state['live_total'] = $accuracy_total;
-$forecast_observation_state['live_percent'] = $live_accuracy_percent;
-$forecast_observation_state['live_current_included'] = $live_current_included;
-$forecast_observation_state['settled_right'] = $settled_accuracy_right;
-$forecast_observation_state['settled_total'] = $settled_accuracy_total;
+$accuracy_total = (int)($forecast_observation_state['total'] ?? 0);
+$accuracy_right = (int)($forecast_observation_state['right'] ?? 0);
 $internal_agreement = internalAgreementStatsFromResolvedTable($resolved_results_by_time, ONE_HOUR_CANDLE_COUNT);
 $pair_rule_state = buildHourlyPairDirectionState(
     $resolved_results_by_time,
@@ -14290,45 +11075,24 @@ if ($adaptive_complete_flip) {
 }
 $accuracy_historical = $accuracy;
 $accuracy_flipped = $adaptive_complete_flip;
-// The displayed Guess % and the 65% crossing controller use the exact live
-// latest-12 ratio. Bell evidence remains diagnostic only.
-$accuracy_effective = round($live_accuracy_percent, 2);
-
-// Confidence control owns only unresolved marks.  The existing SELL-density
-// pickup can still force BUY when repeated SELL positioning and the configured
-// cumulative loss threshold qualify.
-$confidence_hour_control = applyConfidenceControlledHourRemainder(
-    $guess_history_path,
-    $forecast_by_time,
-    $current_boundary_epoch,
-    $accuracy_effective,
-    66.0,
-    $loop_update_allowed,
-    $accuracy_right,
-    $accuracy_total
-);
-$forecast_by_time = is_array($confidence_hour_control['forecasts'] ?? null)
-    ? $confidence_hour_control['forecasts'] : $forecast_by_time;
-if (is_array($forecast_by_time[$early_boundary_key] ?? null)) {
-    $locked_current_guess = normalizeCngnGuess($forecast_by_time[$early_boundary_key]);
-    $display_current_guess = $locked_current_guess;
-}
-
+$accuracy_effective = round((float)($accuracy_bell_curve['effective_percent'] ?? $accuracy_historical), 2);
 $accuracy_class = $accuracy_total <= 0
     ? 'medium'
-    : ($accuracy_effective >= 66 ? 'good' : ($accuracy_effective >= 50 ? 'medium' : 'low'));
+    : ($accuracy_effective >= 65 ? 'good' : ($accuracy_effective >= 50 ? 'medium' : 'low'));
 $accuracy_note = $accuracy_total > 0
-    ? $accuracy_right . ' RIGHT / ' . $accuracy_wrong . ' WRONG / ' . $accuracy_total
-        . ' IN LIVE LATEST-' . ONE_HOUR_CANDLE_COUNT . ' WINDOW'
-        . ($live_current_included ? ' • CURRENT FORMING CANDLE INCLUDED' : ' • SETTLED ONLY')
-        . ' • GUESS ' . number_format($accuracy_effective, 2) . '%'
-        . ' • TARGET 80.00% • CONTROL 66.00%'
-        . ' • TEMPLATE-ADJUSTED LOCKED FORECASTS'
-        . ' • SETTLED ' . $settled_accuracy_right . '/' . $settled_accuracy_total
-        . ' • EXECUTION RESULTS EXCLUDED'
+    ? $accuracy_right . ' RIGHT / ' . $accuracy_wrong . ' WRONG / ' . $accuracy_total . ' TOTAL'
+        . ' • HISTORICAL ' . number_format($accuracy_historical, 2) . '%'
+        . ' • EFFECTIVE ' . number_format($accuracy_effective, 2) . '%'
+        . ($accuracy_flipped ? ' • FLIPPED' : '')
+        . ' • BELL ' . number_format((float)($accuracy_bell_curve['evidence_percent'] ?? 0.0), 1) . '%'
+        . ' · z ' . number_format((float)($accuracy_bell_curve['z_score'] ?? 0.0), 2)
+        . ' · ' . (string)($accuracy_bell_curve['reason'] ?? 'HOLD')
+        . ' • VERIFIED FORWARD OBSERVATIONS ONLY • TRADE EXECUTION IGNORED'
+        . ($legacy_historical_rows_excluded > 0 ? ' • LEGACY ' . $legacy_historical_rows_excluded . ' EXCLUDED' : '')
         . ($forward_unverified_rows_excluded > 0 ? ' • UNVERIFIED ' . $forward_unverified_rows_excluded . ' EXCLUDED' : '')
-    : '0 RIGHT / 0 WRONG / 0 RESOLVED IN LATEST-' . ONE_HOUR_CANDLE_COUNT . ' WINDOW'
-        . ' • GUESS UNSCORED • VERIFIED TIMESTAMP-LOCKED FORECASTS ONLY';
+    : '0 RIGHT / 0 WRONG / 0 TOTAL • UNSCORED • VERIFIED FORWARD OBSERVATIONS ONLY • TRADE EXECUTION IGNORED'
+        . ($legacy_historical_rows_excluded > 0 ? ' • LEGACY ' . $legacy_historical_rows_excluded . ' EXCLUDED' : '')
+        . ($forward_unverified_rows_excluded > 0 ? ' • UNVERIFIED ' . $forward_unverified_rows_excluded . ' EXCLUDED' : '');
 $compression_state = is_array($pair_rule_state['compression'] ?? null) ? $pair_rule_state['compression'] : [];
 $first_loop_compression_rows = [];
 foreach (historicalTimedCngnGuesses((string)$rets_sofar[0]) as $first_loop_guess) {
@@ -14612,32 +11376,7 @@ $execution_branch_trusted = $execution_bell_curve_source === 'FAMILY'
     && $execution_bell_curve_orientation === 'KEEP'
     && (float)($execution_bell_curve['effective_percent'] ?? 0.0) >= 85.0;
 $effective_execution_guess = is_array($locked_current_guess) ? $locked_current_guess : null;
-$autonomous_quick_flip_active = false;
-$autonomous_quick_flip_reason = '';
-$preFlipActionForAuto = is_array($effective_execution_guess) ? guessStoredAction($effective_execution_guess) : 'NO TRADE';
-$lateWrongPreview = is_array($late_wrong_mark_flip ?? null) ? $late_wrong_mark_flip : [];
-$lateWrongSuggestedAction = strtoupper(trim((string)($lateWrongPreview['flip_action'] ?? 'NO TRADE')));
-$lateWrongAuditActive = (($lateWrongPreview['active'] ?? false) === true)
-    && in_array($lateWrongSuggestedAction, ['BUY', 'SELL'], true);
-$lateWrongWouldFlip = false; // Audit evidence cannot mutate the locked executable action.
-$invertOrientation = isset($execution_bell_curve_orientation) && $execution_bell_curve_orientation === 'INVERT' && !empty($execution_bell_curve_eligible);
-$repeatLossDoom = false;
-if (isset($paper_wallet_state) && is_array($paper_wallet_state)) {
-    $lastRes = strtoupper(trim((string)($paper_wallet_state['last_trade_result'] ?? '')));
-    $lastAct = strtoupper(trim((string)(($paper_wallet_state['last_trade']['action'] ?? '') ?: ($paper_wallet_state['last_signal_action'] ?? ''))));
-    if ($lastRes === 'LOSS' && ($lastAct === 'BUY' || $lastAct === 'SELL') && $preFlipActionForAuto === $lastAct) $repeatLossDoom = true;
-}
-if (is_array($effective_execution_guess) && ($preFlipActionForAuto === 'BUY' || $preFlipActionForAuto === 'SELL') && ($invertOrientation || $repeatLossDoom)) {
-    $autonomous_quick_flip_active = true;
-    if ($invertOrientation) { $autonomous_quick_flip_reason = 'INVERT ORIENTATION'; $to = $preFlipActionForAuto === 'BUY' ? 'SELL' : 'BUY'; }
-    else { $autonomous_quick_flip_reason = 'REPEAT LOSS DOOM'; $to = $preFlipActionForAuto === 'BUY' ? 'SELL' : 'BUY'; }
-    $effective_execution_guess['direction'] = $to === 'BUY' ? '+' : '-';
-    $effective_execution_guess['action'] = $to;
-    $effective_execution_guess['quick_flip'] = true;
-    $effective_execution_guess['quick_flip_autonomous'] = true;
-    $effective_execution_guess['quick_flip_reason'] = $autonomous_quick_flip_reason;
-}
-if ($execution_inversion_active && $execution_bell_curve_eligible && is_array($effective_execution_guess) && empty($effective_execution_guess['quick_flip_autonomous'])) {
+if ($execution_inversion_active && $execution_bell_curve_eligible && is_array($effective_execution_guess)) {
     $storedExecutionDirection = (string)($effective_execution_guess['direction'] ?? '');
     if ($storedExecutionDirection === '+' || $storedExecutionDirection === '-') {
         $effective_execution_guess['direction'] = $storedExecutionDirection === '+' ? '-' : '+';
@@ -14650,32 +11389,26 @@ if ($late_wrong_mark_flip_action !== 'BUY' && $late_wrong_mark_flip_action !== '
     $late_wrong_mark_flip_action = 'NO TRADE';
 }
 $late_wrong_mark_pre_flip_action = guessStoredAction($effective_execution_guess);
-$late_wrong_mark_relation = ($late_wrong_mark_flip_active
-    && in_array($late_wrong_mark_pre_flip_action, ['BUY', 'SELL'], true)
-    && in_array($late_wrong_mark_flip_action, ['BUY', 'SELL'], true))
-        ? ($late_wrong_mark_pre_flip_action === $late_wrong_mark_flip_action ? 'CONFIRMS' : 'SUGGESTS')
-        : 'NONE';
 if ($late_wrong_mark_flip_active
     && is_array($effective_execution_guess)
     && ($late_wrong_mark_flip_action === 'BUY' || $late_wrong_mark_flip_action === 'SELL')
 ) {
-    // Audit evidence only. The locked hourly-template action is immutable once
-    // the :05 reference establishes the hour.
+    $effective_execution_guess['direction'] = $late_wrong_mark_flip_action === 'BUY' ? '+' : '-';
+    $effective_execution_guess['action'] = $late_wrong_mark_flip_action;
     $effective_execution_guess['late_wrong_mark_flip'] = true;
-    $effective_execution_guess['late_wrong_mark_suggested_action'] = $late_wrong_mark_flip_action;
     $effective_execution_guess['late_wrong_mark_target_time'] = (string)($late_wrong_mark_flip['target_time'] ?? '');
     $effective_execution_guess['late_wrong_mark_activation_time'] = (string)($late_wrong_mark_flip['activation_time'] ?? '');
-    $execution_bell_curve_source = 'LATE_WRONG_MARK_EVIDENCE';
-    $execution_bell_curve_orientation = 'EVIDENCE_ONLY';
+    $execution_bell_curve_source = 'LATE_WRONG_MARK';
+    $execution_bell_curve_orientation = 'INVERT';
     $execution_bell_curve_eligible = true;
     $execution_bell_curve_strength = 100.0;
     $execution_bell_curve['eligible'] = true;
     $execution_bell_curve['observation_eligible'] = true;
-    $execution_bell_curve['orientation'] = 'EVIDENCE_ONLY';
-    $execution_bell_curve['observation_orientation'] = 'EVIDENCE_ONLY';
+    $execution_bell_curve['orientation'] = 'INVERT';
+    $execution_bell_curve['observation_orientation'] = 'INVERT';
     $execution_bell_curve['effective_percent'] = 100.0;
     $execution_bell_curve['evidence_percent'] = 100.0;
-    $execution_bell_curve['reason'] = 'WRONG MARK +6M AUDIT SUGGESTION';
+    $execution_bell_curve['reason'] = 'WRONG MARK +6M FLIP';
     $execution_bell_curve['stake_multiplier'] = max(1.0, (float)($execution_bell_curve['stake_multiplier'] ?? 0.0));
     $execution_bell_curve_multiplier = max($execution_bell_curve_multiplier, 1.0);
 }
@@ -14688,10 +11421,10 @@ $compression_candle_branch_opposes_action = $compression_candle_branch_active
     && $pre_compression_candle_action !== $compression_candle_branch_action;
 $compression_candle_branch_flip_active = $compression_candle_branch_opposes_action;
 if ($compression_candle_branch_flip_active && is_array($effective_execution_guess)) {
-    // Compression is an audit-voter suggestion, not a post-template rewrite.
+    $effective_execution_guess['direction'] = $compression_candle_branch_action === 'BUY' ? '+' : '-';
+    $effective_execution_guess['action'] = $compression_candle_branch_action;
     $effective_execution_guess['compression_candle_branch'] = true;
     $effective_execution_guess['compression_candle_flip'] = true;
-    $effective_execution_guess['compression_candle_suggested_action'] = $compression_candle_branch_action;
     $effective_execution_guess['compression_candle_score'] = round($compression_candle_branch_score, 2);
     $effective_execution_guess['compression_candle_horizon'] = $compression_candle_branch_horizon;
     $execution_bell_curve_source = 'COMPRESSION_CANDLE';
@@ -14748,11 +11481,6 @@ $execution_branch_trusted = $execution_bell_curve_source === 'FAMILY'
     && $execution_bell_curve_eligible
     && $execution_bell_curve_orientation === 'KEEP'
     && (float)($execution_bell_curve['effective_percent'] ?? 0.0) >= 85.0;
-// The visible symbol and executable action must be the same timestamp-owned decision.
-// Diagnostic audit branches may be displayed, but they cannot switch BUY/SELL after the mark is locked.
-if (is_array($locked_current_guess)) {
-    $effective_execution_guess = $locked_current_guess;
-}
 $trade_guess = $effective_execution_guess;
 $execution_current_guess = $trade_guess;
 $quarter_regime_trade_blocked = false;
@@ -14979,59 +11707,6 @@ if ($regime_plan_active) {
     $hourly_bell_curve_plan['phase_step_multiplier'] = $regime_step_count;
 }
 
-// Convert repeated recent SELL guesses plus a global percentage decline into
-// a staged BUY-for-inventory signal. This is evaluated before the ordinary
-// cumulative trigger so defensive selling can deliberately pick up weakness.
-$sell_density_accumulation = sellDensityAccumulationTrigger(
-    $guess_by_time,
-    $chart_source_candles,
-    (float)$break_buy_drop_pct,
-    8,
-    ONE_HOUR_CANDLE_COUNT
-);
-$sell_density_action = (($sell_density_accumulation['triggered'] ?? false) === true)
-    ? 'BUY'
-    : 'NO TRADE';
-
-// Measure cumulative completed-candle movement against the same global break
-// controls used by BUY and SELL. A qualifying move becomes an actionable signal
-// even when it took several five-minute candles to reach the percentage.
-$cumulative_open_close_trigger = cumulativeOpenCloseMoveTrigger(
-    $chart_source_candles,
-    (float)$break_take_gain_pct,
-    (float)$break_buy_drop_pct,
-    ONE_HOUR_CANDLE_COUNT
-);
-$cumulative_open_close_action = (($cumulative_open_close_trigger['triggered'] ?? false) === true)
-    ? strtoupper((string)($cumulative_open_close_trigger['action'] ?? 'NO TRADE'))
-    : 'NO TRADE';
-
-if ($sell_density_action === 'BUY') {
-    $formula_execution_action = 'BUY';
-    $densityMultiplier = max(1.0, (float)($sell_density_accumulation['stage_multiplier'] ?? 1.0));
-    if (isset($hourly_bell_curve_plan['single_trade_amount'])) {
-        $hourly_bell_curve_plan['single_trade_amount'] = round(
-            (float)$hourly_bell_curve_plan['single_trade_amount'] * $densityMultiplier,
-            8
-        );
-        $hourly_bell_curve_plan['single_trade_multiplier'] = round(
-            (float)($hourly_bell_curve_plan['single_trade_multiplier'] ?? 1.0) * $densityMultiplier,
-            4
-        );
-        $hourly_bell_curve_plan['sell_density_stage_multiplier'] = $densityMultiplier;
-        $hourly_bell_curve_plan['sell_density_override_active'] = true;
-        $hourly_bell_curve_plan['sell_density_override_reason'] = (string)($sell_density_accumulation['reason'] ?? 'SELL-DENSITY PICKUP OVERRIDE');
-        $hourly_bell_curve_plan['dominant_action'] = 'BUY';
-        $hourly_bell_curve_plan['single_trade_action'] = 'BUY';
-        $hourly_bell_curve_plan['total_buy_requested'] = round((float)$hourly_bell_curve_plan['single_trade_amount'], 8);
-        $hourly_bell_curve_plan['total_sell_requested'] = 0.0;
-        if (!empty($hourly_bell_curve_plan['slots'][0])) {
-            $hourly_bell_curve_plan['slots'][0]['action'] = 'BUY';
-            $hourly_bell_curve_plan['slots'][0]['reason'] = 'SELL-DENSITY OVERRIDE';
-        }
-    }
-}
-
 // Apply sequence trading only after the resolved result ledger is available.
 $sequence_guesses = $guess_by_time;
 $sequence_guesses[$early_boundary_key] = is_array($trade_guess) ? $trade_guess : [];
@@ -15060,49 +11735,9 @@ if ($regime_plan_active && ($formula_execution_action === 'BUY' || $formula_exec
         'samples' => $compression_candle_branch_flip_active ? max(1, $compression_samples) : $accuracy_total,
     ];
 }
-if ($cumulative_open_close_action === 'BUY' || $cumulative_open_close_action === 'SELL') {
-    $formula_execution_action = $cumulative_open_close_action;
-    $sequence_signal = [
-        'enabled' => true,
-        'cumulative_open_close_active' => true,
-        'action' => $cumulative_open_close_action,
-        'run_length' => max(0, (int)($cumulative_open_close_trigger['candle_count'] ?? 1) - 1),
-        'trade_count' => 1,
-        'pair' => guessPairLabel($trade_guess),
-        'run_pair' => guessPairLabel($trade_guess),
-        'accuracy' => 100.0,
-        'samples' => max(1, (int)($cumulative_open_close_trigger['candle_count'] ?? 1)),
-        'reason' => (string)($cumulative_open_close_trigger['reason'] ?? 'CUMULATIVE OPEN→CLOSE BREAK'),
-    ];
-}
-
-if ($sell_density_action === 'BUY') {
-    $formula_execution_action = 'BUY';
-    $sequence_signal = [
-        'enabled' => true,
-        'sell_density_accumulation_active' => true,
-        'action' => 'BUY',
-        'run_length' => max(0, (int)($sell_density_accumulation['sell_count'] ?? 1) - 1),
-        'trade_count' => 1,
-        'pair' => guessPairLabel($trade_guess),
-        'run_pair' => guessPairLabel($trade_guess),
-        'accuracy' => (float)($sell_density_accumulation['sell_density_percent'] ?? 0.0),
-        'samples' => max(1, (int)($sell_density_accumulation['sample_count'] ?? 1)),
-        'reason' => (string)($sell_density_accumulation['reason'] ?? 'SELL-DENSITY PICKUP'),
-    ];
-}
-
 $spiral_guard_metric_context = [
     'market_type' => $market_type,
     'symbol' => $ticker,
-    'cumulative_open_close_triggered' => (($cumulative_open_close_trigger['triggered'] ?? false) === true),
-    'cumulative_open_close_action' => $cumulative_open_close_action,
-    'cumulative_open_close_move_percent' => (float)($cumulative_open_close_trigger['move_percent'] ?? 0.0),
-    'cumulative_open_close_candle_count' => (int)($cumulative_open_close_trigger['candle_count'] ?? 0),
-    'cumulative_open_close_start_open' => (float)($cumulative_open_close_trigger['start_open'] ?? 0.0),
-    'cumulative_open_close_latest_close' => (float)($cumulative_open_close_trigger['latest_close'] ?? 0.0),
-    'cumulative_open_close_threshold_percent' => (float)($cumulative_open_close_trigger['threshold_percent'] ?? 0.0),
-    'cumulative_open_close_reason' => (string)($cumulative_open_close_trigger['reason'] ?? ''),
     'forecast_fingerprint' => (string)($locked_current_guess['fingerprint'] ?? ''),
     'forecast_rule_version' => (string)($locked_current_guess['rule_version'] ?? forecastRuleVersion()),
     'verified_samples' => $accuracy_total,
@@ -15126,7 +11761,6 @@ $spiral_guard_metric_context = [
     'late_wrong_mark_flip_active' => $late_wrong_mark_flip_active,
     'late_wrong_mark_flip_action' => $late_wrong_mark_flip_action,
     'late_wrong_mark_pre_flip_action' => $late_wrong_mark_pre_flip_action,
-    'late_wrong_mark_relation' => $late_wrong_mark_relation,
     'late_wrong_mark_target_time' => (string)($late_wrong_mark_flip['target_time'] ?? ''),
     'late_wrong_mark_activation_time' => (string)($late_wrong_mark_flip['activation_time'] ?? ''),
     'internal_agreement' => $internal_agreement_recent_effective_percent,
@@ -15141,11 +11775,6 @@ $spiral_guard_metric_context = [
     'compression_allows_alternation' => $alternation_pattern_active
         && compressionAllowsAlternation($compression_state, $formula_execution_action),
     'global_wrong_mark_branches' => $tracked_wrong_mark_branches,
-    'loss_buy_spree_percent' => (int)$loss_buy_spree_percent,
-    'loss_buy_spree_candles' => latestCompletedFiveMinuteCandles($chart_source_candles, 4),
-    'loss_buy_spree_lookback_candles' => 4,
-    'loss_buy_spree_gain_multiplier' => max(0.10, (float)$sell_multiplier),
-    'loss_buy_spree_average_amount' => max($paper_minimum_trade_funds, (float)$average_change),
 ];
 $paper_break_replay_state = buildModelPaperTraderState(
     $chart_source_candles,
@@ -15187,9 +11816,6 @@ $paper_break_state = $loop_update_allowed
         ? $stored_model_wallet_state
         : $paper_break_replay_state);
 $paper_break_state = normalizeTraderDisplayState($paper_break_state);
-$hour_audit_summary = attachGuessPositioningToHourAudit($hour_audit_summary, $paper_break_state);
-if ($loop_update_allowed) saveLocalJsonArray($model_wallet_state_path, normalizeTraderDisplayState($paper_break_state));
-$hour_audit_table_html = renderHourAuditTable($hour_audit_summary);
 $paper_break_state = attachCashOutRejoinFeeEstimate($paper_break_state, (float)$current_price, $paper_execution_context);
 $paper_break_state['forecast_observation'] = $forecast_observation_state;
 $paper_break_state['global_wrong_mark_branches'] = $tracked_wrong_mark_branches;
@@ -15198,13 +11824,6 @@ $paper_break_state['accuracy_independent_of_execution'] = true;
 $paper_break_state['right_percent'] = is_numeric($forecast_observation_state['effective_percent'] ?? null)
     ? (float)$forecast_observation_state['effective_percent']
     : 0.0;
-$paper_break_state['confidence_hour_control'] = $confidence_hour_control ?? [
-    'threshold' => 65.0,
-    'confidence' => $accuracy_effective ?? 0.0,
-    'above_threshold' => (($accuracy_effective ?? 0.0) >= 65.0),
-    'remaining_flipped' => false,
-    'reason' => 'UNAVAILABLE',
-];
 $paper_break_state['attack_active'] = (($attack_profile['active'] ?? false) === true);
 $paper_break_state['attack_factor'] = (float)($attack_profile['factor'] ?? 1.0);
 $paper_break_state['attack_label'] = (string)($attack_profile['label'] ?? 'BASE');
@@ -15215,20 +11834,13 @@ $spiral_guard = is_array($paper_break_state['spiral_guard'] ?? null)
     : defaultSpiralDownGuardState((float)($paper_break_state['starting_pot'] ?? 10000.0));
 $spiral_guard_paused = (($spiral_guard['paused'] ?? false) === true);
 if ($spiral_guard_paused) {
-    // Spiral protection is directional: it suppresses discretionary SELLs only.
-    // BUYs and sell-funded rebuys remain eligible unless another hard gate fails.
-    $spiral_guard['blocks_actions'] = ['SELL'];
-    $spiral_guard['buy_enabled'] = true;
-    $paper_break_state['spiral_guard'] = $spiral_guard;
-    if (strtoupper((string)($bell_curve_trade_action ?? $bell_curve_trade_reason ?? '')) === 'SELL') {
-        $bell_curve_trade_eligible = false;
-        $bell_curve_trade_reason = 'HOLD SELL · SPIRAL GUARD · '
-            . (string)($spiral_guard['reason'] ?? 'DRAWDOWN PAUSE');
-    }
+    $bell_curve_trade_eligible = false;
+    $bell_curve_trade_reason = 'HOLD · SPIRAL GUARD · '
+        . (string)($spiral_guard['reason'] ?? 'DRAWDOWN PAUSE');
     $aggressive_actions_active = false;
     $paper_break_state['attack_active'] = false;
-    $paper_break_state['attack_label'] = 'SELL RISK PAUSE';
-    $paper_break_state['attack_reason'] = 'SPIRAL GUARD BLOCKS SELLS ONLY · BUYS ENABLED';
+    $paper_break_state['attack_label'] = 'RISK PAUSE';
+    $paper_break_state['attack_reason'] = $bell_curve_trade_reason;
 }
 $paper_break_action = (string)($paper_break_state['display_action'] ?? 'WATCHING');
 $paper_break_class = (float)($paper_break_state['sim_net_move'] ?? 0.0) > 0.0
@@ -15266,7 +11878,7 @@ $visible_timeline_future = array_slice($timeline_future, 0, min(VISIBLE_FUTURE_G
 $display_timeline = array_merge(array_reverse($visible_timeline_future), $timeline_current, array_reverse($timeline_elapsed));
 $display_timeline = centeredTimelineWindow(
     $display_timeline,
-    guessStoredAction(is_array($execution_current_guess) ? $execution_current_guess : null),
+    'BUY',
     gmdate('Y-m-d\TH:i:s\Z', $current_boundary_epoch),
     16
 );
@@ -15285,40 +11897,7 @@ $current_price_note = '1H ' . $current_price_direction
     . ' • MOVE ' . ($hour_price_change >= 0.0 ? '+' : '-') . '$' . number_format(abs($hour_price_change), 2)
     . ($hour_reference_price > 0.0 ? ' • FROM $' . number_format($hour_reference_price, 2) : '');
 $paper_break_position = (($paper_break_state['position'] ?? 'flat') === 'long') ? 'LONG' : 'FLAT';
-$paper_break_active_wallet_value = max(0.0, (float)($paper_break_state['cash_left'] ?? 0.0)) + max(0.0, (float)($paper_break_state['holding_value'] ?? 0.0));
-$paper_break_external_kitty_total = paperWalletExternalKittyTotal($paper_break_state);
-$paper_break_sold_into_cash_kitty_total = paperWalletSoldIntoCashKittyTotal($paper_break_state);
-$paper_break_equity = paperWalletTotalEquity(
-    $paper_break_state,
-    max(0.0, (float)($paper_break_state['cash_left'] ?? 0.0)),
-    max(0.0, (float)($paper_break_state['holding_value'] ?? 0.0))
-);
-// Never trust a stale saved equity_value for display. Persist the canonical sum.
-$paper_break_state['active_wallet_value'] = $paper_break_active_wallet_value;
-$paper_break_state['external_kitty_total'] = $paper_break_external_kitty_total;
-$paper_break_state = finalizeCanonicalTradingState($paper_break_state, $current_price);
-$paper_break_equity = (float)$paper_break_state['equity_value'];
-// OUTPUT TOTAL excludes the starting principal. It reflects only the
-// current signed trading P&L plus SELL proceeds that remain unreinvested.
-$principal_initial = max(0.0, (float)($paper_break_state['principal_initial'] ?? $paper_break_state['starting_pot'] ?? 10000.0));
-$paper_total_sold_cumulative = max(0.0, $paper_break_sold_into_cash_kitty_total);
-$paper_total_sold_unreinvested = min(
-    $paper_total_sold_cumulative,
-    max(0.0, (float)($paper_break_state['pending_rebuy_total'] ?? 0.0))
-);
-$paper_total_signed_pnl = (float)($paper_break_state['net_pnl'] ?? 0.0);
-$paper_total_reconciled = $paper_total_signed_pnl + $paper_total_sold_unreinvested;
-$paper_total_breakdown = ($paper_total_signed_pnl >= 0.0 ? 'P&L +$' : 'P&L -$')
-    . number_format(abs($paper_total_signed_pnl), 2)
-    . ' + UNREINVESTED SOLD $' . number_format($paper_total_sold_unreinvested, 2);
-$principal_active_equity = max(0.0, (float)($paper_break_state['principal_active_equity'] ?? ((float)($paper_break_state['cash_left'] ?? 0.0) + (float)($paper_break_state['holding_value'] ?? 0.0))));
-$principal_active_excess = max(0.0, (float)($paper_break_state['principal_active_excess'] ?? ($principal_active_equity - $principal_initial)));
-$principal_income_locked_total = paperWalletPrincipalSelloffCashedOutTotal($paper_break_state);
-$paper_break_state['principal_income_locked_total'] = $principal_income_locked_total;
-$principal_income_last_lock = max(0.0, (float)($paper_break_state['principal_income_last_lock'] ?? 0.0));
-$principal_income_threshold = max(0.01, (float)($paper_break_state['principal_income_threshold'] ?? 50.0));
-$principal_next_lock_needed = max(0.0, (float)($paper_break_state['principal_next_lock_needed'] ?? ($principal_income_threshold - $principal_active_excess)));
-$principal_income_status = (string)($paper_break_state['principal_income_status'] ?? ('WAITING · NEEDS $' . number_format($principal_next_lock_needed, 2)));
+$paper_break_equity = (float)($paper_break_state['equity_value'] ?? 0.0);
 $paper_break_cash_left = (float)($paper_break_state['cash_left'] ?? 0.0);
 $paper_break_holding_value = (float)($paper_break_state['holding_value'] ?? 0.0);
 $paper_break_held_units = (float)($paper_break_state['asset_units'] ?? 0.0);
@@ -15345,7 +11924,7 @@ $paper_break_cashout_rejoin_label = trim((string)($paper_break_state['cash_out_r
 $paper_break_cashout_cash_kitty_reserve = (float)($paper_break_state['cash_out_cash_kitty_reserve'] ?? 5000.0);
 $paper_break_cashout_available_for_asset_refill = (float)($paper_break_state['cash_out_available_for_asset_refill'] ?? max(0.0, $paper_break_cash_left - $paper_break_cashout_cash_kitty_reserve));
 $spiral_guard_metrics = is_array($spiral_guard['metrics'] ?? null) ? $spiral_guard['metrics'] : [];
-$spiral_guard_status_label = $spiral_guard_paused ? 'SELLS PAUSED · BUYS ENABLED' : 'MONITORING';
+$spiral_guard_status_label = $spiral_guard_paused ? 'PAUSED' : 'MONITORING';
 $spiral_guard_class = $spiral_guard_paused ? 'low' : 'good';
 $spiral_guard_detail_label = (string)($spiral_guard['reason'] ?? 'Risk metrics stable')
     . ' • DRAWDOWN ' . number_format((float)($spiral_guard['drawdown_percent'] ?? 0.0), 2) . '%'
@@ -15498,7 +12077,6 @@ $current_phase_sizing['late_wrong_mark_flip'] = $late_wrong_mark_flip;
 $current_phase_sizing['late_wrong_mark_flip_active'] = $late_wrong_mark_flip_active;
 $current_phase_sizing['late_wrong_mark_flip_action'] = $late_wrong_mark_flip_action;
 $current_phase_sizing['late_wrong_mark_pre_flip_action'] = $late_wrong_mark_pre_flip_action;
-$current_phase_sizing['late_wrong_mark_relation'] = $late_wrong_mark_relation;
 $current_phase_sizing['late_wrong_mark_target_time'] = (string)($late_wrong_mark_flip['target_time'] ?? '');
 $current_phase_sizing['late_wrong_mark_activation_time'] = (string)($late_wrong_mark_flip['activation_time'] ?? '');
 $current_boundary_trade_event = is_array($paper_break_events_by_time[$early_boundary_key] ?? null)
@@ -15521,7 +12099,7 @@ if (is_array($current_boundary_trade_event)) {
     $genericNoExecutionEvent = !$eventExecuted
         && $eventRequested <= 0.00000001
         && $fallbackRequested > 0.0
-        && ($eventLabelText === 'HOLD · NO EXECUTION' || $eventActionText === 'NO TRADE');
+        && ($eventLabelText === 'HOLD · NO EXECUTION' || $eventLabelText === 'WAITING FOR LONG' || $eventActionText === 'NO TRADE');
     if ($genericNoExecutionEvent) {
         $eventRequested = $fallbackRequested;
         $eventAvailable = $fallbackAvailable;
@@ -15538,9 +12116,9 @@ if (is_array($current_boundary_trade_event)) {
     $current_phase_sizing['reserved_amount'] = 0.0;
     $current_phase_sizing['shortfall'] = is_numeric($current_boundary_trade_event['shortfall'] ?? null)
         ? round(max(0.0, (float)$current_boundary_trade_event['shortfall']), 8)
-        : round(max(0.0, $eventRequested - $eventAvailable), 8);
+        : round(max(0.0, $eventRequested - $eventAmount), 8);
     if ($genericNoExecutionEvent) {
-        $current_phase_sizing['shortfall'] = round(max(0.0, $eventRequested - $eventAvailable), 8);
+        $current_phase_sizing['shortfall'] = round(max(0.0, $eventRequested), 8);
     }
     $current_phase_sizing['eligible'] = $eventExecuted;
     $current_phase_sizing['event_executed'] = $eventExecuted;
@@ -15589,11 +12167,10 @@ $current_guess_note = $current_guess_pair_label === '%'
 $paper_break_value_label = 'PORTFOLIO P&L '
     . ($paper_break_sim_net_move >= 0.0 ? '+' : '-')
     . '$' . number_format(abs($paper_break_sim_net_move), 2);
-$paper_break_remaining_units_from_turnover = max(0.0, $paper_break_bought_units - $paper_break_sold_units);
 $paper_break_note = 'POT $' . number_format($paper_break_equity, 2)
     . ' • ' . $paper_break_asset_left_label . ' ' . $paper_break_asset_left_amount
-    . ' • ' . 'CUMULATIVE ' . $paper_break_asset_bought_label . ' ' . $paper_break_asset_bought_amount . ' ($' . number_format($paper_break_bought_amount, 2) . ')'
-    . ' • ' . 'CUMULATIVE ' . $paper_break_asset_sold_label . ' ' . $paper_break_asset_sold_amount . ' ($' . number_format($paper_break_sold_amount, 2) . ')'
+    . ' • ' . $paper_break_asset_bought_label . ' ' . $paper_break_asset_bought_amount . ' ($' . number_format($paper_break_bought_amount, 2) . ')'
+    . ' • ' . $paper_break_asset_sold_label . ' ' . $paper_break_asset_sold_amount . ' ($' . number_format($paper_break_sold_amount, 2) . ')'
     . ' • HOLDING $' . number_format($paper_break_holding_value, 2)
     . ' • CASH KITTY $' . number_format($paper_break_cash_left, 2)
     . ' • P&L BASIS $' . number_format($paper_break_pnl_basis, 2)
@@ -15601,7 +12178,7 @@ $paper_break_note = 'POT $' . number_format($paper_break_equity, 2)
     . ($paper_break_pnl_basis_label !== '' ? ' · ' . $paper_break_pnl_basis_label : '')
     . ' • CASHOUT AFTER REJOIN FEE $' . number_format($paper_break_cashout_after_rejoin_fee, 2)
     . ' (' . ($paper_break_cashout_rejoin_label !== '' ? $paper_break_cashout_rejoin_label : 'REJOIN FEE') . ' $' . number_format($paper_break_cashout_rejoin_fee, 2) . ')'
-    . ' • RESERVED $' . number_format($display_reserved_cash, 2)
+    . ' • RESERVED $0.00'
     . ' • POSITION ' . $paper_break_position
     . ' • SIGNAL ' . $paper_break_action
     . ' • OPEN ' . ($paper_break_position === 'LONG'
@@ -15668,11 +12245,11 @@ foreach ($display_timeline as $record) {
             $buy_multiplier
         );
     }
-    // The execution unit is one independent five-minute boundary.
-    // Do not display an optimistic profit estimate before a fill.
+    // The execution unit is one decision per hour; do not display a
+    // fractional sneak multiplier or an optimistic dollar estimate here.
     $estimatedProfitLabel = $action === 'NO TRADE'
         ? ''
-        : ' · 1 ACTION/5-MIN MARK';
+        : ' · 1 TRADE/HOUR';
     $guessCell = '<td>' . htmlspecialchars('MODEL ' . $action)
         . ($commitmentAmount >= $paper_minimum_trade_funds ? ' · REQUESTED $' . htmlspecialchars(number_format($commitmentAmount, 2, '.', ',')) : '')
         . '</td>';
@@ -15685,18 +12262,14 @@ foreach ($display_timeline as $record) {
             $eventAmount = is_numeric($tradeEvent['amount'] ?? null) ? (float)$tradeEvent['amount'] : 0.0;
             $eventRequested = is_numeric($tradeEvent['requested_amount'] ?? null) ? (float)$tradeEvent['requested_amount'] : $commitmentAmount;
             $eventAvailable = is_numeric($tradeEvent['available_amount'] ?? null) ? (float)$tradeEvent['available_amount'] : $eventAmount;
-            $eventShortfall = is_numeric($tradeEvent['shortfall'] ?? null) ? (float)$tradeEvent['shortfall'] : max(0.0, $eventRequested - $eventAvailable);
+            $eventShortfall = is_numeric($tradeEvent['shortfall'] ?? null) ? (float)$tradeEvent['shortfall'] : max(0.0, $eventRequested - $eventAmount);
             $executionVerb = $eventAction === 'SELL' ? 'SOLD' : ($eventAction === 'BUY' ? 'BOUGHT' : 'EXECUTED');
             $amountLabel = ' · REQUESTED $' . number_format($eventRequested, 2)
                 . ' · AVAILABLE $' . number_format($eventAvailable, 2)
                 . ' · EXECUTED $' . number_format($eventAmount, 2)
-                . ' · RESERVED $' . number_format(max(0.0, (float)($tradeEvent['reserved_amount'] ?? 0.0)), 2)
+                . ' · RESERVED $0.00'
                 . ' (' . $executionVerb . ')'
-                . ($eventRequested > 0.00000001 && $eventAmount <= 0.00000001
-                    ? (($eventAvailable + 0.00000001 >= $eventRequested)
-                        ? ' · BLOCKED $' . number_format($eventRequested, 2)
-                        : ' · SHORT $' . number_format(max(0.0, $eventRequested - $eventAvailable), 2))
-                    : '')
+                . ($eventShortfall > 0.00000001 ? ' · SHORT $' . number_format($eventShortfall, 2) : '')
                 . paperEventEconomicsLabel($tradeEvent);
             $resultCell = '<td class="result-neutral-cell">' . htmlspecialchars('CURRENT · EXEC ' . $eventAction . ' · ' . $eventLabel . $amountLabel . ' · SETTLING' . $estimatedProfitLabel) . '</td>';
         } elseif (is_array($tradeEvent)) {
@@ -15705,16 +12278,12 @@ foreach ($display_timeline as $record) {
             $eventAmount = is_numeric($tradeEvent['amount'] ?? null) ? max(0.0, (float)$tradeEvent['amount']) : 0.0;
             $eventRequested = is_numeric($tradeEvent['requested_amount'] ?? null) ? max(0.0, (float)$tradeEvent['requested_amount']) : $commitmentAmount;
             $eventAvailable = is_numeric($tradeEvent['available_amount'] ?? null) ? max(0.0, (float)$tradeEvent['available_amount']) : 0.0;
-            $eventShortfall = is_numeric($tradeEvent['shortfall'] ?? null) ? max(0.0, (float)$tradeEvent['shortfall']) : max(0.0, $eventRequested - $eventAvailable);
+            $eventShortfall = is_numeric($tradeEvent['shortfall'] ?? null) ? max(0.0, (float)$tradeEvent['shortfall']) : max(0.0, $eventRequested - $eventAmount);
             $amountLabel = ' · REQUESTED $' . number_format($eventRequested, 2)
                 . ' · AVAILABLE $' . number_format($eventAvailable, 2)
                 . ' · EXECUTED $' . number_format($eventAmount, 2)
-                . ' · RESERVED $' . number_format(max(0.0, (float)($tradeEvent['reserved_amount'] ?? 0.0)), 2)
-                . ($eventRequested > 0.00000001 && $eventAmount <= 0.00000001
-                    ? (($eventAvailable + 0.00000001 >= $eventRequested)
-                        ? ' · BLOCKED $' . number_format($eventRequested, 2)
-                        : ' · SHORT $' . number_format(max(0.0, $eventRequested - $eventAvailable), 2))
-                    : '');
+                . ' · RESERVED $0.00'
+                . ($eventShortfall > 0.00000001 ? ' · SHORT $' . number_format($eventShortfall, 2) : '');
             $resultCell = '<td class="' . htmlspecialchars($eventClass) . '">'
                 . htmlspecialchars('CURRENT · NOT EXECUTED · ' . $eventLabel . $amountLabel . ' · KITTY UNCHANGED' . $estimatedProfitLabel) . '</td>';
         } else {
@@ -15725,7 +12294,7 @@ foreach ($display_timeline as $record) {
                 ? 'UNKNOWN'
                 : htmlspecialchars(
                     $executionLabel === 'HOLD'
-                        ? 'CURRENT · HOLD · NO EXECUTION SIGNAL'
+                        ? 'CURRENT · WAITING FOR LONG'
                         : 'CURRENT · SELECTED ' . $executionLabel . ' · AWAITING PHASE EVENT' . $estimatedProfitLabel
                 )) . '</td>';
         }
@@ -15745,13 +12314,9 @@ foreach ($display_timeline as $record) {
             $amountLabel = ' REQUESTED $' . number_format($eventRequested, 2)
                 . ' · AVAILABLE $' . number_format($eventAvailable, 2)
                 . ' · EXECUTED $' . number_format($eventAmount, 2)
-                . ' · RESERVED $' . number_format($display_reserved_cash, 2)
+                . ' · RESERVED $0.00'
                 . ($eventAmount > 0.0 ? ' (' . $executionVerb . ')' : '')
-                . ($eventRequested > 0.00000001 && $eventAmount <= 0.00000001
-                    ? (($eventAvailable + 0.00000001 >= $eventRequested)
-                        ? ' · BLOCKED $' . number_format($eventRequested, 2)
-                        : ' · SHORT $' . number_format(max(0.0, $eventRequested - $eventAvailable), 2))
-                    : '')
+                . ($eventShortfall > 0.00000001 ? ' · SHORT $' . number_format($eventShortfall, 2) : '')
                 . paperEventEconomicsLabel($tradeEvent);
             $suffix = is_numeric($eventPnl) ? $amountLabel . ' P&L ' . formatSignedMoney((float)$eventPnl, 2) : $amountLabel;
             $resultCell = '<td class="' . htmlspecialchars($eventClass) . '">'
@@ -15771,17 +12336,6 @@ foreach ($display_timeline as $record) {
     }
     $visible_rows_html .= '<tr' . $class . '>' . $timeCell . $guessCell . $resultCell . '</tr>';
 }
-
-// Canonical display-card values. Every card must read the same finalized
-// engine state used by execution and the live JSON payload.
-$display_reserved_cash = max(0.0, (float)($paper_break_state['reserved_cash'] ?? $paper_break_state['pending_rebuy_total'] ?? 0.0));
-$display_guess_window = max(1, (int)($forecast_observation_state['window_size'] ?? ONE_HOUR_CANDLE_COUNT));
-$display_guess_right = (int)($forecast_observation_state['right'] ?? 0);
-$display_guess_total = (int)($forecast_observation_state['total'] ?? 0);
-$display_guess_wrong = max(0, $display_guess_total - $display_guess_right);
-$display_guess_percent = $display_guess_total > 0
-    ? ($display_guess_right / $display_guess_total) * 100.0
-    : 0.0;
 
 // The wallet card now follows the live persistent five-minute trader state,
 // so its net move comes from that state instead of a fresh historical replay.
@@ -15877,9 +12431,9 @@ $wallet_last_label = $paper_break_last_trade_result !== ''
     : 'No closed trade yet';
 $model_resolution_label = $adaptive_complete_flip
     ? 'COMPLETE FLIP ACTIVE'
-    : ($current_guess_pair_label === '%' ? 'Signal unavailable' : 'five-minute mark locked');
+    : ($current_guess_pair_label === '%' ? 'Signal unavailable' : '1-hour ahead unresolved');
 $model_pair_label = $current_guess_pair_label === '%' ? 'Unavailable' : $current_guess_pair_label;
-$model_wl_label = $accuracy_right . ' RIGHT / ' . $accuracy_wrong . ' WRONG';
+$model_wl_label = $accuracy_right . ' / ' . $accuracy_wrong;
 $latest_observation = is_array($forecast_observation_state['latest'] ?? null)
     ? $forecast_observation_state['latest']
     : null;
@@ -16056,7 +12610,7 @@ unset($action_stat);
 $adaptive_flip_active = $adaptive_complete_flip || !empty($agreement_branch_flips);
 $model_resolution_label = $adaptive_flip_active
     ? ($adaptive_complete_flip ? 'COMPLETE FLIP ACTIVE' : 'BRANCH FLIP ACTIVE')
-    : ($current_guess_pair_label === '%' ? 'Signal unavailable' : 'five-minute mark locked');
+    : ($current_guess_pair_label === '%' ? 'Signal unavailable' : '1-hour ahead unresolved');
 $pair_card_ids = [
     'BUY' => 'buy',
     'SELL' => 'sell',
@@ -16081,9 +12635,6 @@ $tracked_strategy_alpha_count = 0;
 $tracked_portfolio_summary = aggregateTrackedDashboardPortfolio($tracked_dashboard_cards, $tracked_forecast_observation_state);
 $tracked_portfolio_net_pnl = (float)$tracked_portfolio_summary['net_pnl'];
 $tracked_portfolio_net_count = (int)$tracked_portfolio_summary['net_count'];
-$tracked_portfolio_output_total = (float)($tracked_portfolio_summary['output_total'] ?? 0.0);
-$tracked_portfolio_output_count = (int)($tracked_portfolio_summary['output_count'] ?? 0);
-$tracked_portfolio_unreinvested_sold = (float)($tracked_portfolio_summary['unreinvested_sold_total'] ?? 0.0);
 $tracked_strategy_alpha = (float)$tracked_portfolio_summary['strategy_alpha'];
 $tracked_strategy_alpha_count = (int)$tracked_portfolio_summary['strategy_alpha_count'];
 $tracked_link_groups = reconcileTrackedLinksWithDashboardCards($tracked_link_groups, $tracked_dashboard_cards);
@@ -16268,7 +12819,6 @@ if (isset($_GET['live']) && $_GET['live'] === '1') {
         'lateWrongMarkFlipActive' => $late_wrong_mark_flip_active,
         'lateWrongMarkFlipAction' => $late_wrong_mark_flip_action,
         'lateWrongMarkPreFlipAction' => $late_wrong_mark_pre_flip_action,
-        'lateWrongMarkRelation' => $late_wrong_mark_relation,
         'lateWrongMarkTargetTime' => (string)($late_wrong_mark_flip['target_time'] ?? ''),
         'lateWrongMarkActivationTime' => (string)($late_wrong_mark_flip['activation_time'] ?? ''),
         'alternationEvidence' => $alternation_evidence,
@@ -16318,25 +12868,6 @@ if (isset($_GET['live']) && $_GET['live'] === '1') {
         'globalAccuracyFlipped' => ($tracked_forecast_observation_state['flipped'] ?? false) === true,
         'globalAccuracyIndependentOfExecution' => true,
         'globalWrongMarkBranches' => $tracked_wrong_mark_branches,
-        'displayCardAudit' => [
-            'guess_window' => ONE_HOUR_CANDLE_COUNT,
-            'guess_right' => $accuracy_right,
-            'guess_wrong' => $accuracy_wrong,
-            'guess_total' => $accuracy_total,
-            'guess_percent' => $accuracy_effective,
-            'reserved_cash' => $display_reserved_cash,
-            'pot' => $paper_break_equity_value,
-            'cash' => $paper_break_cash_left,
-            'holding_value' => $paper_break_holding_value,
-            'withdrawn_kitty' => $paper_break_cash_out_withdrawn_total,
-            'total_paper_reconciled' => $paper_total_reconciled,
-            'active_paper' => $paper_total_active,
-            'sold_into_cash_already_in_active_cash' => true,
-            'initial_principal' => $principal_initial,
-            'active_equity_above_principal' => $principal_active_excess,
-            'income_locked_total' => $principal_income_locked_total,
-            'next_income_lock_needed' => $principal_next_lock_needed,
-        ],
         'averageChange' => $average_change,
         'averageBuyCommitment' => $average_buy_commitment,
         'averageSellCommitment' => $average_sell_commitment,
@@ -16397,5011 +12928,3 @@ if (isset($_GET['live']) && $_GET['live'] === '1') {
     exit;
 }
 ?>
-
-<?php
-$logic_poem_room = is_array($paper_break_state['trade_decision_room'] ?? null)
-    ? $paper_break_state['trade_decision_room']
-    : [];
-$logic_poem_votes = is_array($logic_poem_room['voters'] ?? null)
-    ? $logic_poem_room['voters']
-    : (is_array($logic_poem_room['banks'] ?? null) ? $logic_poem_room['banks'] : []);
-$logic_poem_yes = (int)($logic_poem_room['yes_votes'] ?? $paper_break_state['decision_yes_votes'] ?? 0);
-$logic_poem_required = max(2, (int)($logic_poem_room['required_votes'] ?? $paper_break_state['decision_required_votes'] ?? 2));
-$logic_poem_approved = (($logic_poem_room['approved'] ?? $paper_break_state['decision_approved'] ?? false) === true)
-    || $logic_poem_yes >= $logic_poem_required;
-$logic_poem_action = strtoupper(trim((string)($logic_poem_room['action'] ?? $current_guess_action ?? 'HOLD')));
-if (!in_array($logic_poem_action, ['BUY', 'SELL'], true)) $logic_poem_action = 'HOLD';
-$logic_poem_recovery = max(0.0, (float)($paper_break_state['audit_recovery_balance'] ?? 0.0));
-$logic_poem_gain_pending = max(0.0, (float)($paper_break_state['gain_kitty_pending'] ?? 0.0));
-$logic_poem_kitty_total = max(0.0, (float)($paper_break_state['gain_kitty_total'] ?? 0.0));
-$logic_poem_reserved = max(0.0, (float)($paper_break_state['reserved_cash'] ?? $paper_break_state['sell_rebuy_reserved_total'] ?? 0.0));
-$logic_poem_open_lots = is_array($paper_break_state['open_lots'] ?? null) ? count($paper_break_state['open_lots']) : 0;
-$logic_poem_pending_rebuys = is_array($paper_break_state['sell_funded_rebuys'] ?? null)
-    ? count(array_filter($paper_break_state['sell_funded_rebuys'], static fn($row): bool => is_array($row) && (($row['status'] ?? 'pending') === 'pending')))
-    : 0;
-$logic_poem_unresolved_votes = max(0, 3 - count($logic_poem_votes));
-$logic_poem_entropy_label = $logic_poem_approved
-    ? 'LOW · ACTION RESOLVED'
-    : ($logic_poem_yes > 0 ? 'FALLING · ROOM IN PROGRESS' : 'OPEN · WAITING FOR EVIDENCE');
-$logic_poem_spiral = $spiral_guard_paused ? 'SELLS CONSTRAINED · BUYS EXIST' : 'BOUNDARY QUIET · BOTH SIDES EXIST';
-$logic_poem_cycle = $logic_poem_pending_rebuys > 0
-    ? $logic_poem_pending_rebuys . ' SELL→BUY PAIR' . ($logic_poem_pending_rebuys === 1 ? '' : 'S') . ' WAITING'
-    : ($logic_poem_open_lots > 0 ? $logic_poem_open_lots . ' BUY LOT' . ($logic_poem_open_lots === 1 ? '' : 'S') . ' SEEKING SELL' : 'NO OPEN PAIR');
-?>
-<!doctype html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title><?= htmlspecialchars($ticker) ?> Educational Market Simulation</title>
-    <script>
-        window.MathJax = {
-            tex: { inlineMath: [['\\(', '\\)']], displayMath: [['\\[', '\\]']] },
-            chtml: { scale: 0.92 }
-        };
-    </script>
-    <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3.2.2/es5/tex-mml-chtml.js"></script>
-    <style>
-        :root {
-            color-scheme: dark;
-            --bg: #120e0a; --panel: #1c1510; --panel-2: #261c14; --border: #6b5234;
-            --text: #f3e6c8; --muted: #b89a6a; --accent: #d4a84a;
-            --accent-soft: rgba(212, 168, 74, .16); --warning: #e8b84a; --danger: #c45a3a;
-            --brass: #c9a45a; --brass-dark: #6b4e28; --brass-light: #e8d0a0;
-            --shadow: 0 18px 50px rgba(0, 0, 0, .55);
-        }
-        * { box-sizing: border-box; }
-        html, body { overflow-x: clip; }
-        body {
-            margin: 0; min-height: 100vh;
-            background:
-                radial-gradient(ellipse at 20% 0%, rgba(180, 120, 50, .14), transparent 40rem),
-                radial-gradient(ellipse at 90% 20%, rgba(80, 50, 20, .25), transparent 32rem),
-                repeating-linear-gradient(0deg, transparent, transparent 3px, rgba(0,0,0,.04) 3px, rgba(0,0,0,.04) 4px),
-                var(--bg);
-            color: var(--text);
-            font-family: "Segoe UI", Inter, ui-sans-serif, system-ui, sans-serif;
-        }
-        .shell {
-            width: min(1440px, calc(100% - 28px)); margin: 0 auto; padding: 22px 18px 40px;
-            border: 3px solid var(--brass-dark); border-radius: 22px;
-            background: linear-gradient(180deg, rgba(80, 58, 30, .35) 0%, transparent 18%), var(--panel);
-            box-shadow: inset 0 1px 0 rgba(232, 208, 160, .2), 0 0 0 6px #1a140e, 0 0 0 8px #5a4228, var(--shadow);
-            position: relative;
-        }
-        .shell::before { content:""; position:absolute; inset:10px; border:1px solid rgba(201,164,90,.22); border-radius:16px; pointer-events:none; z-index:0; }
-        .shell > * { position: relative; z-index: 1; }
-
-        .hero {
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-end;
-            gap: 24px;
-            margin-bottom: 20px;
-        }
-
-        .eyebrow {
-            margin: 0 0 8px;
-            color: var(--accent);
-            font-size: .78rem;
-            font-weight: 800;
-            letter-spacing: .14em;
-            text-transform: uppercase;
-        }
-
-        h1 {
-            margin: 0;
-            font-size: clamp(2rem, 4vw, 3.5rem);
-            line-height: 1;
-            letter-spacing: -.045em;
-        }
-
-        .subtitle {
-            max-width: 720px;
-            margin: 14px 0 0;
-            color: var(--muted);
-            font-size: 1rem;
-            line-height: 1.6;
-        }
-
-        .status-pill {
-            display: inline-flex;
-            align-items: center;
-            gap: 9px;
-            padding: 10px 14px;
-            border: 1px solid var(--border);
-            border-radius: 999px;
-            background: rgba(13, 26, 43, .78);
-            color: var(--muted);
-            white-space: nowrap;
-        }
-
-        .status-dot {
-            width: 9px;
-            height: 9px;
-            border-radius: 50%;
-            background: var(--accent);
-            box-shadow: 0 0 0 5px var(--accent-soft);
-        }
-
-        .simulation-notice {
-            display: grid;
-            gap: 4px;
-            margin: 0 0 10px;
-            padding: 10px 13px;
-            border: 1px solid rgba(251, 191, 36, .55);
-            border-left: 4px solid var(--warning);
-            border-radius: 10px;
-            background: rgba(251, 191, 36, .09);
-            color: #fef3c7;
-            font-size: .76rem;
-            line-height: 1.4;
-        }
-
-        .simulation-notice strong {
-            color: var(--warning);
-            letter-spacing: .05em;
-        }
-
-        .simulation-notice span { color: #d9e4f2; }
-
-        .assumptions {
-            margin: 0 0 10px;
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            background: rgba(13, 26, 43, .72);
-            color: var(--muted);
-            font-size: .72rem;
-            line-height: 1.45;
-        }
-
-        .assumptions summary {
-            padding: 8px 12px;
-            color: #bcd0e8;
-            cursor: pointer;
-            font-weight: 800;
-        }
-
-        .assumptions ul { margin: 0; padding: 0 28px 10px; }
-        .assumptions li { margin: 3px 0; }
-
-        .control-panel, .results-panel, .error-panel {
-            border: 2px solid var(--brass-dark);
-            background: linear-gradient(165deg, rgba(60, 42, 24, .92), rgba(22, 16, 10, .96));
-            box-shadow: inset 0 1px 0 rgba(232,208,160,.12), 0 8px 22px rgba(0,0,0,.35);
-        }
-        .control-panel {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-            gap: 14px; align-items: end; margin-bottom: 18px; padding: 18px; border-radius: 16px;
-        }
-        .quick-flip-banner {
-            grid-column: 1 / -1; margin: 0 0 8px; padding: 10px 14px; border-radius: 10px;
-            border: 1px solid var(--brass-dark);
-            background: linear-gradient(90deg, rgba(120,50,20,.45), rgba(40,24,12,.6));
-            color: var(--brass-light); font-size: .82rem; font-weight: 700; letter-spacing: .04em;
-        }
-        .quick-flip-banner.is-active { border-color: #e0a040; box-shadow: 0 0 12px rgba(224,160,64,.25); }
-        button[type="submit"] {
-            border: 2px solid var(--brass); background: linear-gradient(180deg, #a07838, #5a3e1c);
-            color: #1a1208; font-weight: 900; letter-spacing: .06em; text-transform: uppercase;
-            border-radius: 10px; min-height: 44px;
-            box-shadow: 0 3px 0 #2a1c0c, inset 0 1px 0 rgba(255,230,180,.35);
-        }
-        .input-wrap { border-color: var(--brass-dark) !important; background: #120e0a !important; }
-        .input-prefix { color: var(--brass) !important; }
-        .chart-panel { border: 2px solid var(--brass-dark) !important; background: linear-gradient(180deg, rgba(40,28,16,.95), rgba(16,12,8,.98)) !important; }
-        #candleChart { display: block; width: 100%; height: 560px !important; }
-        .steam-dial-bank {
-            display: flex; flex-wrap: wrap; gap: 14px 16px; align-items: flex-end;
-            grid-column: 1 / -1; padding: 14px 12px 10px; border-radius: 16px; border: 2px solid #5c4630;
-            background: radial-gradient(ellipse at 30% 20%, rgba(180,120,50,.18), transparent 50%), linear-gradient(165deg, #2a1f14, #0f0c08);
-            box-shadow: inset 0 1px 0 rgba(255,210,140,.12);
-        }
-        .steam-dial { width: 108px; user-select: none; touch-action: none; cursor: grab; position: relative; }
-        .steam-dial.is-dragging { cursor: grabbing; }
-        .steam-dial-bezel {
-            width: 96px; height: 96px; margin: 0 auto; padding: 7px; border-radius: 50%;
-            background: conic-gradient(from 210deg, #8a6a3c, #d4b06a, #6b4e28, #c9a45a, #4a351c, #d4b06a, #8a6a3c);
-            box-shadow: 0 2px 0 #3a2a14, 0 6px 12px rgba(0,0,0,.45);
-        }
-        .steam-dial-face {
-            position: relative; width: 100%; height: 100%; border-radius: 50%;
-            background: radial-gradient(circle at 35% 30%, #f0d9a8, #c4a46a 42%, #8a6e3e 78%, #5a4528);
-            box-shadow: inset 0 0 0 2px #3d2c16; overflow: hidden;
-        }
-        .steam-dial-ticks {
-            position: absolute; inset: 6px; border-radius: 50%;
-            background: repeating-conic-gradient(from -135deg, transparent 0deg 12deg, rgba(40,28,12,.55) 12deg 13deg);
-            -webkit-mask: radial-gradient(circle, transparent 58%, #000 59%);
-            mask: radial-gradient(circle, transparent 58%, #000 59%); pointer-events: none;
-        }
-        .steam-dial-pointer {
-            position: absolute; left: 50%; top: 50%; width: 3px; height: 38%; margin-left: -1.5px;
-            transform-origin: 50% 100%; transform: rotate(-135deg);
-            background: linear-gradient(180deg, #2a1810, #5a3020 40%, #1a0e08); border-radius: 2px; z-index: 2;
-        }
-        .steam-dial-hub {
-            position: absolute; left: 50%; top: 50%; width: 16px; height: 16px; margin: -8px 0 0 -8px; border-radius: 50%;
-            background: radial-gradient(circle at 35% 30%, #e8d0a0, #8a6a38 60%, #3a2814);
-            box-shadow: 0 0 0 2px #2a1c0e; z-index: 3;
-        }
-        .steam-dial-readout {
-            position: absolute; left: 50%; bottom: 14%; transform: translateX(-50%); min-width: 44px; padding: 2px 5px;
-            border-radius: 3px; background: #1a120a; border: 1px solid #6a5030; color: #d4a84a;
-            font-family: "Courier New", monospace; font-size: .72rem; font-weight: 800; text-align: center; z-index: 2; pointer-events: none;
-        }
-        .steam-dial-plaque {
-            margin-top: 6px; text-align: center; font-size: .62rem; font-weight: 800;
-            letter-spacing: .12em; text-transform: uppercase; color: #c4a06a;
-        }
-        [data-tip].steam-dial::after {
-            content: attr(data-tip); position: absolute; left: 50%; bottom: calc(100% + 8px);
-            transform: translateX(-50%) translateY(4px); min-width: 140px; max-width: 220px; padding: 8px 10px;
-            border-radius: 8px; border: 1px solid #c9a45a; background: linear-gradient(180deg, #3a2a18, #1a120a);
-            color: #e8d0a0; font-size: .7rem; font-weight: 600; line-height: 1.35; white-space: normal;
-            opacity: 0; pointer-events: none; transition: opacity .15s ease; z-index: 60;
-        }
-        [data-tip].steam-dial:hover::after { opacity: 1; transform: translateX(-50%) translateY(0); }
-
-        .field label {
-            display: block;
-            margin-bottom: 8px;
-            color: var(--muted);
-            font-size: .82rem;
-            font-weight: 700;
-            letter-spacing: .04em;
-            text-transform: uppercase;
-        }
-
-        .input-wrap {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            min-height: 52px;
-            padding: 0 16px;
-            border: 1px solid #315071;
-            border-radius: 12px;
-            background: #081423;
-        }
-
-        .input-prefix {
-            color: var(--accent);
-            font-weight: 900;
-        }
-
-        input[type="text"] {
-            width: 100%;
-            border: 0;
-            outline: 0;
-            background: transparent;
-            color: var(--text);
-            font: inherit;
-            font-size: 1.1rem;
-            font-weight: 750;
-            text-transform: uppercase;
-        }
-
-        input[type="number"] {
-            width: 100%;
-            min-width: 0;
-            border: 0;
-            outline: 0;
-            background: transparent;
-            color: var(--text);
-            font: inherit;
-            font-size: 1rem;
-            font-weight: 750;
-            font-variant-numeric: tabular-nums;
-        }
-
-        .threshold-field { width: 104px; }
-        .threshold-field .input-wrap { padding: 0 10px; }
-
-        button {
-            min-height: 52px;
-            padding: 0 24px;
-            border: 0;
-            border-radius: 12px;
-            background: var(--accent);
-            color: #05210f;
-            font: inherit;
-            font-weight: 900;
-            cursor: pointer;
-            transition: transform .18s ease, filter .18s ease;
-        }
-
-        button:hover { transform: translateY(-1px); filter: brightness(1.05); }
-
-        .secondary-action {
-            background: rgba(15, 23, 42, .9);
-            color: #dbe8f6;
-            border: 1px solid rgba(61, 82, 111, .88);
-            box-shadow: none;
-        }
-
-        .secondary-action:hover {
-            filter: brightness(1.08);
-        }
-
-        .cashout-panel {
-            grid-template-columns: minmax(180px, 1fr) auto auto;
-            align-items: center;
-        }
-
-        .cashout-pin-field {
-            display: grid;
-            gap: 8px;
-        }
-
-        .cashout-pin-buttons {
-            display: flex;
-            gap: 8px;
-            align-items: center;
-            flex-wrap: wrap;
-        }
-
-        .cashout-pin-button {
-            width: 24px;
-            min-width: 24px;
-            max-width: 24px;
-            flex: 0 0 24px;
-            height: 24px;
-            min-height: 24px;
-            max-height: 24px;
-            padding: 0;
-            border-radius: 7px;
-            font-size: .68rem;
-            line-height: 1;
-        }
-
-        .cashout-pin-button.is-used {
-            outline: 2px solid rgba(251, 191, 36, .95);
-            box-shadow: 0 0 0 4px rgba(251, 191, 36, .16);
-        }
-
-        .cashout-pin-status {
-            color: var(--muted);
-            font-size: .8rem;
-            font-weight: 800;
-            letter-spacing: .04em;
-        }
-
-        .cashout-current-pin {
-            display: inline-flex;
-            width: fit-content;
-            align-items: center;
-            gap: 8px;
-            padding: 6px 10px;
-            border-radius: 999px;
-            border: 1px solid rgba(251, 191, 36, .45);
-            background: rgba(251, 191, 36, .10);
-            color: #fef3c7;
-            font-size: .82rem;
-            font-weight: 900;
-            letter-spacing: .06em;
-            font-variant-numeric: tabular-nums;
-        }
-
-        .cashout-current-pin strong {
-            color: #fbbf24;
-            font-size: 1rem;
-        }
-
-        .cashout-clear-button {
-            min-height: 30px;
-            padding: 0 10px;
-            border-radius: 9px;
-            font-size: .76rem;
-        }
-
-        .cashout-submit {
-            min-height: 38px;
-            padding: 0 14px;
-            font-size: .82rem;
-            background: #fbbf24;
-            color: #231604;
-        }
-
-        .market-types {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-
-        .market-choice {
-            display: inline-flex;
-            align-items: center;
-            gap: 7px;
-            min-height: 44px;
-            padding: 0 14px;
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            color: var(--muted);
-            background: rgba(18, 34, 56, .72);
-            cursor: pointer;
-            font-weight: 800;
-        }
-
-        .market-choice:has(input:checked) {
-            color: var(--text);
-            border-color: var(--accent);
-            background: var(--accent-soft);
-        }
-
-        .market-choice input { accent-color: var(--accent); }
-
-        .metrics {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 12px; margin-bottom: 18px;
-        }
-        .pair-stats {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-            gap: 10px; margin-bottom: 12px;
-        }
-        .pair-card .metric-value { font-variant-numeric: tabular-nums; }
-        .pair-card .metric-note { color: var(--brass-light); }
-        .metric {
-            min-height: 118px; padding: 14px 16px; border-radius: 14px;
-            border: 2px solid var(--brass-dark);
-            background: linear-gradient(165deg, rgba(60, 42, 24, .92), rgba(22, 16, 10, .96));
-            box-shadow: inset 0 1px 0 rgba(232,208,160,.1), 0 6px 16px rgba(0,0,0,.3);
-            display: flex; flex-direction: column;
-        }
-        .tracked-dashboard-grid {
-            display: grid !important;
-            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)) !important;
-            gap: 12px !important;
-        }
-
-        .metric-label {
-            color: var(--muted);
-            font-size: .78rem;
-            font-weight: 750;
-            letter-spacing: .07em;
-            text-transform: uppercase;
-        }
-
-        .metric-value {
-            margin-top: 12px;
-            font-size: clamp(1.25rem, 2vw, 2rem);
-            font-weight: 850;
-            letter-spacing: -.035em;
-            overflow-wrap: anywhere;
-        }
-
-        .metric-value.good { color: var(--accent); }
-        .metric-value.medium { color: var(--warning); }
-        .metric-value.low { color: var(--danger); }
-
-        .metric-note {
-            margin-top: 8px;
-            color: var(--muted);
-            font-size: .82rem;
-        }
-
-        .market-pulse-metrics {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-            gap: 10px;
-            margin-bottom: 8px;
-        }
-
-        .market-pulse-card {
-            display: grid;
-            gap: 6px;
-            min-height: auto;
-        }
-
-        .market-pulse-card .metric-value {
-            margin-top: 0;
-        }
-
-        .market-pulse-card .metric-note {
-            margin-top: 0;
-            line-height: 1.45;
-        }
-
-        .market-pulse-card .metric-label {
-            display: block;
-            margin-bottom: 8px;
-        }
-
-        .market-pulse-card .signal-value,
-        .market-pulse-card .strategy-value {
-            font-size: 1.02rem;
-            letter-spacing: -.015em;
-        }
-
-        .metric-divider {
-            height: 1px;
-            margin: 4px 0 6px;
-            background: var(--border);
-        }
-
-        .results-panel {
-            overflow: hidden;
-            border-radius: 18px;
-        }
-
-        .results-header {
-            display: flex;
-            justify-content: space-between;
-            gap: 18px;
-            align-items: center;
-            padding: 18px 20px;
-            border-bottom: 1px solid var(--border);
-            background: rgba(18, 34, 56, .75);
-        }
-
-        .results-header h2 {
-            margin: 0;
-            font-size: 1.05rem;
-        }
-
-        .results-header span {
-            color: var(--muted);
-            font-size: .85rem;
-        }
-
-        .table-scroll {
-            overflow-x: auto;
-        }
-
-        table {
-            width: 100%;
-            border-collapse: separate;
-            border-spacing: 0;
-            min-width: 820px;
-        }
-
-        td, th {
-            padding: 12px 14px !important;
-            border-bottom: 1px solid rgba(34, 55, 82, .72);
-            color: var(--text) !important;
-            background: transparent !important;
-            text-align: right;
-            font-variant-numeric: tabular-nums;
-            white-space: nowrap;
-        }
-
-        tr:first-child td {
-            position: sticky;
-            top: 0;
-            z-index: 2;
-            color: #bcd0e8 !important;
-            background: #122238 !important;
-            font-size: .76rem;
-            font-weight: 800;
-            letter-spacing: .05em;
-            text-transform: uppercase;
-        }
-
-        td:first-child { text-align: left; }
-        tr:hover td { background: rgba(74, 222, 128, .045) !important; }
-
-        td[style*="background-color:green"] {
-            color: var(--accent) !important;
-            background: rgba(74, 222, 128, .10) !important;
-            font-weight: 800;
-        }
-
-        td[style*="background-color:red"] {
-            color: var(--danger) !important;
-            background: rgba(251, 113, 133, .10) !important;
-            font-weight: 800;
-        }
-
-        .error-panel {
-            margin-bottom: 18px;
-            padding: 18px 20px;
-            border-color: rgba(251, 113, 133, .42);
-            border-radius: 16px;
-            color: #fecdd3;
-        }
-
-        .footer-note {
-            margin: 16px 2px 0;
-            color: var(--muted);
-            font-size: .8rem;
-            line-height: 1.55;
-        }
-
-        .compact-dashboard .shell { width: min(1880px, calc(100% - 20px)); padding: 10px 0; }
-        .symbol-marquee {
-            overflow-x: auto;
-            overflow-y: hidden;
-            border: 1px solid rgba(53, 79, 112, .86);
-            border-radius: 14px;
-            background: linear-gradient(180deg, rgba(11, 19, 31, .98), rgba(8, 14, 24, .92));
-            padding: 8px 0;
-            margin-bottom: 8px;
-            scroll-snap-type: x proximity;
-            scrollbar-width: none;
-            -ms-overflow-style: none;
-            -webkit-overflow-scrolling: touch;
-            touch-action: pan-x;
-            cursor: grab;
-        }
-        .symbol-marquee.is-dragging {
-            cursor: grabbing;
-            user-select: none;
-        }
-        .symbol-marquee::-webkit-scrollbar {
-            width: 0;
-            height: 0;
-            display: none;
-            background: transparent;
-        }
-        .symbol-marquee-track {
-            display: flex;
-            gap: 8px;
-            width: max-content;
-            padding: 0 12px;
-            align-items: stretch;
-        }
-        .symbol-marquee-link,
-        .nav-symbol-link,
-        .symbol-slide-link {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            gap: 6px;
-            padding: 7px 11px;
-            border-radius: 8px;
-            text-decoration: none;
-            color: #dce8f5;
-            border: 1px solid rgba(255, 255, 255, .08);
-            background: rgba(255, 255, 255, .04);
-            white-space: nowrap;
-        }
-        .symbol-marquee-link {
-            scroll-snap-align: start;
-        }
-        .symbol-link-stack {
-            display: inline-flex;
-            flex-direction: column;
-            align-items: flex-start;
-            gap: 2px;
-            min-width: 0;
-        }
-        .symbol-link-head {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            min-width: 0;
-        }
-        .symbol-link-badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 4px;
-            padding: 2px 7px;
-            border-radius: 6px;
-            border: 1px solid rgba(255,255,255,.10);
-            background: rgba(255,255,255,.05);
-            color: #8fa4bd;
-            font-size: .58rem;
-            font-weight: 800;
-            letter-spacing: .08em;
-            text-transform: uppercase;
-            line-height: 1.2;
-            white-space: nowrap;
-        }
-        .symbol-link-badge.is-active {
-            color: #0b1725;
-            background: rgba(140, 240, 191, .94);
-            border-color: transparent;
-        }
-        .symbol-link-note {
-            color: #8fa4bd;
-            font-size: .62rem;
-            font-weight: 700;
-            letter-spacing: .04em;
-            line-height: 1.2;
-            white-space: nowrap;
-        }
-        .symbol-link-price {
-            color: #eef5ff;
-            font-size: .72rem;
-            font-weight: 800;
-            line-height: 1.15;
-            white-space: nowrap;
-        }
-        .symbol-link-price.good { color: var(--accent); }
-        .symbol-link-price.low { color: var(--danger); }
-        .symbol-link-price.medium { color: #eef5ff; }
-        .symbol-marquee-link.is-active .symbol-link-price.good { color: #064e3b; }
-        .symbol-marquee-link.is-active .symbol-link-price.low { color: #7f1d1d; }
-        .symbol-marquee-link.is-active .symbol-link-price.medium { color: #07111d; }
-        .symbol-marquee-spacer {
-            flex: 0 0 22px;
-            min-width: 22px;
-            min-height: 1px;
-            background: transparent;
-            border: 0;
-            opacity: 0;
-            pointer-events: none;
-        }
-        .symbol-item {
-            display: grid;
-            grid-template-columns: minmax(0, 95fr) minmax(10px, 5fr);
-            align-items: stretch;
-            gap: 4px;
-            position: relative;
-            flex: 0 0 auto;
-        }
-        .symbol-item--rail {
-            min-width: 0;
-        }
-        .symbol-item form {
-            margin: 0;
-        }
-        .symbol-remove-text {
-            margin: 0;
-            color: rgba(255, 213, 218, .88);
-            cursor: pointer;
-            font-weight: 900;
-            line-height: 1;
-            padding: 0;
-            font-size: 10px;
-            user-select: none;
-        }
-        .symbol-item .symbol-remove-form {
-            position: static;
-            z-index: 3;
-            display: flex;
-            align-items: flex-start;
-            justify-content: flex-end;
-        }
-        .symbol-marquee-link,
-        .symbol-slide-link {
-            position: relative;
-            padding-right: 11px;
-            overflow: hidden;
-            min-width: 0;
-        }
-        .symbol-remove-text:hover {
-            background: transparent;
-            color: rgba(251, 113, 133, .98);
-        }
-        .symbol-marquee-link.is-active,
-        .nav-symbol-link.is-active,
-        .symbol-slide-link.is-active {
-            color: #07111d;
-            background: linear-gradient(135deg, #8cf0bf, #5db3ff);
-            border-color: transparent;
-            font-weight: 700;
-        }
-        .hero-links {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 8px;
-            margin-top: 12px;
-        }
-        .hero-page-status {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 8px;
-            margin-top: 12px;
-        }
-        .hero-page-chip {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            padding: 8px 12px;
-            border-radius: 999px;
-            border: 1px solid rgba(255,255,255,.08);
-            background: rgba(255,255,255,.05);
-            color: #dce8f5;
-            font-size: .74rem;
-            font-weight: 760;
-        }
-        .hero-page-chip.is-front {
-            color: #07111d;
-            background: linear-gradient(135deg, #8cf0bf, #5db3ff);
-            border-color: transparent;
-        }
-        .hero-page-note {
-            color: #9fb2c6;
-            font-size: .74rem;
-            line-height: 1.4;
-            margin: 0;
-        }
-        .tracked-dashboard {
-            margin: 0 0 18px;
-        }
-        .tracked-dashboard-header {
-            display: flex;
-            flex-wrap: wrap;
-            align-items: center;
-            justify-content: space-between;
-            gap: 10px;
-            margin-bottom: 10px;
-        }
-        .tracked-dashboard-title {
-            margin: 0;
-            font-size: .96rem;
-            font-weight: 800;
-            letter-spacing: .06em;
-            text-transform: uppercase;
-            color: #dce8f5;
-        }
-        .tracked-dashboard-note {
-            margin: 0;
-            color: #8fa4bd;
-            font-size: .76rem;
-        }
-        .tracked-dashboard-controls {
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-        }
-        .tracked-dashboard-arrow {
-            width: 34px;
-            min-width: 34px;
-            height: 34px;
-            min-height: 34px;
-            padding: 0;
-            border-radius: 999px;
-            border: 1px solid rgba(255,255,255,.10);
-            background: rgba(255,255,255,.06);
-            color: #eef5ff;
-            font-size: 1rem;
-            line-height: 1;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-        }
-        .tracked-dashboard-arrow:hover {
-            background: rgba(93, 179, 255, .14);
-            border-color: rgba(93, 179, 255, .3);
-        }
-        .tracked-dashboard-refresh {
-            min-height: 34px;
-            padding: 0 12px;
-            border-radius: 999px;
-            border: 1px solid rgba(140, 240, 191, .28);
-            background: rgba(140, 240, 191, .08);
-            color: #dfffee;
-            font-size: .72rem;
-            font-weight: 800;
-        }
-        .tracked-dashboard-refresh:hover {
-            background: rgba(140, 240, 191, .16);
-            border-color: rgba(140, 240, 191, .55);
-        }
-        .portfolio-total-float {
-            position: fixed;
-            right: 20px;
-            bottom: 20px;
-            z-index: 30;
-            min-width: 190px;
-            padding: 12px 15px;
-            border: 1px solid rgba(140, 240, 191, .38);
-            border-radius: 15px;
-            background: rgba(8, 15, 26, .94);
-            box-shadow: 0 14px 36px rgba(0, 0, 0, .35);
-            backdrop-filter: blur(12px);
-        }
-        .portfolio-total-float .portfolio-total-label {
-            display: block;
-            color: #8fa4bd;
-            font-size: .68rem;
-            font-weight: 800;
-            letter-spacing: .08em;
-            text-transform: uppercase;
-        }
-        .portfolio-total-float .portfolio-total-value {
-            display: block;
-            margin-top: 3px;
-            font-size: 1.25rem;
-            font-weight: 900;
-        }
-        .portfolio-total-float.good .portfolio-total-value { color: var(--accent); }
-        .portfolio-total-float.low .portfolio-total-value { color: var(--danger); }
-        .portfolio-total-float.medium .portfolio-total-value { color: #eef5ff; }
-        .portfolio-total-float .portfolio-total-note {
-            display: block;
-            margin-top: 3px;
-            color: #8fa4bd;
-            font-size: .68rem;
-        }
-        @media (max-width: 720px) {
-            .portfolio-total-float {
-                right: 12px;
-                bottom: 12px;
-            }
-        }
-        .tracked-dashboard-window {
-            overflow: hidden;
-        }
-        .tracked-dashboard-grid {
-            display: grid;
-            grid-auto-flow: column;
-            grid-auto-columns: calc((100% - 40px) / 5);
-            gap: 10px;
-            overflow-x: auto;
-            scroll-behavior: smooth;
-            scroll-snap-type: x mandatory;
-            scroll-padding-inline: 2px;
-            scrollbar-width: none;
-            -ms-overflow-style: none;
-            padding-bottom: 4px;
-        }
-        .tracked-dashboard-grid::-webkit-scrollbar {
-            width: 0;
-            height: 0;
-            display: none;
-        }
-        .tracked-dashboard-card {
-            display: block;
-            text-decoration: none;
-            color: inherit;
-            border: 1px solid rgba(53, 79, 112, .86);
-            border-radius: 16px;
-            background: linear-gradient(180deg, rgba(11, 19, 31, .98), rgba(8, 14, 24, .92));
-            padding: 12px;
-            min-width: 0;
-            scroll-snap-align: start;
-            scroll-snap-stop: always;
-        }
-        .tracked-dashboard-card.is-active {
-            border-color: rgba(140, 240, 191, .76);
-            box-shadow: 0 0 0 1px rgba(140, 240, 191, .18) inset;
-        }
-        .tracked-dashboard-top,
-        .tracked-dashboard-bottom {
-            display: flex;
-            align-items: flex-start;
-            justify-content: space-between;
-            gap: 10px;
-        }
-        .tracked-dashboard-top {
-            margin-bottom: 10px;
-        }
-        .tracked-dashboard-symbol {
-            display: flex;
-            flex-direction: column;
-            gap: 4px;
-            min-width: 0;
-        }
-        .tracked-dashboard-market {
-            color: #8fa4bd;
-            font-size: .66rem;
-            font-weight: 800;
-            letter-spacing: .08em;
-            text-transform: uppercase;
-        }
-        .tracked-dashboard-name {
-            color: #eef5ff;
-            font-size: .95rem;
-            font-weight: 800;
-            line-height: 1.2;
-        }
-        .tracked-dashboard-meta {
-            color: #8fa4bd;
-            font-size: .68rem;
-            font-weight: 700;
-            line-height: 1.25;
-        }
-        .tracked-dashboard-price {
-            text-align: right;
-            color: #eef5ff;
-            font-size: 1rem;
-            font-weight: 900;
-            white-space: nowrap;
-        }
-        .tracked-dashboard-price.good { color: var(--accent); }
-        .tracked-dashboard-price.low { color: var(--danger); }
-        .tracked-dashboard-price.medium { color: #eef5ff; }
-        .tracked-dashboard-gridline {
-            display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 8px 10px;
-            margin-bottom: 10px;
-        }
-        .tracked-dashboard-stat span {
-            display: block;
-            color: #8fa4bd;
-            font-size: .64rem;
-            text-transform: uppercase;
-            letter-spacing: .07em;
-            margin-bottom: 2px;
-        }
-        .tracked-dashboard-stat strong {
-            display: block;
-            color: #eef5ff;
-            font-size: .8rem;
-            line-height: 1.2;
-            word-break: break-word;
-        }
-        .tracked-dashboard-bottom {
-            border-top: 1px solid rgba(255,255,255,.06);
-            padding-top: 8px;
-            color: #8fa4bd;
-            font-size: .68rem;
-            line-height: 1.3;
-        }
-        .tracked-dashboard-active-chip {
-            display: inline-flex;
-            align-items: center;
-            gap: 5px;
-            padding: 5px 8px;
-            border-radius: 999px;
-            background: rgba(140, 240, 191, .12);
-            color: #8cf0bf;
-            font-size: .64rem;
-            font-weight: 800;
-            letter-spacing: .07em;
-            text-transform: uppercase;
-        }
-        .hero-link {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            padding: 8px 12px;
-            border-radius: 999px;
-            color: #dce8f5;
-            text-decoration: none;
-            border: 1px solid rgba(255,255,255,.08);
-            background: rgba(255,255,255,.05);
-            font-size: .76rem;
-            font-weight: 760;
-        }
-        .hero-link:hover {
-            background: rgba(93, 179, 255, .14);
-            border-color: rgba(93, 179, 255, .3);
-        }
-        .compact-dashboard .hero { align-items:center; margin-bottom:8px; }
-        .compact-dashboard h1 { font-size:clamp(1.45rem,2.2vw,2.25rem); }
-        .compact-dashboard .subtitle, .compact-dashboard .eyebrow { display:none; }
-        .compact-dashboard .control-panel { display:flex; flex-wrap:wrap; align-items:end; gap:8px; padding:8px; margin-bottom:8px; border-radius:12px; }
-        .compact-dashboard .field label { margin-bottom:4px; font-size:.65rem; }
-        .compact-dashboard .market-types { gap:5px; }
-        .compact-dashboard .market-choice { min-height:32px; padding:0 9px; font-size:.75rem; }
-        .compact-dashboard .input-wrap { width:180px; min-height:32px; padding:0 9px; border-radius:8px; }
-        .compact-dashboard input[type="text"] { font-size:.85rem; }
-        .compact-dashboard button { min-height:32px; padding:0 12px; border-radius:8px; font-size:.75rem; }
-        .compact-dashboard .metrics { grid-template-columns:repeat(3,minmax(0,280px)); gap:8px; margin-bottom:8px; }
-        .compact-dashboard .pair-stats { grid-template-columns:repeat(4,minmax(0,1fr)); }
-        .compact-dashboard .metric { min-height:74px; padding:9px 12px; border-radius:10px; }
-        .compact-dashboard .metric-value { margin-top:3px; font-size:1.6rem; }
-        .compact-dashboard .metric-note { margin-top:2px; font-size:.7rem; }
-        .analysis-grid { display:grid; grid-template-columns:minmax(0,1fr); gap:8px; }
-        .chart-panel { margin:0; border:1px solid var(--border); border-radius:16px; background:rgba(13,26,43,.88); overflow:hidden; }
-        .chart-stage { position:relative; }
-        #candleChart { display:block; width:100%; height:520px; }
-        .chart-stage .trade-overlay {
-            position: static;
-            margin: 10px 10px 0;
-        }
-        .chart-timestamp {
-            padding: 8px 12px 12px;
-            border-top: 1px solid var(--border);
-            color: var(--muted);
-            font-size: .72rem;
-            line-height: 1.4;
-        }
-        .trade-overlay { display:flex; flex-wrap:wrap; gap:12px; padding:7px 10px; border:1px solid var(--border); border-radius:9px; background:rgba(7,17,31,.92); font-size:.72rem; font-weight:850; }
-        .compact-dashboard .results-panel { margin:0; }
-        .compact-dashboard .table-scroll { max-height:520px; overflow:hidden; }
-        .compact-dashboard table { min-width:0; width:100%; table-layout:fixed; }
-        .compact-dashboard td { padding:5px 7px !important; font-size:.72rem; overflow:hidden; text-overflow:ellipsis; }
-        .compact-dashboard td:nth-child(1) { width:23%; text-align:left; }
-        .compact-dashboard td:nth-child(2) { width:39%; text-align:center; }
-        .compact-dashboard td:nth-child(3) { width:38%; text-align:center; overflow:visible; text-overflow:clip; font-weight:850; }
-        #liveGuessTable .signal-sign { font-weight:900; }
-        #liveGuessTable .gain-sign { color:#4ade80; }
-        #liveGuessTable .loss-sign { color:#fb7185; }
-        #liveGuessTable td:nth-child(3).result-gain-cell { background:#14532d !important; color:#f0fdf4 !important; }
-        #liveGuessTable td:nth-child(3).result-loss-cell { background:#7f1d1d !important; color:#fef2f2 !important; }
-        #liveGuessTable td:nth-child(3).result-neutral-cell { background:#334155 !important; color:#e2e8f0 !important; }
-        .table-disclaimer { margin:0; padding:8px 12px; border-top:1px solid var(--border); background:rgba(7,17,31,.72); color:var(--muted); font-size:.68rem; line-height:1.35; }
-        .table-disclaimer strong { color:#d9e4f2; }
-        .current-guess-row td { color:#eef5ff !important; background:rgba(251,191,36,.16) !important; border-top:2px solid var(--warning); border-bottom:2px solid var(--warning); font-weight:900; }
-        .forward-guess-row td { color:#9fc8ff !important; background:rgba(98,168,255,.035) !important; }
-
-        .browser-width-section {
-            width: 100vw;
-            margin-left: calc(50% - 50vw);
-            margin-right: calc(50% - 50vw);
-            margin-top: 18px;
-            border-top: 1px solid var(--border);
-            border-bottom: 1px solid var(--border);
-            background: rgba(7, 17, 31, .96);
-        }
-
-        .browser-width-inner {
-            width: min(1880px, calc(100% - 32px));
-            margin: 0 auto;
-            padding: 28px 0;
-        }
-
-        .review-heading {
-            margin: 0 0 8px;
-            font-size: clamp(1.35rem, 2.5vw, 2.15rem);
-            letter-spacing: -.025em;
-        }
-
-        .review-intro {
-            max-width: 1100px;
-            margin: 0 0 22px;
-            color: var(--muted);
-            line-height: 1.65;
-        }
-
-        .math-review-grid {
-            display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 12px;
-        }
-
-        .math-card {
-            min-width: 0;
-            padding: 18px;
-            border: 1px solid var(--border);
-            border-radius: 14px;
-            background: rgba(13, 26, 43, .82);
-            overflow-x: auto;
-        }
-
-        .math-card.wide { grid-column: 1 / -1; }
-        .math-card h3 { margin: 0 0 10px; color: #d9e4f2; font-size: 1rem; }
-        .math-card p, .math-card li { color: #b8c8da; font-size: .84rem; line-height: 1.6; }
-        .math-card ul { margin: 10px 0 0; padding-left: 20px; }
-        .math-card mjx-container[display="true"] { margin: 1em 0 !important; overflow-x: auto; overflow-y: hidden; }
-
-        .latex-source {
-            margin-top: 12px;
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            background: #050d18;
-        }
-
-        .latex-source summary {
-            padding: 12px 14px;
-            cursor: pointer;
-            color: #bcd0e8;
-            font-size: .82rem;
-            font-weight: 850;
-        }
-
-        .latex-source pre {
-            margin: 0;
-            padding: 16px;
-            border-top: 1px solid var(--border);
-            color: #c8f7d8;
-            font: .76rem/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-            white-space: pre-wrap;
-            overflow-wrap: anywhere;
-        }
-
-        .reference-drawer {
-            border: 1px solid rgba(40, 57, 80, .94);
-            border-radius: 18px;
-            background: linear-gradient(180deg, rgba(12, 20, 33, .96), rgba(8, 14, 23, .93));
-            box-shadow: 0 22px 48px rgba(0, 0, 0, .22);
-            overflow: hidden;
-        }
-        .reference-drawer summary {
-            list-style: none;
-            cursor: pointer;
-            padding: 18px 20px;
-            font-weight: 820;
-            color: #eef5ff;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 12px;
-        }
-        .reference-drawer summary::-webkit-details-marker { display: none; }
-        .reference-drawer summary::after {
-            content: '+';
-            font-size: 1.2rem;
-            color: #8cf0bf;
-        }
-        .reference-drawer[open] summary::after { content: '–'; }
-        .reference-drawer-body { padding: 0 20px 20px; }
-        .reference-drawer-head {
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            gap: 16px;
-            margin-bottom: 14px;
-        }
-        .reference-drawer-head h2 {
-            margin: 0;
-            font-size: 1.02rem;
-            color: #eef5ff;
-        }
-        .reference-close-btn {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            min-width: 36px;
-            min-height: 36px;
-            border-radius: 999px;
-            color: #eef5ff;
-            border: 1px solid rgba(255,255,255,.12);
-            background: rgba(255,255,255,.04);
-            font-weight: 800;
-            cursor: pointer;
-        }
-
-        .disclosure-section { background: #050b14; }
-        .disclosure-section h2 { margin: 0 0 18px; color: var(--warning); font-size: 1.1rem; letter-spacing: .06em; }
-        .disclosure-section h3 { margin: 24px 0 10px; color: #fef3c7; font-size: 1rem; letter-spacing: .04em; }
-        .disclosure-section p {
-            margin: 0 0 15px;
-            color: #c7d3e1;
-            font-size: .78rem;
-            line-height: 1.65;
-            letter-spacing: .015em;
-        }
-        .disclosure-section .regulatory-copy { text-transform: uppercase; }
-        .disclosure-modal {
-            position: fixed;
-            inset: 0;
-            display: none;
-            align-items: flex-start;
-            justify-content: center;
-            padding: 26px 16px;
-            background: rgba(4, 8, 14, .76);
-            backdrop-filter: blur(10px);
-            z-index: 60;
-        }
-        .disclosure-modal:target { display: flex; }
-        .disclosure-dialog {
-            width: min(980px, 100%);
-            max-height: calc(100vh - 52px);
-            overflow: auto;
-            border: 1px solid rgba(44, 63, 89, .92);
-            border-radius: 20px;
-            background: linear-gradient(180deg, rgba(13, 23, 37, .98), rgba(8, 14, 23, .96));
-            box-shadow: 0 28px 60px rgba(0, 0, 0, .42);
-            padding: 20px;
-        }
-        .disclosure-modal-head {
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            gap: 16px;
-            margin-bottom: 14px;
-        }
-        .disclosure-modal-head h2 { margin: 0; font-size: 1.05rem; }
-        .modal-link-shell {
-            margin: 8px 0 0;
-            color: #8fa4bd;
-            font-size: .82rem;
-        }
-        .modal-close-link {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            min-width: 36px;
-            min-height: 36px;
-            border-radius: 999px;
-            color: #eef5ff;
-            text-decoration: none;
-            border: 1px solid rgba(255,255,255,.12);
-            background: rgba(255,255,255,.04);
-            font-weight: 800;
-        }
-        .signal-key {
-            display: grid;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
-            gap: 8px;
-            margin: 12px 0 18px;
-        }
-        .signal-key span {
-            padding: 10px 12px;
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            color: #d9e4f2;
-            background: rgba(13, 26, 43, .72);
-            font-size: .8rem;
-            font-weight: 800;
-        }
-
-        body.compact-dashboard {
-            background:
-                radial-gradient(circle at top left, rgba(37, 99, 235, .15), transparent 28rem),
-                radial-gradient(circle at 88% 0%, rgba(16, 185, 129, .11), transparent 24rem),
-                linear-gradient(180deg, #040a12 0%, #09111d 100%);
-            font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-            overflow-x: hidden;
-        }
-
-        .compact-dashboard .shell {
-            width: min(1680px, calc(100% - 32px));
-            padding: 24px 0 44px;
-        }
-
-        .compact-dashboard .hero {
-            align-items: flex-start;
-            gap: 20px;
-            margin-bottom: 18px;
-        }
-
-        .hero-copy {
-            display: grid;
-            gap: 12px;
-            max-width: 980px;
-        }
-
-        .compact-dashboard .eyebrow {
-            display: block;
-            margin: 0;
-            color: #7dd3fc;
-        }
-
-        .compact-dashboard h1 {
-            font-size: clamp(1.9rem, 4vw, 3.3rem);
-            letter-spacing: -.05em;
-        }
-
-        .compact-dashboard .subtitle {
-            display: block;
-            max-width: 860px;
-            margin: 0;
-            color: #a9bdd4;
-            font-size: .98rem;
-            line-height: 1.55;
-        }
-
-        .hero-tags {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 10px;
-        }
-
-        .hero-tags span,
-        .status-meta span,
-        .summary-ribbon span,
-        .panel-chip,
-        .card-chip {
-            border: 1px solid rgba(61, 82, 111, .82);
-            background: rgba(7, 13, 22, .74);
-            color: #dbe8f6;
-        }
-
-        .hero-tags span {
-            padding: 9px 12px;
-            border-radius: 999px;
-            font-size: .75rem;
-            font-weight: 800;
-            letter-spacing: .06em;
-            text-transform: uppercase;
-        }
-
-        .hero-status {
-            display: grid;
-            gap: 10px;
-            justify-items: end;
-            min-width: 320px;
-        }
-
-        .compact-dashboard .status-pill {
-            padding: 12px 16px;
-            border-radius: 16px;
-            background: rgba(10, 17, 28, .9);
-        }
-
-        .status-meta {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 8px;
-            justify-content: flex-end;
-        }
-
-        .status-meta span {
-            padding: 8px 10px;
-            border-radius: 999px;
-            font-size: .74rem;
-            font-weight: 760;
-        }
-
-        .compact-dashboard .control-panel {
-            display: flex;
-            flex-wrap: wrap;
-            align-items: end;
-            gap: 12px 14px;
-            margin-bottom: 16px;
-            padding: 16px 18px;
-            border-radius: 22px;
-            background: linear-gradient(180deg, rgba(13, 22, 35, .96), rgba(8, 14, 23, .9));
-        }
-
-        .compact-dashboard .field {
-            display: grid;
-            gap: 6px;
-            min-width: 0;
-        }
-
-        .compact-dashboard .field label {
-            margin: 0;
-            font-size: .7rem;
-            letter-spacing: .09em;
-        }
-
-        .compact-dashboard .market-choice,
-        .compact-dashboard .input-wrap,
-        .compact-dashboard button {
-            min-height: 44px;
-            border-radius: 14px;
-        }
-
-        .compact-dashboard .input-wrap {
-            padding: 0 12px;
-            background: rgba(5, 10, 18, .92);
-        }
-
-        .compact-dashboard input[type="text"],
-        .compact-dashboard input[type="number"] {
-            font-size: .95rem;
-        }
-
-        .compact-dashboard .threshold-field {
-            width: 120px;
-        }
-
-        .compact-dashboard button {
-            min-width: 160px;
-            padding: 0 18px;
-            box-shadow: 0 12px 28px rgba(74, 222, 128, .15);
-        }
-
-        .compact-dashboard .cashout-pin-button {
-            width: 24px;
-            min-width: 24px;
-            max-width: 24px;
-            flex: 0 0 24px;
-            padding: 0;
-        }
-
-        .compact-dashboard .market-pulse-metrics {
-            grid-template-columns: repeat(3, minmax(0, 1fr));
-            gap: 14px;
-            margin-bottom: 12px;
-        }
-
-        .summary-card {
-            position: relative;
-            display: grid;
-            gap: 14px;
-            min-height: 252px;
-            padding: 20px;
-            border-radius: 22px;
-            background: linear-gradient(180deg, rgba(12, 20, 33, .96), rgba(8, 14, 23, .93));
-            border: 1px solid rgba(45, 63, 87, .92);
-            box-shadow: 0 22px 48px rgba(0, 0, 0, .28);
-            overflow: hidden;
-        }
-
-        .summary-card::before {
-            content: "";
-            position: absolute;
-            inset: 0 0 auto;
-            height: 1px;
-            background: linear-gradient(90deg, transparent, rgba(125, 211, 252, .35), transparent);
-        }
-
-        .summary-card--wallet {
-            border-color: rgba(34, 197, 94, .35);
-            box-shadow: 0 24px 54px rgba(0, 0, 0, .33), 0 0 0 1px rgba(74, 222, 128, .06) inset;
-        }
-
-        .summary-card--signal {
-            border-color: rgba(251, 191, 36, .24);
-        }
-
-        .card-topline {
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            gap: 12px;
-        }
-        .dashboard-card-actions {
-            display: inline-flex;
-            align-items: center;
-            justify-content: flex-end;
-            gap: 8px;
-            flex-wrap: wrap;
-        }
-
-        .card-kicker {
-            margin: 6px 0 0;
-            color: #dce8f5;
-            font-size: .9rem;
-            font-weight: 760;
-            letter-spacing: -.01em;
-        }
-
-        .card-chip,
-        .panel-chip,
-        .summary-ribbon span {
-            padding: 8px 10px;
-            border-radius: 999px;
-            font-size: .74rem;
-            font-weight: 820;
-            line-height: 1.3;
-        }
-
-        .card-chip.is-live {
-            color: #b8f7ca;
-            border-color: rgba(34, 197, 94, .35);
-            background: rgba(16, 185, 129, .12);
-        }
-
-        .card-chip.is-file {
-            color: #bfdbfe;
-            border-color: rgba(96, 165, 250, .34);
-            background: rgba(37, 99, 235, .14);
-        }
-
-        .card-chip.is-warning {
-            color: #fde68a;
-            border-color: rgba(251, 191, 36, .38);
-            background: rgba(251, 191, 36, .14);
-        }
-
-        .card-chip.is-neutral {
-            color: #d9e4f2;
-            border-color: rgba(148, 163, 184, .32);
-            background: rgba(71, 85, 105, .28);
-        }
-
-        .card-chip.is-accent {
-            color: #dcfce7;
-            border-color: rgba(34, 197, 94, .32);
-            background: rgba(22, 163, 74, .13);
-        }
-
-        .card-main {
-            display: grid;
-            gap: 8px;
-        }
-
-        .summary-card .metric-value {
-            margin: 0;
-            font-size: clamp(1.5rem, 2.6vw, 2.5rem);
-            line-height: .98;
-        }
-
-        .summary-card--signal .metric-value {
-            font-size: clamp(1.25rem, 2vw, 2rem);
-        }
-
-        .metric-note--strong {
-            margin: 0;
-            color: #dce8f5;
-            font-size: .88rem;
-            line-height: 1.5;
-        }
-
-        .card-grid {
-            display: grid;
-            gap: 10px;
-        }
-
-        .card-grid--market,
-        .card-grid--wallet,
-        .card-grid--signal {
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-        }
-
-        .summary-stat {
-            min-width: 0;
-            padding: 12px 14px;
-            border: 1px solid rgba(52, 71, 99, .75);
-            border-radius: 15px;
-            background: rgba(8, 15, 26, .76);
-        }
-
-        .summary-stat span {
-            display: block;
-            margin-bottom: 7px;
-            color: #86a0bc;
-            font-size: .71rem;
-            font-weight: 800;
-            letter-spacing: .08em;
-            text-transform: uppercase;
-        }
-
-        .summary-stat strong {
-            display: block;
-            color: #f1f7ff;
-            font-size: 1.02rem;
-            font-weight: 820;
-            line-height: 1.28;
-            overflow-wrap: anywhere;
-        }
-
-        .summary-ribbon {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 8px;
-        }
-
-        .card-footnote {
-            margin-top: auto;
-            color: #9eb4cb;
-            font-size: .76rem;
-            line-height: 1.45;
-        }
-
-        .card-footnote--seed {
-            margin-top: 10px;
-            padding-top: 10px;
-            border-top: 1px solid rgba(34, 197, 94, .14);
-            color: #bfe9cb;
-        }
-
-        .compact-dashboard .pair-stats {
-            grid-template-columns: repeat(5, minmax(0, 1fr));
-            gap: 10px;
-            margin-bottom: 12px;
-        }
-
-        .pair-card {
-            min-height: auto;
-            padding: 16px;
-            border-radius: 18px;
-            background: rgba(9, 16, 27, .82);
-        }
-
-        .pair-card .metric-value {
-            margin-top: 10px;
-            font-size: 1.45rem;
-        }
-
-        .pair-card .metric-note {
-            margin-top: 8px;
-            line-height: 1.4;
-        }
-
-        .pair-card--carry {
-            border-color: rgba(96, 165, 250, .3);
-            background: linear-gradient(180deg, rgba(13, 22, 35, .95), rgba(9, 16, 27, .9));
-        }
-
-        .compact-dashboard .analysis-grid {
-            gap: 12px;
-        }
-
-        .results-panel,
-        .chart-panel {
-            border-radius: 22px;
-            border: 1px solid rgba(40, 57, 80, .94);
-            background: linear-gradient(180deg, rgba(12, 20, 33, .96), rgba(8, 14, 23, .93));
-            box-shadow: 0 22px 48px rgba(0, 0, 0, .26);
-        }
-
-        .results-header {
-            padding: 18px 20px 16px;
-            background: linear-gradient(180deg, rgba(15, 25, 40, .96), rgba(12, 20, 32, .84));
-        }
-
-        .results-header h2 {
-            margin: 0;
-            font-size: 1.08rem;
-        }
-
-        .results-header p {
-            margin: 6px 0 0;
-            color: #92a8c0;
-            font-size: .82rem;
-            line-height: 1.45;
-        }
-
-        .header-chips {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 8px;
-            justify-content: flex-end;
-        }
-
-        .panel-chip {
-            color: #dce8f5;
-        }
-
-        .compact-dashboard .table-scroll {
-            max-height: none;
-            overflow: auto;
-            background: linear-gradient(180deg, rgba(8, 15, 25, .52), rgba(5, 10, 18, .66));
-        }
-
-        .compact-dashboard table {
-            min-width: 760px;
-            width: 100%;
-            table-layout: auto;
-        }
-
-        .compact-dashboard td,
-        .compact-dashboard th {
-            padding: 10px 12px !important;
-            font-size: .82rem;
-            white-space: nowrap;
-        }
-
-        .compact-dashboard tr:first-child td {
-            top: 0;
-            background: #0f1c2d !important;
-            color: #c9d9eb !important;
-            font-size: .73rem;
-        }
-
-        .compact-dashboard td:nth-child(1),
-        .compact-dashboard td:nth-child(2),
-        .compact-dashboard td:nth-child(3) {
-            text-align: left;
-        }
-
-        .compact-dashboard tr:hover td {
-            background: rgba(59, 130, 246, .06) !important;
-        }
-
-        .current-guess-row td {
-            background: rgba(251, 191, 36, .14) !important;
-            border-top: 2px solid var(--warning);
-            border-bottom: 2px solid var(--warning);
-        }
-
-        .forward-guess-row td {
-            background: rgba(36, 54, 84, .35) !important;
-            color: #bdd4ef !important;
-        }
-
-        .table-disclaimer {
-            padding: 12px 16px;
-            border-top: 1px solid rgba(35, 50, 73, .92);
-            background: rgba(5, 10, 18, .84);
-            color: #8fa4bd;
-            font-size: .76rem;
-            line-height: 1.45;
-        }
-
-        .table-disclaimer strong {
-            color: #eef5ff;
-        }
-
-        .compact-dashboard .chart-panel {
-            overflow: hidden;
-        }
-
-        .results-header--chart {
-            align-items: flex-start;
-        }
-
-        .chart-stage {
-            padding-bottom: 8px;
-            background: linear-gradient(180deg, rgba(6, 11, 19, .56), rgba(8, 14, 23, .12));
-        }
-
-        .compact-dashboard #candleChart {
-            height: 500px;
-        }
-
-        .trade-overlay {
-            margin: 0 16px 12px;
-            padding: 12px 14px;
-            border-radius: 14px;
-            background: rgba(6, 12, 20, .78);
-            backdrop-filter: blur(8px);
-        }
-
-        .chart-timestamp {
-            padding: 12px 16px 16px;
-            font-size: .76rem;
-        }
-
-        @media (max-width: 1220px) {
-            .compact-dashboard .market-pulse-metrics {
-                grid-template-columns: repeat(2, minmax(0, 1fr));
-            }
-
-            .summary-card--wallet {
-                grid-column: 1 / -1;
-            }
-
-            .compact-dashboard .pair-stats {
-                grid-template-columns: repeat(3, minmax(0, 1fr));
-            }
-        }
-
-        @media (max-width: 920px) {
-            .compact-dashboard .hero {
-                flex-direction: column;
-            }
-
-            .hero-status {
-                justify-items: start;
-                min-width: 0;
-            }
-
-            .status-meta {
-                justify-content: flex-start;
-            }
-
-            .math-review-grid {
-                grid-template-columns: 1fr;
-            }
-
-            .math-card.wide {
-                grid-column: auto;
-            }
-
-            .compact-dashboard .pair-stats {
-                grid-template-columns: repeat(2, minmax(0, 1fr));
-            }
-
-            .compact-dashboard #candleChart {
-                height: 430px;
-            }
-        }
-
-        @media (max-width: 720px) {
-            .compact-dashboard .shell {
-                width: min(100% - 20px, 1680px);
-                padding-top: 20px;
-            }
-
-            .compact-dashboard {
-                overflow-x: hidden;
-            }
-
-            .compact-dashboard .control-panel {
-                padding: 14px;
-            }
-
-            .compact-dashboard .field,
-            .compact-dashboard .threshold-field,
-            .compact-dashboard button {
-                width: 100%;
-            }
-
-            .tracked-dashboard-header > div:first-child,
-            .tracked-dashboard-controls {
-                min-width: 0;
-                width: 100%;
-            }
-
-            .tracked-dashboard-controls {
-                display: grid;
-                grid-template-columns: minmax(0, 1fr) 42px 42px;
-                gap: 8px;
-            }
-
-            .compact-dashboard .tracked-dashboard-refresh {
-                width: 100%;
-            }
-
-            .compact-dashboard .tracked-dashboard-arrow {
-                width: 42px;
-                min-width: 42px;
-                padding: 0;
-            }
-
-            .compact-dashboard .hero-status,
-            .compact-dashboard .status-pill,
-            .compact-dashboard .status-meta {
-                width: 100%;
-                min-width: 0;
-                max-width: 100%;
-            }
-
-            .compact-dashboard .status-pill {
-                white-space: normal;
-            }
-
-            .compact-dashboard .status-meta span {
-                max-width: 100%;
-                overflow-wrap: anywhere;
-            }
-
-            .compact-dashboard .market-pulse-metrics,
-            .compact-dashboard .pair-stats {
-                grid-template-columns: 1fr;
-            }
-
-            .summary-card--wallet {
-                grid-column: auto;
-            }
-
-            .card-grid--market,
-            .card-grid--wallet,
-            .card-grid--signal {
-                grid-template-columns: 1fr;
-            }
-
-            .results-header {
-                align-items: flex-start;
-                flex-direction: column;
-            }
-
-            .header-chips {
-                justify-content: flex-start;
-            }
-
-            .browser-width-inner {
-                width: min(100% - 20px, 1880px);
-                padding: 22px 0;
-            }
-
-            .browser-width-section {
-                width: 100%;
-                margin-left: 0;
-                margin-right: 0;
-            }
-
-            .signal-key {
-                grid-template-columns: 1fr;
-            }
-
-            .compact-dashboard #candleChart {
-                height: 340px;
-            }
-        }
-        @media (max-width: 1100px) {
-            .tracked-dashboard-grid {
-                grid-auto-columns: calc((100% - 40px) / 5);
-            }
-        }
-        @media (max-width: 720px) {
-            .tracked-dashboard-grid {
-                grid-auto-columns: 100%;
-            }
-        }
-    
-.audit-actual-candle-cell { display:flex; align-items:center; gap:7px; white-space:nowrap; }
-.audit-ohlc-wrap { display:inline-flex; width:28px; height:48px; flex:0 0 28px; align-items:center; justify-content:center; }
-.audit-ohlc { width:28px; height:48px; overflow:visible; }
-.audit-ohlc-wick { stroke:currentColor; stroke-width:2; vector-effect:non-scaling-stroke; }
-.audit-ohlc-body { fill:none; stroke:currentColor; stroke-width:2; vector-effect:non-scaling-stroke; }
-.audit-candle-up { color:#0b6b35; }
-.audit-candle-down { color:#a11b1b; }
-.audit-candle-flat { color:#666; }
-.audit-candle-text { display:inline-flex; flex-direction:column; gap:2px; }
-.audit-candle-text small { font-size:10px; opacity:.78; }
-
-
-        .logic-poem-console {
-            margin: 14px 0;
-            border: 1px solid rgba(96, 165, 250, .30);
-            border-radius: 22px;
-            background: linear-gradient(135deg, rgba(9, 18, 31, .97), rgba(8, 14, 24, .94));
-            overflow: hidden;
-            box-shadow: 0 18px 42px rgba(0,0,0,.24);
-        }
-        .logic-poem-head {
-            display:flex; align-items:flex-start; justify-content:space-between; gap:16px;
-            padding:16px 18px; border-bottom:1px solid rgba(53,75,104,.72);
-        }
-        .logic-poem-head h2 { margin:0; font-size:1.05rem; color:#f2f7ff; }
-        .logic-poem-head p { margin:5px 0 0; color:#91a8c1; font-size:.78rem; }
-        .logic-poem-live { display:inline-flex; align-items:center; gap:7px; color:#bbf7d0; font-size:.72rem; font-weight:800; letter-spacing:.06em; }
-        .logic-poem-live::before { content:''; width:8px; height:8px; border-radius:50%; background:#22c55e; box-shadow:0 0 0 5px rgba(34,197,94,.10); }
-        .logic-poem-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:1px; background:rgba(48,67,92,.5); }
-        .logic-poem-node { min-width:0; padding:15px 16px; background:rgba(7,13,23,.94); }
-        .logic-poem-node span { display:block; color:#7f9ab8; font-size:.67rem; font-weight:800; letter-spacing:.09em; text-transform:uppercase; margin-bottom:7px; }
-        .logic-poem-node strong { display:block; color:#edf5ff; font-size:.92rem; line-height:1.35; overflow-wrap:anywhere; }
-        .logic-poem-verse { display:grid; grid-template-columns:34px minmax(0,1fr); gap:12px; padding:16px 18px; border-top:1px solid rgba(53,75,104,.65); }
-        .logic-poem-coordinate { color:#60a5fa; font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-weight:800; }
-        .logic-poem-lines { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; color:#cfe0f3; font-size:.82rem; line-height:1.75; }
-        .logic-poem-lines b { color:#ffffff; font-weight:800; }
-        .logic-poem-lines .good { color:#86efac; }
-        .logic-poem-lines .warn { color:#fde68a; }
-        .logic-poem-trace { border-top:1px solid rgba(53,75,104,.65); }
-        .logic-poem-trace summary { cursor:pointer; padding:12px 18px; color:#9eb6cf; font-size:.77rem; font-weight:800; }
-        .logic-poem-trace pre { margin:0; padding:0 18px 18px; color:#bcd0e5; white-space:pre-wrap; font-size:.75rem; line-height:1.55; }
-        @media (max-width: 980px) { .logic-poem-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
-        @media (max-width: 620px) { .logic-poem-grid { grid-template-columns:1fr; } .logic-poem-head { flex-direction:column; } }
-</style>
-</head>
-<body class="compact-dashboard">
-<?php $tracked_portfolio_output_class = $tracked_portfolio_output_total > 0.00000001 ? 'good' : ($tracked_portfolio_output_total < -0.00000001 ? 'low' : 'medium'); ?>
-<aside id="portfolioTotalFloat" class="portfolio-total-float <?= htmlspecialchars($tracked_portfolio_output_class) ?>" aria-label="Combined output totals across tracked symbols">
-    <span class="portfolio-total-label">Cashed out</span>
-    <strong id="portfolioTotalValue" class="portfolio-total-value"><?= $tracked_portfolio_output_total >= 0.0 ? '' : '-' ?>$<?= number_format(abs($tracked_portfolio_output_total), 2) ?></strong>
-    <span id="portfolioTotalNote" class="portfolio-total-note"><?= $tracked_portfolio_output_count ?> SYMBOLS • P&amp;L <?= $tracked_portfolio_net_pnl >= 0.0 ? '+' : '-' ?>$<?= number_format(abs($tracked_portfolio_net_pnl), 2) ?> + UNREINVESTED SOLD $<?= number_format($tracked_portfolio_unreinvested_sold, 2) ?></span>
-</aside>
-<main class="shell">
-    <?php if (!empty($tracked_marquee_links)): ?>
-        <section class="symbol-marquee" aria-label="Tracked market symbols">
-            <div class="symbol-marquee-track">
-                <span class="symbol-marquee-spacer" aria-hidden="true"></span>
-                <?php foreach ($tracked_marquee_links as $tracked_link): ?>
-                    <div class="symbol-item">
-                        <a class="symbol-marquee-link<?= $tracked_link['active'] ? ' is-active' : '' ?>" href="<?= htmlspecialchars($tracked_link['href']) ?>"<?= ($tracked_link['aria_current']) ? ' aria-current="' . htmlspecialchars((string)$tracked_link['aria_current']) . '"' : '' ?>>
-                            <span class="symbol-link-stack">
-                                <span class="symbol-link-head">
-                                    <span><?= htmlspecialchars($tracked_link['market'] === 'stock' ? 'STOCK' : 'CRYPTO') ?></span>
-                                    <strong><?= htmlspecialchars($tracked_link['symbol']) ?></strong>
-                                </span>
-                                <span
-                                    class="symbol-link-price <?= htmlspecialchars((string)($tracked_link['price_class'] ?? 'medium')) ?>"
-                                    title="<?= htmlspecialchars((string)($tracked_link['price_direction'] ?? 'FLAT')) ?> asset move"
-                                ><?= htmlspecialchars((string)($tracked_link['price_label'] ?? '—')) ?></span>
-                                <?php if (!empty($tracked_link['role_label'])): ?>
-                                    <span class="symbol-link-badge<?= $tracked_link['active'] ? ' is-active' : '' ?>"><?= htmlspecialchars($tracked_link['role_label']) ?></span>
-                                <?php endif; ?>
-                            </span>
-                        </a>
-                        <form method="post" action="" class="symbol-remove-form">
-                            <input type="hidden" name="remove_tracked_symbol" value="1">
-                            <input type="hidden" name="remove_market_type" value="<?= htmlspecialchars($tracked_link['market']) ?>">
-                            <input type="hidden" name="remove_symbol" value="<?= htmlspecialchars($tracked_link['symbol']) ?>">
-                            <p
-                                class="symbol-remove-text"
-                                role="button"
-                                tabindex="0"
-                                aria-label="Remove <?= htmlspecialchars($tracked_link['symbol']) ?> from tracked symbols"
-                                onclick="this.closest('form').submit()"
-                                onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.closest('form').submit();}"
-                            >×</p>
-                        </form>
-                    </div>
-                <?php endforeach; ?>
-                <span class="symbol-marquee-spacer" aria-hidden="true"></span>
-            </div>
-        </section>
-    <?php endif; ?>
-
-    <header class="hero">
-        <div class="hero-copy">
-            <p class="eyebrow">CNGN Educational Simulation</p>
-            <h1><?= htmlspecialchars($ticker) ?> 1-Hour Ahead Market Console</h1>
-            <p class="subtitle">
-                Hourly candlesticks only, timestamp-locked model signals, and a paper wallet that
-                starts every Analysis click with $5,000 cash and $5,000 invested in the asset. This page does
-                not place trades or manage accounts.
-            </p>
-            <div class="hero-tags" aria-label="Console focus">
-                <span>Hourly candlesticks</span>
-                <span>50/50 $10K wallet</span>
-                <span>Resolved trade ledger</span>
-            </div>
-            <div class="hero-page-status" aria-label="Page role">
-                <span class="hero-page-chip is-front">ACTIVE PAGE · <?= htmlspecialchars($ticker) ?></span>
-                <span class="hero-page-chip"><?= htmlspecialchars(strtoupper($market_type === 'stock' ? 'STOCK PAGE' : 'CRYPTO PAGE')) ?></span>
-            </div>
-            <p class="hero-page-note">Other tracked symbols remain in background view as supporting pages.</p>
-            <div class="hero-links">
-                <a class="hero-link" href="#site-disclaimer">Disclaimer</a>
-                <a class="hero-link" href="#model-reference">Model notes</a>
-                <a class="hero-link" href="./latex-formula.php" target="_blank" rel="noopener">LaTeX formula</a>
-            </div>
-        </div>
-        <div class="hero-status">
-            <div class="status-pill" title="The model advances at five-minute boundaries; the market cache is checked about every 30 seconds">
-                <span class="status-dot"></span>
-                <span>Next model boundary: <strong id="retrieveCountdown">--:--</strong> at <strong id="retrieveTime">--:--:--</strong></span>
-            </div>
-            <div class="status-meta">
-                <span id="dataStatusNote"><?= htmlspecialchars($data_note !== '' ? $data_note : 'Using the current 30-second market feed.') ?></span>
-                <span id="dataStatusUpdated"><?= htmlspecialchars($updated_at !== 'Unavailable' ? 'Feed file ' . $updated_at : 'Feed file unavailable') ?></span>
-            </div>
-        </div>
-    </header>
-
-    <?php if (!empty($tracked_dashboard_cards)): ?>
-        <section class="tracked-dashboard panel" aria-label="Tracked symbol dashboard">
-            <div class="tracked-dashboard-header">
-                <div>
-                    <h2 class="tracked-dashboard-title">Tracked symbol dashboard</h2>
-                    <p class="tracked-dashboard-note">Scheduler-backed price, wallet, signal, trust, and last-trade view for every tracked page.</p>
-                </div>
-                <div class="tracked-dashboard-controls" aria-label="Tracked symbol carousel controls">
-                    <button type="button" class="tracked-dashboard-refresh" data-refresh-dashboard aria-label="Refresh dashboard">Refresh</button>
-                    <button type="button" class="tracked-dashboard-arrow" data-dashboard-prev aria-label="Previous tracked symbols">‹</button>
-                    <button type="button" class="tracked-dashboard-arrow" data-dashboard-next aria-label="Next tracked symbols">›</button>
-                </div>
-            </div>
-            <div class="tracked-dashboard-window">
-                <div class="tracked-dashboard-grid">
-                    <?php foreach ($tracked_dashboard_cards as $dashboard_card): ?>
-                        <a
-                            class="tracked-dashboard-card<?= $dashboard_card['active'] ? ' is-active' : '' ?>"
-                            href="<?= htmlspecialchars($dashboard_card['href']) ?>"
-                            data-tracked-card
-                            data-market="<?= htmlspecialchars($dashboard_card['market']) ?>"
-                            data-symbol="<?= htmlspecialchars($dashboard_card['symbol']) ?>"
-                            <?= ($dashboard_card['aria_current']) ? ' aria-current="' . htmlspecialchars((string)$dashboard_card['aria_current']) . '"' : '' ?>
-                        >
-                            <div class="tracked-dashboard-top">
-                                <div class="tracked-dashboard-symbol">
-                                    <span class="tracked-dashboard-market"><?= htmlspecialchars($dashboard_card['market'] === 'stock' ? 'STOCK' : 'CRYPTO') ?></span>
-                                    <strong class="tracked-dashboard-name"><?= htmlspecialchars($dashboard_card['symbol']) ?></strong>
-                                    <span class="tracked-dashboard-meta" data-card-updated><?= htmlspecialchars($dashboard_card['updated_label']) ?></span>
-                                </div>
-                                <div class="tracked-dashboard-price <?= htmlspecialchars($dashboard_card['price_class'] ?? 'medium') ?>" data-card-price title="<?= htmlspecialchars((string)($dashboard_card['price_direction'] ?? 'FLAT')) ?> asset move"><?= htmlspecialchars($dashboard_card['price_label']) ?></div>
-                            </div>
-                            <div class="tracked-dashboard-gridline">
-                                <div class="tracked-dashboard-stat">
-                                    <span>Position</span>
-                                    <strong data-card-position><?= htmlspecialchars($dashboard_card['position_label']) ?></strong>
-                                </div>
-                                <div class="tracked-dashboard-stat">
-                                    <span>Signal</span>
-                                    <strong data-card-signal><?= htmlspecialchars($dashboard_card['signal_label']) ?></strong>
-                                </div>
-                                <div class="tracked-dashboard-stat">
-                                    <span>Spiral guard</span>
-                                    <strong class="<?= htmlspecialchars($dashboard_card['spiral_guard_class']) ?>" data-card-spiral><?= htmlspecialchars($dashboard_card['spiral_guard_label']) ?></strong>
-                                </div>
-                                <div class="tracked-dashboard-stat">
-                                    <span>Pot</span>
-                                    <strong data-card-equity><?= htmlspecialchars($dashboard_card['equity_label']) ?></strong>
-                                </div>
-                                <div class="tracked-dashboard-stat">
-                                    <span>Portfolio P&amp;L</span>
-                                    <strong class="<?= htmlspecialchars($dashboard_card['net_class']) ?>" data-card-net><?= htmlspecialchars($dashboard_card['net_label']) ?></strong>
-                                </div>
-                                <div class="tracked-dashboard-stat">
-                                    <span>Strategy alpha</span>
-                                    <strong class="<?= htmlspecialchars($dashboard_card['alpha_class']) ?>" data-card-alpha><?= htmlspecialchars($dashboard_card['alpha_label']) ?></strong>
-                                </div>
-                                <div class="tracked-dashboard-stat">
-                                    <span>Trust</span>
-                                    <strong data-card-trust><?= htmlspecialchars($dashboard_card['trust_label']) ?></strong>
-                                </div>
-                                <div class="tracked-dashboard-stat">
-                                    <span>Accuracy</span>
-                                    <strong data-card-accuracy><?= htmlspecialchars($dashboard_card['accuracy_label']) ?></strong>
-                                </div>
-                                <div class="tracked-dashboard-stat">
-                                    <span>Buy x avg</span>
-                                    <strong data-card-buy><?= htmlspecialchars($dashboard_card['buy_label']) ?></strong>
-                                </div>
-                                <div class="tracked-dashboard-stat">
-                                    <span>Sell x avg</span>
-                                    <strong data-card-sell><?= htmlspecialchars($dashboard_card['sell_label']) ?></strong>
-                                </div>
-                            </div>
-                            <div class="tracked-dashboard-bottom">
-                                <span data-card-last-trade><?= htmlspecialchars($dashboard_card['last_trade_label']) ?></span>
-                                <?php if ($dashboard_card['active']): ?>
-                                    <span class="tracked-dashboard-active-chip">Open page</span>
-                                <?php endif; ?>
-                            </div>
-                        </a>
-                    <?php endforeach; ?>
-                </div>
-            </div>
-        </section>
-    <?php endif; ?>
-
-    <form class="control-panel" method="get" action="">
-        <?php if (!empty($autonomous_quick_flip_active)): ?>
-        <div class="quick-flip-banner is-active">⚙ AUTONOMOUS QUICK FLIP ACTIVE · <?= htmlspecialchars((string)($autonomous_quick_flip_reason ?? 'DOOM SAVE')) ?> · BUY↔SELL INVERTED THIS CYCLE</div>
-        <?php else: ?>
-        <div class="quick-flip-banner">⚙ AUTONOMOUS QUICK FLIP · arms on wrong-mark, invert orientation, or repeat-loss doom path</div>
-        <?php endif; ?>
-        <div class="field" data-tip="Crypto or stock chassis.">
-            <label>Market type</label>
-            <div class="market-types">
-                <label class="market-choice">
-                    <input type="radio" name="market_type" value="crypto" <?= $market_type === 'crypto' ? 'checked' : '' ?>>
-                    Crypto
-                </label>
-                <label class="market-choice">
-                    <input type="radio" name="market_type" value="stock" <?= $market_type === 'stock' ? 'checked' : '' ?>>
-                    Stock
-                </label>
-            </div>
-        </div>
-        <div class="field" data-tip="Ticker for this study. Crypto often needs -USD.">
-            <label for="symbol">Market symbol for this study</label>
-            <div class="input-wrap">
-                <span class="input-prefix">$</span>
-                <input id="symbol" name="symbol" type="text" value="<?= htmlspecialchars($ticker) ?>" maxlength="12" autocomplete="off" spellcheck="false">
-            </div>
-        </div>
-        <div class="steam-dial-bank" aria-label="Machine threshold dials">
-            <div class="steam-dial" data-dial data-tip="Buy size vs average (0.10–5.00×)." data-input="buyMultiplier" data-min="0.10" data-max="5.00" data-step="0.05" data-decimals="2" data-unit="×">
-                <div class="steam-dial-bezel"><div class="steam-dial-face">
-                    <div class="steam-dial-ticks" aria-hidden="true"></div>
-                    <div class="steam-dial-pointer"></div>
-                    <div class="steam-dial-hub"></div>
-                    <div class="steam-dial-readout"><span class="steam-dial-value">0</span></div>
-                </div></div>
-                <div class="steam-dial-plaque">BUY MULT</div>
-                <input id="buyMultiplier" name="buy_multiplier" type="hidden" value="<?= number_format($buy_multiplier, 2, '.', '') ?>">
-            </div>
-            <div class="steam-dial" data-dial data-tip="Sell size vs average (0.10–5.00×)." data-input="sellMultiplier" data-min="0.10" data-max="5.00" data-step="0.05" data-decimals="2" data-unit="×">
-                <div class="steam-dial-bezel"><div class="steam-dial-face">
-                    <div class="steam-dial-ticks" aria-hidden="true"></div>
-                    <div class="steam-dial-pointer"></div>
-                    <div class="steam-dial-hub"></div>
-                    <div class="steam-dial-readout"><span class="steam-dial-value">0</span></div>
-                </div></div>
-                <div class="steam-dial-plaque">SELL MULT</div>
-                <input id="sellMultiplier" name="sell_multiplier" type="hidden" value="<?= number_format($sell_multiplier, 2, '.', '') ?>">
-            </div>
-            <div class="steam-dial" data-dial data-tip="Model trust / confidence (1–100%)." data-input="trustPercent" data-min="1" data-max="100" data-step="0.5" data-decimals="1" data-unit="%">
-                <div class="steam-dial-bezel"><div class="steam-dial-face">
-                    <div class="steam-dial-ticks" aria-hidden="true"></div>
-                    <div class="steam-dial-pointer"></div>
-                    <div class="steam-dial-hub"></div>
-                    <div class="steam-dial-readout"><span class="steam-dial-value">0</span></div>
-                </div></div>
-                <div class="steam-dial-plaque">TRUST %</div>
-                <input id="trustPercent" name="trust_percent" type="hidden" value="<?= number_format($trust_percent, 1, '.', '') ?>">
-            </div>
-            <div class="steam-dial" data-dial data-tip="Center-down % before BUY." data-input="breakBuy" data-min="0.01" data-max="30" data-step="0.01" data-decimals="2" data-unit="%">
-                <div class="steam-dial-bezel"><div class="steam-dial-face">
-                    <div class="steam-dial-ticks" aria-hidden="true"></div>
-                    <div class="steam-dial-pointer"></div>
-                    <div class="steam-dial-hub"></div>
-                    <div class="steam-dial-readout"><span class="steam-dial-value">0</span></div>
-                </div></div>
-                <div class="steam-dial-plaque">BRK BUY</div>
-                <input id="breakBuy" name="break_buy" type="hidden" value="<?= number_format($break_buy_drop_pct, 2, '.', '') ?>">
-            </div>
-            <div class="steam-dial" data-dial data-tip="Take-gain % from lot entry." data-input="breakGain" data-min="0.01" data-max="30" data-step="0.01" data-decimals="2" data-unit="%">
-                <div class="steam-dial-bezel"><div class="steam-dial-face">
-                    <div class="steam-dial-ticks" aria-hidden="true"></div>
-                    <div class="steam-dial-pointer"></div>
-                    <div class="steam-dial-hub"></div>
-                    <div class="steam-dial-readout"><span class="steam-dial-value">0</span></div>
-                </div></div>
-                <div class="steam-dial-plaque">BRK GAIN</div>
-                <input id="breakGain" name="break_gain" type="hidden" value="<?= number_format($break_take_gain_pct, 2, '.', '') ?>">
-            </div>
-            <div class="steam-dial" data-dial data-tip="Stop-loss % from lot entry." data-input="breakLoss" data-min="0.01" data-max="30" data-step="0.01" data-decimals="2" data-unit="%">
-                <div class="steam-dial-bezel"><div class="steam-dial-face">
-                    <div class="steam-dial-ticks" aria-hidden="true"></div>
-                    <div class="steam-dial-pointer"></div>
-                    <div class="steam-dial-hub"></div>
-                    <div class="steam-dial-readout"><span class="steam-dial-value">0</span></div>
-                </div></div>
-                <div class="steam-dial-plaque">BRK LOSS</div>
-                <input id="breakLoss" name="break_loss" type="hidden" value="<?= number_format($break_stop_loss_pct, 2, '.', '') ?>">
-            </div>
-            <div class="steam-dial" data-dial data-tip="Integer percent below global average cost that triggers a BUY spree." data-input="lossBuySpreePercent" data-min="1" data-max="50" data-step="1" data-decimals="0" data-unit="%">
-                <div class="steam-dial-bezel"><div class="steam-dial-face">
-                    <div class="steam-dial-ticks" aria-hidden="true"></div><div class="steam-dial-pointer"></div><div class="steam-dial-hub"></div>
-                    <div class="steam-dial-readout"><span class="steam-dial-value">0</span></div>
-                </div></div>
-                <div class="steam-dial-plaque">LOSS BUY %</div>
-                <input id="lossBuySpreePercent" name="loss_buy_spree_percent" type="hidden" value="<?= (int)$loss_buy_spree_percent ?>">
-            </div>
-        </div>
-        <button type="submit" name="run_analysis" value="1">Engage</button>
-    </form>
-    <form class="control-panel" method="post" action="">
-        <input type="hidden" name="market_type" value="<?= htmlspecialchars($market_type) ?>">
-        <input type="hidden" name="symbol" value="<?= htmlspecialchars($ticker) ?>">
-        <label for="walletResetPassword">Wallet reset password</label>
-        <input id="walletResetPassword" name="wallet_reset_password" type="password" autocomplete="current-password" required>
-        <button type="submit" name="reset_wallet" value="1" class="secondary-action">Reset paper wallet</button>
-    </form>
-    <form class="control-panel cashout-panel" method="post" action="" data-cashout-pin-form>
-        <input type="hidden" name="market_type" value="<?= htmlspecialchars($market_type) ?>">
-        <input type="hidden" name="symbol" value="<?= htmlspecialchars($ticker) ?>">
-        <input type="hidden" name="wallet_cash_out_pin" value="" data-cashout-pin-value>
-        <div class="cashout-pin-field">
-            <label>Cash out PIN · <?= htmlspecialchars($ticker) ?></label>
-            <span class="cashout-current-pin">Current PIN <strong><?= htmlspecialchars($current_wallet_cash_out_pin) ?></strong></span>
-            <div class="cashout-pin-buttons" aria-label="Cash out PIN buttons">
-                <button type="button" class="cashout-pin-button" data-cashout-pin-button="1" aria-label="Enter PIN digit 1">1</button>
-                <button type="button" class="cashout-pin-button" data-cashout-pin-button="2" aria-label="Enter PIN digit 2">2</button>
-                <button type="button" class="cashout-pin-button" data-cashout-pin-button="3" aria-label="Enter PIN digit 3">3</button>
-                <button type="button" class="cashout-pin-button" data-cashout-pin-button="4" aria-label="Enter PIN digit 4">4</button>
-                <button type="button" class="secondary-action cashout-clear-button" data-cashout-pin-clear>Clear</button>
-            </div>
-            <span class="cashout-pin-status" data-cashout-pin-status>PIN: 0 / 4</span>
-        </div>
-        <button type="submit" name="cash_out_wallet" value="1" class="cashout-submit" data-cashout-submit disabled>Cash out + wait to refill</button>
-        <span class="metric-note">Sells the current paper position, realizes P&amp;L into cash, then waits to refill up to $5k in the asset on a later BUY.</span>
-    </form>
-    <?php if ($wallet_buy_back_available): ?>
-        <form class="control-panel cashout-panel buyback-panel" method="post" action="">
-            <input type="hidden" name="market_type" value="<?= htmlspecialchars($market_type) ?>">
-            <input type="hidden" name="symbol" value="<?= htmlspecialchars($ticker) ?>">
-            <div class="cashout-pin-field">
-                <label>Buy back in · <?= htmlspecialchars($ticker) ?></label>
-                <span class="metric-note"><?= htmlspecialchars($wallet_buy_back_note) ?></span>
-            </div>
-            <button
-                type="submit"
-                name="buy_back_wallet"
-                value="1"
-                class="cashout-submit"
-                <?= $wallet_buy_back_eligible ? '' : 'disabled' ?>
-            >Buy back in $<?= number_format($wallet_buy_back_amount, 2) ?></button>
-            <span class="metric-note">
-                <?= $wallet_buy_back_eligible
-                    ? 'Paper BUY now; clears the pending refill while preserving the $5k cash kitty.'
-                    : 'Waiting for at least $' . number_format($paper_minimum_trade_funds, 2) . ' executable cash above the $5k cash reserve and a valid current price.' ?>
-            </span>
-        </form>
-    <?php endif; ?>
-
-    <?php if ($error_message !== ''): ?>
-        <section class="error-panel">
-            <strong>Unable to load <?= htmlspecialchars($ticker) ?>.</strong>
-            <?= htmlspecialchars($error_message) ?>
-        </section>
-        <?php endif; ?>
-    <?php if ($wallet_reset_error !== ''): ?>
-        <section class="error-panel">
-            <strong>Wallet was not reset.</strong>
-            <?= htmlspecialchars($wallet_reset_error) ?>
-        </section>
-    <?php endif; ?>
-    <?php if ($wallet_cash_out_error !== ''): ?>
-        <section class="error-panel">
-            <strong>Wallet was not cashed out.</strong>
-            <?= htmlspecialchars($wallet_cash_out_error) ?>
-        </section>
-    <?php endif; ?>
-    <?php if ($wallet_buy_back_error !== ''): ?>
-        <section class="error-panel">
-            <strong>Wallet was not bought back in.</strong>
-            <?= htmlspecialchars($wallet_buy_back_error) ?>
-        </section>
-    <?php endif; ?>
-
-
-
-    <section class="logic-poem-console" id="logicPoemConsole" aria-labelledby="logicPoemTitle">
-        <div class="logic-poem-head">
-            <div>
-                <h2 id="logicPoemTitle">The Integral That Knows Its Bounds</h2>
-                <p>Live poetic state translation · every line is constrained by current program state</p>
-            </div>
-            <span class="logic-poem-live">STATE EXISTENT</span>
-        </div>
-        <div class="logic-poem-grid">
-            <div class="logic-poem-node"><span>Coordinate</span><strong id="logicPoemCoordinate"><?= htmlspecialchars($current_guess_note ?: 'Five-minute boundary unresolved') ?></strong></div>
-            <div class="logic-poem-node"><span>Decision room</span><strong id="logicPoemDecision"><?= htmlspecialchars($logic_poem_yes . '/3 YES · REQUIRED ' . $logic_poem_required . ' · ' . ($logic_poem_approved ? $logic_poem_action . ' RESOLVED' : 'WAITING')) ?></strong></div>
-            <div class="logic-poem-node"><span>Entropy</span><strong id="logicPoemEntropy"><?= htmlspecialchars($logic_poem_entropy_label) ?></strong></div>
-            <div class="logic-poem-node"><span>Cycle</span><strong id="logicPoemCycle"><?= htmlspecialchars($logic_poem_cycle) ?></strong></div>
-            <div class="logic-poem-node"><span>Recovery bound</span><strong id="logicPoemRecovery">$<?= number_format($logic_poem_recovery, 2) ?> MUST BE CROSSED</strong></div>
-            <div class="logic-poem-node"><span>Reserved future</span><strong id="logicPoemReserved">$<?= number_format($logic_poem_reserved, 2) ?> AWAITS ITS OPPOSITE</strong></div>
-            <div class="logic-poem-node"><span>Kitty memory</span><strong id="logicPoemKitty">$<?= number_format($logic_poem_kitty_total, 2) ?> SECURED · $<?= number_format($logic_poem_gain_pending, 2) ?> PENDING</strong></div>
-            <div class="logic-poem-node"><span>Spiral boundary</span><strong id="logicPoemSpiral"><?= htmlspecialchars($logic_poem_spiral) ?></strong></div>
-        </div>
-        <div class="logic-poem-verse" aria-live="polite">
-            <div class="logic-poem-coordinate">∫</div>
-            <div class="logic-poem-lines" id="logicPoemVerse">
-                The guess enters as <b><?= htmlspecialchars($logic_poem_action) ?></b>; it is not fate, only a coordinate.<br>
-                <?= $logic_poem_approved ? '<span class="good">Two voices agree; the room closes and the action must meet reality.</span>' : '<span class="warn">The room remains open; evidence has not yet constrained the future.</span>' ?><br>
-                Wrong movement becomes recovery; realized gain must cross it before calling itself profit.<br>
-                Every BUY seeks its SELL. Every SELL reserves the BUY that completes its circle.
-            </div>
-        </div>
-        <details class="logic-poem-trace">
-            <summary>Show constrained program trace</summary>
-            <pre id="logicPoemTrace">action=<?= htmlspecialchars($logic_poem_action) ?>
-yes_votes=<?= $logic_poem_yes ?>
-required_votes=<?= $logic_poem_required ?>
-approved=<?= $logic_poem_approved ? 'true' : 'false' ?>
-recovery_balance=<?= number_format($logic_poem_recovery, 8, '.', '') ?>
-reserved_cash=<?= number_format($logic_poem_reserved, 8, '.', '') ?>
-open_buy_lots=<?= $logic_poem_open_lots ?>
-pending_sell_rebuys=<?= $logic_poem_pending_rebuys ?>
-kitty_secured=<?= number_format($logic_poem_kitty_total, 8, '.', '') ?>
-spiral_sells_paused=<?= $spiral_guard_paused ? 'true' : 'false' ?></pre>
-        </details>
-    </section>
-
-    <section class="market-pulse-metrics">
-        <article class="metric market-pulse-card summary-card summary-card--market">
-            <div class="card-topline">
-                <div>
-                    <span class="metric-label">Market now</span>
-                    <p class="card-kicker">Hourly spot pulse</p>
-                </div>
-                <div class="dashboard-card-actions">
-                    <button type="button" class="tracked-dashboard-refresh" data-refresh-dashboard aria-label="Reload dashboard">Reload</button>
-                    <span id="marketSourceChip" class="card-chip <?= $current_price_source === 'YAHOO' ? 'is-live' : 'is-file' ?>"><?= htmlspecialchars($market_source_chip_label) ?></span>
-                </div>
-            </div>
-            <div class="card-main">
-                <div id="currentPriceValue" class="metric-value <?= $current_price_class ?>">$<?= number_format($current_price, 2) ?></div>
-                <div id="currentPriceNote" class="metric-note metric-note--strong"><?= htmlspecialchars($current_price_note) ?></div>
-            </div>
-            <div class="card-grid card-grid--market">
-                <div class="summary-stat">
-                    <span>1H reference</span>
-                    <strong id="marketReferenceValue"><?= htmlspecialchars($market_reference_label) ?></strong>
-                </div>
-                <div class="summary-stat">
-                    <span>Latest source</span>
-                    <strong id="marketFeedValue"><?= htmlspecialchars($market_feed_label) ?></strong>
-                </div>
-            </div>
-            <div id="marketDataNote" class="card-footnote"><?= htmlspecialchars($market_update_note) ?></div>
-        </article>
-
-        <article class="metric market-pulse-card summary-card summary-card--wallet">
-            <div class="card-topline">
-                <div>
-                    <span class="metric-label">Wallet now</span>
-                    <p class="card-kicker">Paper wallet position</p>
-                </div>
-                <span id="walletSeedChip" class="card-chip is-accent"><?= htmlspecialchars($wallet_seed_label) ?></span>
-            </div>
-            <div class="card-main">
-                <div id="autoBreakValue" class="metric-value strategy-value <?= $paper_break_class ?>"><?= htmlspecialchars($paper_break_value_label) ?></div>
-                <div id="autoBreakNote" class="metric-note metric-note--strong"><?= htmlspecialchars($paper_break_note) ?></div>
-            </div>
-            <div class="card-grid card-grid--wallet">
-                <div class="summary-stat summary-stat--total-paper">
-                    <span>OUTPUT TOTAL</span>
-                    <strong id="walletPotValue">$<?= number_format($paper_total_reconciled, 2) ?></strong>
-                    <small id="walletTotalPaperBreakdown"><?= htmlspecialchars($paper_total_breakdown) ?></small>
-                </div>
-                <div class="summary-stat">
-                    <span>Total income locked</span>
-                    <strong id="walletIncomeLockedValue">$<?= number_format($principal_income_locked_total, 2) ?></strong>
-                </div>
-                <div class="summary-stat">
-                    <span>Last income lock</span>
-                    <strong id="walletLastIncomeLockValue">$<?= number_format($principal_income_last_lock, 2) ?></strong>
-                </div>
-                <div class="summary-stat">
-                    <span><?= htmlspecialchars($paper_break_asset_left_label) ?></span>
-                    <strong id="walletAssetValue"><?= htmlspecialchars($paper_break_asset_left_amount) ?></strong>
-                </div>
-                <div class="summary-stat">
-                    <span>Holding</span>
-                    <strong id="walletHoldingValue">$<?= number_format($paper_break_holding_value, 2) ?></strong>
-                </div>
-                <div class="summary-stat">
-                    <span>Cash kitty</span>
-                    <strong id="walletCashValue">$<?= number_format($paper_break_cash_left, 2) ?></strong>
-                </div>
-                <div class="summary-stat">
-                    <span>Sold into cash kitty</span>
-                    <strong id="walletSoldIntoCashKittyValue">$<?= number_format($paper_break_sold_into_cash_kitty_total, 2) ?></strong>
-                    <small>Only the unreinvested reserve is added to TOTAL PAPER</small>
-                </div>
-                <div class="summary-stat">
-                    <span>Withdrawn sold kitty</span>
-                    <strong id="walletExternalKittyValue">$<?= number_format($paper_break_external_kitty_total, 2) ?></strong>
-                </div>
-                <div class="summary-stat">
-                    <span>CASHOUT TOTAL</span>
-                    <strong id="walletCashoutTotalValue">$<?= number_format($paper_break_cashout_total, 2) ?></strong>
-                </div>
-                <div class="summary-stat">
-                    <span>Cashout minus rejoin fee</span>
-                    <strong id="walletCashoutAfterRejoinFeeValue">$<?= number_format($paper_break_cashout_after_rejoin_fee, 2) ?></strong>
-                </div>
-                <div class="summary-stat">
-                    <span>Cash kitty reserve</span>
-                    <strong id="walletCashoutReserveValue">$<?= number_format($paper_break_cashout_cash_kitty_reserve, 2) ?></strong>
-                </div>
-                <div class="summary-stat">
-                    <span>Asset refill available</span>
-                    <strong id="walletAssetRefillAvailableValue">$<?= number_format($paper_break_cashout_available_for_asset_refill, 2) ?></strong>
-                </div>
-                <div class="summary-stat">
-                    <span>Reserved</span>
-                    <strong id="walletReservedValue">$<?= number_format($display_reserved_cash, 2) ?></strong>
-                </div>
-                <div class="summary-stat">
-                    <span>Portfolio P&amp;L</span>
-                    <strong id="walletNetMoveValue"><?= ($paper_break_sim_net_move >= 0 ? '+' : '-') . '$' . number_format(abs($paper_break_sim_net_move), 2) ?></strong>
-                </div>
-                <div class="summary-stat">
-                    <span>Passive 50/50 benchmark</span>
-                    <strong id="walletBenchmarkValue"><?= ($paper_break_benchmark_pnl >= 0 ? '+' : '-') . '$' . number_format(abs($paper_break_benchmark_pnl), 2) ?></strong>
-                </div>
-                <div class="summary-stat">
-                    <span>Strategy alpha vs benchmark</span>
-                    <strong id="walletStrategyAlphaValue"><?= ($paper_break_strategy_alpha >= 0 ? '+' : '-') . '$' . number_format(abs($paper_break_strategy_alpha), 2) ?></strong>
-                </div>
-                <div class="summary-stat">
-                    <span>Spiral-down guard</span>
-                    <strong id="walletSpiralGuardValue" class="<?= htmlspecialchars($spiral_guard_class) ?>"><?= htmlspecialchars($spiral_guard_status_label . ' • ' . $spiral_guard_detail_label) ?></strong>
-                </div>
-                <div class="summary-stat">
-                    <span>Modeled fees / slippage</span>
-                    <strong id="walletExecutionCostsValue">$<?= number_format($paper_break_total_fees, 2) ?> / $<?= number_format($paper_break_slippage_cost, 2) ?></strong>
-                </div>
-                <div class="summary-stat">
-                    <span>Realized P&amp;L</span>
-                    <strong id="walletRealizedValue"><?= ($paper_break_realized_move >= 0 ? '+' : '-') . '$' . number_format(abs($paper_break_realized_move), 2) ?></strong>
-                </div>
-                <div class="summary-stat">
-                    <span>Open P&amp;L</span>
-                    <strong id="walletOpenPnlValue"><?= ($paper_break_open_pnl >= 0 ? '+' : '-') . '$' . number_format(abs($paper_break_open_pnl), 2) ?></strong>
-                </div>
-                <div class="summary-stat">
-                    <span>Current request / reserve</span>
-                    <strong id="walletBellCurveValue"><?= htmlspecialchars(($paper_break_bell_curve_active
-                        ? ($paper_break_bell_curve_action
-                            . ' • REQUESTED $' . number_format($paper_break_bell_curve_total_requested, 2)
-                            . ' • EXECUTED $' . number_format($paper_break_bell_curve_executed, 2)
-                            . ' • RESERVED $' . number_format($display_reserved_cash, 2)
-                            . ' • ' . $paper_break_bell_curve_status)
-                        : 'HOLD') . ' • ' . $paper_break_confidence_bell_curve_label) ?></strong>
-                </div>
-            </div>
-            <div class="summary-ribbon">
-                <span id="walletBoughtValue" title="Cumulative BUY turnover, not current holdings"><?= htmlspecialchars('CUMULATIVE ' . $paper_break_asset_bought_label . ' ' . $paper_break_asset_bought_amount . ' ($' . number_format($paper_break_bought_amount, 2) . ')') ?></span>
-                <span id="walletSoldValue" title="Cumulative SELL turnover, not current holdings"><?= htmlspecialchars('CUMULATIVE ' . $paper_break_asset_sold_label . ' ' . $paper_break_asset_sold_amount . ' ($' . number_format($paper_break_sold_amount, 2) . ')') ?></span>
-                <span id="walletPositionValue"><?= htmlspecialchars('POSITION ' . $paper_break_position) ?></span>
-                <span id="walletLastTradeValue"><?= htmlspecialchars($wallet_last_label) ?></span>
-            </div>
-            <div id="walletSeedDetail" class="card-footnote card-footnote--seed"><?= htmlspecialchars($wallet_seed_detail_label) ?></div>
-        </article>
-
-        <article class="metric market-pulse-card summary-card summary-card--signal">
-            <div class="card-topline">
-                <div>
-                    <span class="metric-label">Model now</span>
-                    <p class="card-kicker">Current locked five-minute stance</p>
-                </div>
-                <span id="modelResolutionChip" class="card-chip <?= $current_guess_pair_label === '%' ? 'is-neutral' : 'is-warning' ?>"><?= htmlspecialchars($model_resolution_label) ?></span>
-            </div>
-            <div class="card-main">
-                <div id="currentGuessValue" class="metric-value signal-value <?= $current_guess_action_class ?>"><?= htmlspecialchars($current_guess_action) ?></div>
-                <div id="currentGuessNote" class="metric-note metric-note--strong"><?= htmlspecialchars($current_guess_note) ?></div>
-            </div>
-            <div class="card-grid card-grid--signal">
-                <div class="summary-stat">
-                    <span>Pair</span>
-                    <strong id="modelPairValue"><?= htmlspecialchars($model_pair_label) ?></strong>
-                </div>
-                <div class="summary-stat">
-                    <span>Guess % — latest 12</span>
-                    <strong id="modelCarryValue" class="<?= $accuracy_class ?>"><?= htmlspecialchars($model_carry_value) ?></strong>
-                </div>
-                <div class="summary-stat">
-                    <span>Latest-12 R / W</span>
-                    <strong id="modelWinLossValue"><?= htmlspecialchars($model_wl_label) ?></strong>
-                </div>
-                <div class="summary-stat">
-                    <span>Latest observation</span>
-                    <strong id="modelLastValue"><?= htmlspecialchars($latest_observation_label) ?></strong>
-                </div>
-                <div class="summary-stat">
-                    <span>1h audit</span>
-                    <strong id="modelHourAuditValue"><?= htmlspecialchars($hour_audit_guess_label) ?></strong>
-                </div>
-                <div class="summary-stat">
-                    <span>Global wrong branches</span>
-                    <strong id="globalWrongBranchesValue"><?= htmlspecialchars($global_wrong_mark_branch_label) ?></strong>
-                </div>
-                <div class="summary-stat">
-                    <span>Phase status</span>
-                    <strong id="phaseStatusValue">MODEL <?= htmlspecialchars($model_current_action) ?> → EXEC <?= htmlspecialchars($phase_execution_action === 'NO TRADE' ? 'HOLD' : $phase_execution_action) ?><?= !empty($current_phase_sizing['event_action']) ? ' • LOCKED EVENT ' . htmlspecialchars((string)$current_phase_sizing['event_action']) . (!empty($current_phase_sizing['event_executed']) ? ' EXECUTED' : ' NOT EXECUTED') : '' ?> • REQUESTED $<?= number_format((float)$current_phase_sizing['requested_amount'], 2) ?> • EXECUTED $<?= number_format((float)$current_phase_sizing['executed_amount'], 2) ?><?= !empty($current_phase_sizing['event_executed']) ? ' • GROSS $' . number_format((float)($current_phase_sizing['gross_notional'] ?? 0.0), 2) . ' • FEE $' . number_format((float)($current_phase_sizing['fee_amount'] ?? 0.0), 2) . ' • FILL $' . number_format((float)($current_phase_sizing['fill_price'] ?? 0.0), 2) : '' ?> • AVAILABLE $<?= number_format((float)$current_phase_sizing['available_amount'], 2) ?> • RESERVED $<?= number_format($display_reserved_cash, 2) ?><?= (float)$current_phase_sizing['shortfall'] > 0.00000001 ? (((float)$current_phase_sizing['available_amount'] + 0.00000001 >= (float)$current_phase_sizing['requested_amount'] && (float)$current_phase_sizing['executed_amount'] <= 0.00000001) ? ' • BLOCKED $' . number_format((float)$current_phase_sizing['requested_amount'], 2) : ' • SHORT $' . number_format((float)$current_phase_sizing['shortfall'], 2)) : '' ?><?= !empty($current_phase_sizing['event_label']) ? ' • ' . htmlspecialchars((string)$current_phase_sizing['event_label']) : '' ?><?= !empty($current_phase_sizing['kitty_unchanged']) ? ' • KITTY UNCHANGED' : '' ?> • <?= htmlspecialchars($execution_bell_curve_display_label . ' • ' . $bell_curve_trade_reason) ?> • REGIME HOUR <?= (int)$regime_step_count ?> / 12 • <?= $current_phase_status['steps_until_change'] === null ? 'NO CHANGE IN HORIZON' : (int)$current_phase_status['steps_until_change'] . ' STEPS LEFT' ?></strong>
-                </div>
-                <div class="summary-stat">
-                    <span>Quarter/regime BUY gate</span>
-                    <strong id="quarterRegimeGateValue"><?= htmlspecialchars($quarter_regime_gate_label . ' • ' . $current_quarter_regime_key . ' • ' . $quarter_regime_display_label) ?></strong>
-                </div>
-            </div>
-            <div id="modelCarryNote" class="card-footnote"><?= htmlspecialchars($accuracy_note . ' • last hour audit ' . $hour_audit_guess_label) ?></div>
-        </article>
-    </section>
-
-    <section class="pair-stats" aria-label="Secondary analytics; these cards are diagnostic and may use their own stated sample windows">
-        <article class="metric pair-card pair-card--carry">
-            <span class="metric-label">Guess % — latest 12 resolved</span>
-            <div id="accuracyValue" class="metric-value <?= $accuracy_class ?>"><?= htmlspecialchars($model_carry_value) ?></div>
-            <div id="accuracyNote" class="metric-note"><?= htmlspecialchars($accuracy_note) ?></div>
-        </article>
-        <article class="metric pair-card">
-            <span class="metric-label">Internal agreement</span>
-            <div id="internalAgreementValue" class="metric-value <?= $internal_agreement_class ?>"><?= htmlspecialchars($internal_agreement_value_label) ?></div>
-            <div id="internalAgreementNote" class="metric-note"><?= htmlspecialchars($internal_agreement_note . ' • ' . ((int)$internal_agreement_total - (int)$internal_agreement_right) . ' WRONG / ' . (int)$internal_agreement_total . ' TOTAL • ' . $internal_agreement_bell_curve_label . ($internal_agreement_recent_flipped ? ' • HISTORICAL ' . number_format($internal_agreement_recent_percent, 1) . '% • EFFECTIVE ' . number_format($internal_agreement_recent_effective_percent, 1) . '% • FLIPPED' : '')) ?></div>
-        </article>
-        <article class="metric pair-card">
-            <span class="metric-label">Historical family confidence</span>
-            <div id="familyConfidenceValue" class="metric-value <?= $current_family_confidence_class ?>"><?= htmlspecialchars($current_family_confidence_label) ?></div>
-            <div id="familyConfidenceNote" class="metric-note"><?= htmlspecialchars($current_family_confidence_note_label) ?></div>
-        </article>
-        <article class="metric pair-card">
-            <span class="metric-label">Pattern compression</span>
-            <div id="compressionValue" class="metric-value <?= $compression_class ?>"><?= htmlspecialchars($compression_value_label) ?></div>
-            <div id="compressionNote" class="metric-note"><?= htmlspecialchars($compression_note) ?></div>
-        </article>
-        <article class="metric pair-card">
-            <span class="metric-label">BUY/SELL alternation</span>
-            <div id="alternationValue" class="metric-value <?= htmlspecialchars($alternation_class) ?>"><?= htmlspecialchars($alternation_value_label) ?></div>
-            <div id="alternationNote" class="metric-note"><?= htmlspecialchars($alternation_note) ?></div>
-        </article>
-        <article class="metric pair-card">
-            <span class="metric-label">Phase-change wins</span>
-            <div id="phaseChangeValue" class="metric-value medium">BUY <?= htmlspecialchars($phase_buy_display) ?> · SELL <?= htmlspecialchars($phase_sell_display) ?></div>
-            <div id="phaseChangeNote" class="metric-note">BUY HIST <?= (int)($phase_action_stats['BUY']['historical_right'] ?? 0) ?> RIGHT / <?= (int)($phase_action_stats['BUY']['historical_wrong'] ?? 0) ?> WRONG / <?= (int)($phase_action_stats['BUY']['total'] ?? 0) ?> TOTAL • <?= htmlspecialchars(gaussianEvidenceSummary((array)($phase_action_stats['BUY']['bell_curve'] ?? []))) ?><?= !empty($phase_action_stats['BUY']['flipped']) ? ' → EFFECTIVE ' . (int)($phase_action_stats['BUY']['effective_right'] ?? 0) . ' RIGHT / ' . (int)($phase_action_stats['BUY']['effective_wrong'] ?? 0) . ' WRONG • FLIPPED' : '' ?> • SELL HIST <?= (int)($phase_action_stats['SELL']['historical_right'] ?? 0) ?> RIGHT / <?= (int)($phase_action_stats['SELL']['historical_wrong'] ?? 0) ?> WRONG / <?= (int)($phase_action_stats['SELL']['total'] ?? 0) ?> TOTAL • <?= htmlspecialchars(gaussianEvidenceSummary((array)($phase_action_stats['SELL']['bell_curve'] ?? []))) ?><?= !empty($phase_action_stats['SELL']['flipped']) ? ' → EFFECTIVE ' . (int)($phase_action_stats['SELL']['effective_right'] ?? 0) . ' RIGHT / ' . (int)($phase_action_stats['SELL']['effective_wrong'] ?? 0) . ' WRONG • FLIPPED' : '' ?></div>
-        </article>
-        <?php foreach ($pair_card_ids as $pair_symbol => $pair_card_id): ?>
-            <?php $pair_stat = $action_stats[$pair_symbol] ?? ['percentage' => 0.0, 'right' => 0, 'total' => 0]; ?>
-            <?php $pair_class = $pair_stat['percentage'] >= 65 ? 'good' : ($pair_stat['percentage'] >= 50 ? 'medium' : 'low'); ?>
-            <?php $pair_bell_label = gaussianEvidenceSummary((array)($pair_stat['bell_curve'] ?? [])); ?>
-            <article id="pairCard<?= htmlspecialchars($pair_card_id) ?>" class="metric pair-card">
-                <span class="metric-label"><?= htmlspecialchars($pair_card_titles[$pair_symbol] ?? $pair_symbol) ?></span>
-                <div class="metric-value <?= $pair_class ?>" data-pair-percentage><?= (int)$pair_stat['total'] > 0 ? number_format((float)$pair_stat['percentage'], 1) . '%' : '—' ?></div>
-                <div class="metric-note" data-pair-count><?= (!empty($pair_stat['flipped']) ? 'HISTORICAL ' . number_format((float)$pair_stat['historical_percentage'], 1) . '% • ' . (int)($pair_stat['historical_right'] ?? 0) . ' RIGHT / ' . (int)($pair_stat['historical_wrong'] ?? 0) . ' WRONG / ' . (int)$pair_stat['total'] . ' TOTAL → EFFECTIVE ' . number_format((float)$pair_stat['percentage'], 1) . '% • ' . (int)$pair_stat['right'] . ' RIGHT / ' . (int)($pair_stat['wrong'] ?? 0) . ' WRONG • FLIPPED' : (int)$pair_stat['right'] . ' RIGHT / ' . (int)($pair_stat['wrong'] ?? ((int)$pair_stat['total'] - (int)$pair_stat['right'])) . ' WRONG / ' . (int)$pair_stat['total'] . ' TOTAL') . ' • ' . htmlspecialchars($pair_bell_label) ?></div>
-            </article>
-        <?php endforeach; ?>
-    </section>
-
-    <section class="analysis-grid">
-        <section class="results-panel">
-            <div class="results-header">
-                <div>
-                    <h2>Trade ledger</h2>
-                    <p>1-hour-ahead row unresolved • forward rows hypothetical • resolved rows scored against observed closes</p>
-                </div>
-                <div class="header-chips">
-                    <span class="panel-chip">Hourly console</span>
-                    <span class="panel-chip">Wallet-aware outcomes</span>
-                </div>
-            </div>
-            <div class="table-scroll">
-                <table id="liveGuessTable" aria-label="Timestamp-locked model signals and observed trade outcomes"><?= $visible_rows_html ?></table>
-            </div>
-            <p class="table-disclaimer"><strong>Result column:</strong> EXEC identifies a recorded paper-wallet event. OBSERVED MODEL 1-UNIT MOVE is a candle comparison, not wallet P&amp;L. Requested, bought/sold, shortfall, and realized P&amp;L remain separate.</p>
-        </section>
-
-        <section class="results-panel">
-            <div class="results-header">
-                <div>
-                    <h2>Last hour audit</h2>
-                    <p>Locked guesses versus the last 12 completed five-minute candles, shown in America/New_York time.</p>
-                </div>
-                <div class="header-chips">
-                    <span class="panel-chip">Guess <?= htmlspecialchars($hour_audit_guess_label) ?></span>
-                    <span class="panel-chip">Model 1-unit <?= ($hour_audit_strategy['net_pnl'] >= 0 ? '+' : '-') . '$' . number_format(abs((float)$hour_audit_strategy['net_pnl']), 2) ?></span>
-                    <span class="panel-chip">Long <?= ($hour_audit_long['net_pnl'] >= 0 ? '+' : '-') . '$' . number_format(abs((float)$hour_audit_long['net_pnl']), 2) ?></span>
-                    <span class="panel-chip">Short <?= ($hour_audit_short['net_pnl'] >= 0 ? '+' : '-') . '$' . number_format(abs((float)$hour_audit_short['net_pnl']), 2) ?></span>
-                    <span class="panel-chip">Best <?= ($hour_audit_best['net_pnl'] >= 0 ? '+' : '-') . '$' . number_format(abs((float)$hour_audit_best['net_pnl']), 2) ?></span>
-                    <span id="selloffTipChip" class="panel-chip">Selloff tip <?= $selloff_tip ? 'ON' : 'OFF' ?> • SELL run <?= (int)($hour_audit_sequences['current_sell_signal_streak'] ?? 0) ?></span>
-                </div>
-            </div>
-            <div class="table-scroll">
-                <table id="hourAuditTable" aria-label="Last hour audit of locked guesses against completed five-minute candles"><?= $hour_audit_table_html ?></table>
-            </div>
-            <p class="table-disclaimer"><strong>Audit convention:</strong> The formula column applies each saved model call to one asset unit; it does not claim a wallet execution. LONG and SHORT are forced-side comparisons, BEST is hindsight, and actual paper-wallet executions appear only in the trade ledger.</p>
-        </section>
-
-        <section class="chart-panel">
-            <div class="results-header results-header--chart">
-                <div>
-                    <h2 id="chartHeading"><?= $chart_actual_count ?> real hourly candles • <?= $chart_scored_count ?> scored 12/12 • <?= $chart_forecast_count ?> forecast candles</h2>
-                    <p>Each prediction stick rolls twelve locked five-minute guesses forward • STEP = raw current average five-minute price move • BUY/SELL AVG = raw average × board multiplier • NET = UP marks minus DOWN marks</p>
-                </div>
-                <div class="header-chips">
-                    <span id="chartStats" class="panel-chip">Price range <?= number_format($chart_price_min, 2) ?>–<?= number_format($chart_price_max, 2) ?> • Raw avg <?= number_format($average_change, 2) ?> • BUY avg <?= number_format($average_buy_commitment, 2) ?> • SELL avg <?= number_format($average_sell_commitment, 2) ?></span>
-                </div>
-            </div>
-            <div class="chart-stage">
-                <canvas id="candleChart" aria-label="Chart with <?= $chart_actual_count ?> real hourly candles, <?= $chart_scored_count ?> scored twelve-mark predictions, and <?= $chart_forecast_count ?> combined forecast candlesticks"></canvas>
-                <div class="trade-overlay">
-                    <span id="averageMove">RAW AVG <?= $average_change >= 0 ? '+' : '' ?>$<?= number_format($average_change, 2) ?> · BUY $<?= number_format($average_buy_commitment, 2) ?> · SELL $<?= number_format($average_sell_commitment, 2) ?></span>
-                    <span id="paperProfit" style="color:<?= $paper_profit >= 0 ? 'var(--accent)' : 'var(--danger)' ?>">PORTFOLIO P&amp;L <?= $paper_profit >= 0 ? '+' : '' ?>$<?= number_format($paper_profit, 2) ?></span>
-                </div>
-            </div>
-            <div id="chartTimeStamp" class="chart-timestamp">Local hourly chart window loading…</div>
-        </section>
-    </section>
-
-    <section class="browser-width-section math-review-section" id="model-reference" aria-labelledby="model-mathematics-title">
-        <div class="browser-width-inner">
-            <details class="reference-drawer">
-                <summary><span id="model-mathematics-title">CNGN model formula reference</span></summary>
-                <div class="reference-drawer-body">
-                    <div class="reference-drawer-head">
-                        <div>
-                            <h2>CNGN model formula reference</h2>
-                        </div>
-                        <button type="button" class="reference-close-btn" data-close-reference aria-label="Close model notes">×</button>
-                    </div>
-                    <p class="review-intro">
-                        This keeps the raw formula and recurrence notes available without leaving the
-                        main console cluttered.
-                    </p>
-                    <div class="math-review-grid">
-                <article class="math-card">
-                    <h3>1. Sequence row and timestamp</h3>
-                    <p>
-                        Let one working row be \(\mathbf q_n=(s_n,u_n,v_n,T_n)\). The CSV builder
-                        copies the prior close into both price slots:
-                    </p>
-                    \[
-                    \mathbf q_n=
-                    \bigl(1+n\Delta s,\;C_{n-1},\;C_{n-1},\;T_n\bigr),
-                    \qquad \Delta s=\texttt{\$day\_cnt},
-                    \qquad n\ge 1.
-                    \]
-                    <p>
-                        So on the rows consumed directly from the CSV, \(u_n=v_n\). Loop 2 stamps
-                        projected rows with the next five-minute boundaries:
-                    </p>
-                    \[
-                    \tau_x=
-                    300\left\lfloor\frac{t_{\mathrm{now}}}{300}\right\rfloor
-                    +300(x+1),
-                    \qquad x=0,\ldots,48.
-                    \]
-                    \[
-                    \mathbf q_x^{+}=(s_x+\Delta s,\;u_x,\;L_x,\;\tau_x).
-                    \]
-                    <p>
-                        The code appends \(\mathbf q_x^{+}\) to <code>$seq</code>, but
-                        <code>$future_seq_start</code> is frozen before loop 2 begins, so that
-                        same 49-step pass still scores the seeded slice while appending those rows.
-                    </p>
-                </article>
-
-                <article class="math-card">
-                    <h3>2. Integrand, integral, and differential</h3>
-                    \[
-                    d(\mathbf q)=\left|
-                    \operatorname{trunc}(v)-\operatorname{trunc}(u)
-                    \right|
-                    \]
-                    \[
-                    G(\mathbf q)=\frac{s}{2}+\frac{3}{2}d(\mathbf q)-1
-                    \qquad\text{(integrand)}
-                    \]
-                    \[
-                    I(a,b,c)=
-                    \bigl(a+b+c\bigr)\left(\frac{a+b+c}{3}\right)
-                    =\frac{(a+b+c)^2}{3}
-                    \qquad\text{(the actual three-term integral call)}
-                    \]
-                    <p>
-                        Inside <code>differential()</code> the code integrates the three-term vector
-                        \((s,G,G)\), not the raw four-field row:
-                    </p>
-                    \[
-                    J(\mathbf q)=I\bigl(s,G(\mathbf q),G(\mathbf q)\bigr)
-                    =\frac{\bigl(s+2G(\mathbf q)\bigr)^2}{3}.
-                    \]
-                    \[
-                    W(\mathbf q)=\sqrt{3J(\mathbf q)},\qquad
-                    S(\mathbf q)=W(\mathbf q)-2G(\mathbf q),
-                    \]
-                    \[
-                    D(\mathbf q)=\frac{S(\mathbf q)}{G(\mathbf q)+1}.
-                    \]
-                    <p>
-                        On the positive rows used here, \(W(\mathbf q)=s+2G(\mathbf q)\), so
-                    </p>
-                    \[
-                    S(\mathbf q)=s,\qquad
-                    D(\mathbf q)=\frac{s}{G(\mathbf q)+1}
-                    =\frac{2s}{s+3d(\mathbf q)}.
-                    \]
-                    <p>
-                        Because the seeded CSV rows satisfy \(u=v\), they satisfy \(d(\mathbf q)=0\),
-                        so the implemented differential really becomes
-                    </p>
-                    \[
-                    G(\mathbf q)=\frac{s}{2}-1,\qquad
-                    D(\mathbf q)=\frac{s}{s/2}=2.
-                    \]
-                    <p>
-                        The same integral also drives the wall comparison:
-                    </p>
-                    \[
-                    P(\mathbf q)=\frac{G(\mathbf q)}{W(\mathbf q)},\qquad
-                    \beta(\mathbf q)=P(\mathbf q)-\frac14.
-                    \]
-                    <p>
-                        On duplicated-price rows this simplifies to
-                    </p>
-                    \[
-                    P(\mathbf q)=\frac{s-2}{4s-4},
-                    \qquad
-                    \beta(\mathbf q)=-\frac{1}{4s-4}.
-                    \]
-                </article>
-
-                <article class="math-card">
-                    <h3>3. Implemented derive function</h3>
-                    <p>For a working vector \(\mathbf w=(a,b,c,r)\), define</p>
-                    \[
-                    e(\mathbf w)=
-                    \left|\operatorname{trunc}(c)-\operatorname{trunc}(b)\right|.
-                    \]
-                    <p>The PHP <code>derive()</code> result is</p>
-                    \[
-                    H(\mathbf w)=
-                    \frac{r}{\,a/r+(3/2)e(\mathbf w)\,}.
-                    \]
-                    <p>Both loops call it with the same working vector:</p>
-                    \[
-                    \mathbf w_x=
-                    \bigl(s_x,u_x,v_x,G(\mathbf q_x)\bigr).
-                    \]
-                    <p>
-                        On the duplicated historical rows, \(e(\mathbf w_x)=0\), hence
-                    </p>
-                    \[
-                    H(\mathbf w_x)=\frac{G(\mathbf q_x)^2}{s_x}.
-                    \]
-                </article>
-
-                <article class="math-card">
-                    <h3>4. Low normalization and carry state</h3>
-                    <p>The quantity named <code>$lo</code> is computed exactly as</p>
-                    \[
-                    \lambda(\mathbf q)=
-                    \frac{H(\mathbf w)^2}
-                    {2\,G(\mathbf q)\,D(\mathbf q)}.
-                    \]
-                    <p>The code then normalizes it by repeated \(1.01\) multiplication until it exceeds \(0.999\):</p>
-                    \[
-                    \widehat{\lambda}(\mathbf q)=1.01^{k}\lambda(\mathbf q),
-                    \qquad
-                    k=\min\{m\in\mathbb N_0:1.01^m\lambda(\mathbf q)>0.999\}.
-                    \]
-                    <p>The intermediate price expression is</p>
-                    \[
-                    M(\mathbf q)=
-                    \widehat{\lambda}(\mathbf q)\frac{\operatorname{trunc}(v)}{10}
-                    -\operatorname{trunc}\!\bigl(G(\mathbf q)\bigr).
-                    \]
-                    <p>
-                        Let the live carry state at that row be \(B=\texttt{\$base}\),
-                        \(O=\texttt{\$out}\), and \(E=\texttt{\$exp}\). Then the emitted low is
-                    </p>
-                    \[
-                    L(\mathbf q)=
-                    B+2\,\operatorname{round}\!\left(\frac{M(\mathbf q)}{O},\,2\right)-E.
-                    \]
-                    <p>
-                        In loop 1, \(B=0\). Before loop 2 starts, the code sets \(B\) once to the
-                        final historical low and then keeps it fixed. After each row it resets
-                        \(E\leftarrow 1\) and updates the magnitude bucket while
-                        \(L(\mathbf q)>10^E\) and \(E&lt;3\), setting \(O\leftarrow 10^E\) before
-                        incrementing \(E\).
-                    </p>
-                </article>
-
-                <article class="math-card wide">
-                    <h3>5. Historical seeds, loop-2 signs, and scoring</h3>
-                    <p>
-                        Loop 1 iterates from the newest stored row down to the oldest. On the very
-                        first historical iteration it stores the future seeds exactly once:
-                    </p>
-                    \[
-                    (\ell_\star,r_\star,L_\star,\beta_\star)
-                    =
-                    (\texttt{\$bool1},\texttt{\$bool2},\texttt{\$short\_low},\texttt{\$wall\_bias}).
-                    \]
-                    <p>
-                        Loop 2 begins with those seeds. At \(x=48\) it uses
-                        \((\ell_\star,r_\star)\). On later loop-2 rows, the signs are the direct
-                        row-to-row comparisons used in the PHP:
-                    </p>
-                    \[
-                    \ell_x=
-                    \begin{cases}
-                    -,&L_x<L_{\mathrm{prev}},\\
-                    +,&\text{otherwise},
-                    \end{cases}
-                    \qquad
-                    r_x^{(0)}=
-                    \begin{cases}
-                    -,&\beta_x<\beta_{\mathrm{prev}},\\
-                    +,&\text{otherwise}.
-                    \end{cases}
-                    \]
-                    <p>
-                        Only loop 2 applies the odd-boundary right-side flip:
-                    </p>
-                    \[
-                    r_x=
-                    \begin{cases}
-                    -\,r_x^{(0)},&
-                    \left\lfloor t_{\mathrm{now}}/300\right\rfloor\bmod 2=1,\\
-                    r_x^{(0)},&\text{otherwise}.
-                    \end{cases}
-                    \]
-                    <p>The pair stored in the row metadata is</p>
-                    \[
-                    p_x=\ell_x r_x.
-                    \]
-                    <p>
-                        The loop-2 percentage returned by <code>bitcoin()</code> is not a market
-                        P/L statistic; it is the direct equality test used in the code:
-                    </p>
-                    \[
-                    \mathrm{score}_x=\mathbf 1[r_x=\ell_x].
-                    \]
-                </article>
-
-                <article class="math-card">
-                    <h3>6. Displayed cell versus stored pair</h3>
-                    <p>
-                        The historical HTML cell does not print the full pair. It prints a single
-                        character derived from the already computed pair:
-                    </p>
-                    \[
-                    g_x=
-                    \begin{cases}
-                    \%,&(\ell_x,r_x)=(-,-),\\
-                    \ell_x,&\text{otherwise}.
-                    \end{cases}
-                    \]
-                    <p>
-                        So the visible symbol and the stored pair are different objects: the chart
-                        and the later locking logic use \(p_x=\ell_x r_x\), while the original row
-                        text shows only \(g_x\).
-                    </p>
-                </article>
-
-                <article class="math-card">
-                    <h3>7. Signal interpretation and immutable locking</h3>
-                    \[
-                    A(p)=
-                    \begin{cases}
-                    \mathrm{BUY},&p\in\{++,--\},\\
-                    \mathrm{SELL},&p\in\{-+,+-\},\\
-                    \mathrm{NO\ TRADE},&p=\%.
-                    \end{cases}
-                    \]
-                    <p>
-                        This is the active opposite-family mapping: \(++\mapsto\mathrm{BUY}\),
-                        \(--\mapsto\mathrm{BUY}\), while \(-+\) and \(+-\) map to \(\mathrm{SELL}\). Every newly seen
-                        timestamp is written once. Existing timestamp keys are returned unchanged,
-                        so later hourly ticker rebuilds do not repair or replace an already locked pair:
-                    </p>
-                    \[
-                    F(T)=
-                    \begin{cases}
-                    p_T,&T\notin\operatorname{dom}(F),\\
-                    F(T),&T\in\operatorname{dom}(F).
-                    \end{cases}
-                    \]
-                    \[
-                    \mathrm{RIGHT}(T)=
-                    \mathbf 1\!\left[
-                    \bigl(A(F(T))=\mathrm{BUY}\land\operatorname{direction}_{\mathrm{observed}}(T)=+\bigr)
-                    \lor
-                    \bigl(A(F(T))=\mathrm{SELL}\land\operatorname{direction}_{\mathrm{observed}}(T)=-\bigr)
-                    \right].
-                    \]
-                </article>
-            </div>
-
-            <details class="latex-source" id="latex-formula">
-                <summary>Copy the complete LaTeX review source</summary>
-                <pre>\[
-\mathbf q_n=(s_n,u_n,v_n,T_n)
-\]
-\[
-\mathbf q_n=
-\bigl(1+n\Delta s,\;C_{n-1},\;C_{n-1},\;T_n\bigr),
-\qquad \Delta s=\texttt{\$day\_cnt},
-\qquad n\ge 1
-\]
-\[
-\tau_x=
-300\left\lfloor\frac{t_{\mathrm{now}}}{300}\right\rfloor+300(x+1),
-\qquad x=0,\ldots,48
-\]
-\[
-\mathbf q_x^{+}=(s_x+\Delta s,\;u_x,\;L_x,\;\tau_x)
-\]
-\[
-d(\mathbf q)=\left|\operatorname{trunc}(v)-\operatorname{trunc}(u)\right|
-\]
-\[
-G(\mathbf q)=\frac{s}{2}+\frac{3}{2}d(\mathbf q)-1
-\]
-\[
-I(a,b,c)=\frac{(a+b+c)^2}{3}
-\]
-\[
-J(\mathbf q)=I\bigl(s,G(\mathbf q),G(\mathbf q)\bigr)
-=\frac{\bigl(s+2G(\mathbf q)\bigr)^2}{3}
-\]
-\[
-W(\mathbf q)=\sqrt{3J(\mathbf q)},
-\qquad
-S(\mathbf q)=W(\mathbf q)-2G(\mathbf q)
-\]
-\[
-D(\mathbf q)=\frac{S(\mathbf q)}{G(\mathbf q)+1}
-\]
-\[
-W(\mathbf q)=s+2G(\mathbf q)\Longrightarrow
-S(\mathbf q)=s\Longrightarrow
-D(\mathbf q)=\frac{s}{G(\mathbf q)+1}
-=\frac{2s}{s+3d(\mathbf q)}
-\]
-\[
-u=v\Longrightarrow
-G(\mathbf q)=\frac{s}{2}-1,
-\qquad
-D(\mathbf q)=\frac{s}{s/2}=2
-\]
-\[
-P(\mathbf q)=\frac{G(\mathbf q)}{W(\mathbf q)},
-\qquad
-\beta(\mathbf q)=P(\mathbf q)-\frac14
-\]
-\[
-u=v\Longrightarrow
-P(\mathbf q)=\frac{s-2}{4s-4},
-\qquad
-\beta(\mathbf q)=-\frac{1}{4s-4}
-\]
-\[
-e(\mathbf w)=\left|\operatorname{trunc}(c)-\operatorname{trunc}(b)\right|,
-\qquad
-H(\mathbf w)=\frac{r}{a/r+(3/2)e(\mathbf w)}
-\]
-\[
-\mathbf w_x=(s_x,u_x,v_x,G(\mathbf q_x))
-\]
-\[
-u=v\Longrightarrow
-H(\mathbf w_x)=\frac{G(\mathbf q_x)^2}{s_x}
-\]
-\[
-\lambda(\mathbf q)=
-\frac{H(\mathbf w)^2}{2G(\mathbf q)D(\mathbf q)},
-\qquad
-\widehat{\lambda}(\mathbf q)=1.01^k\lambda(\mathbf q)
-\]
-\[
-M(\mathbf q)=
-\widehat{\lambda}(\mathbf q)\frac{\operatorname{trunc}(v)}{10}
--\operatorname{trunc}(G(\mathbf q))
-\]
-\[
-L(\mathbf q)=
-B+2\operatorname{round}\left(\frac{M(\mathbf q)}{O},2\right)-E
-\]
-\[
-(\ell_\star,r_\star,L_\star,\beta_\star)
-=(\texttt{\$bool1},\texttt{\$bool2},\texttt{\$short\_low},\texttt{\$wall\_bias})
-\]
-\[
-\ell_x=
-\begin{cases}
--,&L_x<L_{\mathrm{prev}},\\
-+,&\text{otherwise},
-\end{cases}
-\qquad
-r_x^{(0)}=
-\begin{cases}
--,&\beta_x<\beta_{\mathrm{prev}},\\
-+,&\text{otherwise}.
-\end{cases}
-\]
-\[
-r_x=
-\begin{cases}
--\,r_x^{(0)},&\lfloor t_{\mathrm{now}}/300\rfloor\bmod2=1,\\
-r_x^{(0)},&\text{otherwise},
-\end{cases}
-\qquad
-p_x=\ell_x r_x
-\]
-\[
-g_x=
-\begin{cases}
-\%,&(\ell_x,r_x)=(-,-),\\
-\ell_x,&\text{otherwise}
-\end{cases}
-\]
-\[
-\mathrm{score}_x=\mathbf 1[r_x=\ell_x]
-\]
-\[
-A(p)=
-\begin{cases}
-\mathrm{BUY},&p\in\{++,--\},\\
-\mathrm{SELL},&p\in\{+-,-+\},\\
-\mathrm{NO\ TRADE},&p=\%.
-\end{cases}
-\]
-\[
-F(T)=
-\begin{cases}
-p_T,&T\notin\operatorname{dom}(F),\\
-F(T),&T\in\operatorname{dom}(F).
-\end{cases}
-\]
-\[
-\mathrm{RIGHT}(T)=
-\mathbf 1\!\left[
-\bigl(A(F(T))=\mathrm{BUY}\land\operatorname{direction}_{\mathrm{observed}}(T)=+\bigr)
-\lor
-\bigl(A(F(T))=\mathrm{SELL}\land\operatorname{direction}_{\mathrm{observed}}(T)=-\bigr)
-\right]
-\]</pre>
-            </details>
-                    </div>
-                </div>
-            </details>
-        </div>
-    </section>
-
-    <section class="disclosure-modal disclosure-section" id="site-disclaimer" aria-labelledby="disclosures-title">
-        <div class="disclosure-dialog">
-            <div class="disclosure-modal-head">
-                <div>
-                    <h2 id="disclosures-title">Hypothetical performance and educational simulation disclosures</h2>
-                    <p class="modal-link-shell">Research and paper-trading only.</p>
-                </div>
-                <a class="modal-close-link" href="#" aria-label="Close disclaimer">×</a>
-            </div>
-
-            <div class="regulatory-copy">
-                <p>THIS COMPOSITE PERFORMANCE RECORD IS HYPOTHETICAL AND THESE TRADING ADVISORS HAVE NOT TRADED TOGETHER IN THE MANNER SHOWN IN THE COMPOSITE. HYPOTHETICAL PERFORMANCE RESULTS HAVE MANY INHERENT LIMITATIONS, SOME OF WHICH ARE DESCRIBED BELOW. NO REPRESENTATION IS BEING MADE THAT ANY MULTI-ADVISOR MANAGED ACCOUNT OR POOL WILL OR IS LIKELY TO ACHIEVE A COMPOSITE PERFORMANCE RECORD SIMILAR TO THAT SHOWN. IN FACT, THERE ARE FREQUENTLY SHARP DIFFERENCES BETWEEN A HYPOTHETICAL COMPOSITE PERFORMANCE RECORD AND THE ACTUAL RECORD SUBSEQUENTLY ACHIEVED.</p>
-
-                <p>ONE OF THE LIMITATIONS OF A HYPOTHETICAL COMPOSITE PERFORMANCE RECORD IS THAT DECISIONS RELATING TO THE SELECTION OF TRADING ADVISORS AND THE ALLOCATION OF ASSETS AMONG THOSE TRADING ADVISORS WERE MADE WITH THE BENEFIT OF HINDSIGHT BASED UPON THE HISTORICAL RATES OF RETURN OF THE SELECTED TRADING ADVISORS. THEREFORE, COMPOSITE PERFORMANCE RECORDS INVARIABLY SHOW POSITIVE RATES OF RETURN. ANOTHER INHERENT LIMITATION ON THESE RESULTS IS THAT THE ALLOCATION DECISIONS REFLECTED IN THE PERFORMANCE RECORD WERE NOT MADE UNDER ACTUAL MARKET CONDITIONS AND, THEREFORE, CANNOT COMPLETELY ACCOUNT FOR THE IMPACT OF FINANCIAL RISK IN ACTUAL TRADING. FURTHERMORE, THE COMPOSITE PERFORMANCE RECORD MAY BE DISTORTED BECAUSE THE ALLOCATION OF ASSETS CHANGES FROM TIME TO TIME AND THESE ADJUSTMENTS ARE NOT REFLECTED IN THE COMPOSITE.</p>
-
-                <p>HYPOTHETICAL PERFORMANCE RESULTS HAVE MANY INHERENT LIMITATIONS, SOME OF WHICH ARE DESCRIBED BELOW. NO REPRESENTATION IS BEING MADE THAT ANY ACCOUNT WILL OR IS LIKELY TO ACHIEVE PROFITS OR LOSSES SIMILAR TO THOSE SHOWN. IN FACT, THERE ARE FREQUENTLY SHARP DIFFERENCES BETWEEN HYPOTHETICAL PERFORMANCE RESULTS AND THE ACTUAL RESULTS SUBSEQUENTLY ACHIEVED BY ANY PARTICULAR TRADING PROGRAM.</p>
-
-                <p>ONE OF THE LIMITATIONS OF HYPOTHETICAL PERFORMANCE RESULTS IS THAT THEY ARE GENERALLY PREPARED WITH THE BENEFIT OF HINDSIGHT. IN ADDITION, HYPOTHETICAL TRADING DOES NOT INVOLVE FINANCIAL RISK, AND NO HYPOTHETICAL TRADING RECORD CAN COMPLETELY ACCOUNT FOR THE IMPACT OF FINANCIAL RISK IN ACTUAL TRADING. FOR EXAMPLE, THE ABILITY TO WITHSTAND LOSSES OR TO ADHERE TO A PARTICULAR TRADING PROGRAM IN SPITE OF TRADING LOSSES ARE MATERIAL POINTS WHICH CAN ALSO ADVERSELY AFFECT ACTUAL TRADING RESULTS. THERE ARE NUMEROUS OTHER FACTORS RELATED TO THE MARKETS IN GENERAL OR TO THE IMPLEMENTATION OF ANY SPECIFIC TRADING PROGRAM WHICH CANNOT BE FULLY ACCOUNTED FOR IN THE PREPARATION OF HYPOTHETICAL PERFORMANCE RESULTS AND ALL OF WHICH CAN ADVERSELY AFFECT ACTUAL TRADING RESULTS.</p>
-            </div>
-
-            <h3>EDUCATIONAL SIMULATION ONLY — NO LIVE TRADING</h3>
-            <p>This livestream displays the CNGN model’s hypothetical five-minute signals for stocks and cryptocurrencies. No brokerage account is connected and no live orders are sent; every labeled execution is confined to the local paper wallet.</p>
-
-            <h3>SIGNAL KEY</h3>
-            <div class="signal-key" aria-label="Simulation signal key">
-                <span>++, -- = BUY signal family for the simulation</span>
-                <span>-+, +- = SELL signal family for the simulation</span>
-                <span>% = NO TRADE / unknown signal</span>
-            </div>
-
-            <p>The displayed simulated net move is the marked-to-market change in the local $10,000 paper wallet: cash plus held asset value minus starting equity. It is not brokerage P/L, income, or a promise of profit. Requested stake, executable stake, position size, proceeds, open P/L, and realized P/L are reported separately.</p>
-
-            <p>Hypothetical results have significant limitations. Crypto paper fills include a configurable taker-fee assumption, observed or fallback spread, adverse slippage, and product increments, but they still cannot reproduce liquidity depth, partial fills, latency, taxes, market impact, order-entry errors, borrowing costs, or actual execution risk. The spiral guard is a heuristic circuit breaker, not a guarantee: prices can gap through its thresholds, and an existing holding continues to gain or lose value while that asset is paused. Forward and current signals are unresolved until the relevant market candle is complete.</p>
-
-            <p>Past performance and simulated performance do not guarantee future results. This content is for education and research only. It is not investment advice, financial advice, personalized advice, a recommendation, an offer, or a solicitation to buy or sell any security, cryptocurrency, or other financial product.</p>
-
-            <p>Stocks and cryptocurrencies involve risk, including the possible loss of principal. Do your own research and consult a qualified, licensed financial professional about your individual circumstances.</p>
-
-            <p>Market data is sourced from the configured feed stack and scheduler cache, and may be delayed, incomplete, interrupted, or unavailable. Chart values and model outputs may contain errors. Times shown are converted to the viewer’s local time.</p>
-
-            <p>This channel does not manage money, accept trading funds, provide brokerage services, or guarantee any result. Disclosure: I may receive compensation from links, sponsors, memberships, subscriptions, courses, or other services mentioned in this livestream.</p>
-        </div>
-    </section>
-
-</main>
-<script>
-let candles = <?= json_encode($candle_chart, JSON_UNESCAPED_SLASHES) ?>;
-const dashboardTimeZone = 'America/New_York';
-let guessCandles = <?= json_encode($guess_candles, JSON_UNESCAPED_SLASHES) ?>;
-let timeline = <?= json_encode($timeline, JSON_UNESCAPED_SLASHES) ?>;
-let chartTimeline = <?= json_encode($chart_timeline, JSON_UNESCAPED_SLASHES) ?>;
-let pairStats = <?= json_encode(array_values($action_stats), JSON_UNESCAPED_SLASHES) ?>;
-let pairDirectionMap = <?= json_encode(activePairDirectionMap(), JSON_UNESCAPED_SLASHES) ?>;
-let chartPriceMin = <?= json_encode($chart_price_min) ?>;
-let chartPriceMax = <?= json_encode($chart_price_max) ?>;
-let currentMarketType = <?= json_encode($market_type) ?>;
-let currentTicker = <?= json_encode($ticker) ?>;
-let liveSpotPrice = <?= json_encode($current_price) ?>;
-let adaptiveCompleteFlip = <?= json_encode($adaptive_complete_flip) ?>;
-
-function pairForGuess(guess) {
-    const pair = String(guess?.pair || '');
-    return /^[+-]{2}$/.test(pair) ? pair : String(guess?.symbol || '%');
-}
-
-function pairForRecord(record) {
-    const explicit = String(record?.guessPair || '');
-    if (/^[+-]{2}$/.test(explicit)) return explicit;
-    const fromGuess = pairForGuess(record?.guess || {});
-    return /^[+-]{2}$/.test(fromGuess) ? fromGuess : '';
-}
-
-function escapeHtml(value) {
-    return String(value ?? '')
-        .replaceAll('&', '&amp;')
-        .replaceAll('<', '&lt;')
-        .replaceAll('>', '&gt;')
-        .replaceAll('"', '&quot;')
-        .replaceAll("'", '&#39;');
-}
-
-function renderSignedSymbolHtmlClient(value) {
-    const chars = Array.from(String(value ?? ''));
-    return chars.map(char => {
-        if (char === '+') return '<span class="signal-sign gain-sign">+</span>';
-        if (char === '-') return '<span class="signal-sign loss-sign">-</span>';
-        return escapeHtml(char);
-    }).join('');
-}
-
-function actionForGuess(guess) {
-    const pair = pairForGuess(guess);
-    const explicit = String(guess?.action || guess?.guessAction || '').toUpperCase();
-    const derivedDirection = /^[+-]{2}$/.test(pair)
-        ? String(pairDirectionMap?.[pair] || '')
-        : '';
-    const lockedDirection = String(guess?.direction || '');
-    // Historical/timestamp-locked guesses own their direction. The active map
-    // is only a fallback for new unresolved guesses and must not change the
-    // chart action without changing the scored prediction.
-    let direction = lockedDirection === '+' || lockedDirection === '-'
-        ? lockedDirection
-        : (derivedDirection === '+' || derivedDirection === '-' ? derivedDirection : '');
-    if (direction === '+') return 'BUY';
-    if (direction === '-') return 'SELL';
-    return /^(BUY|SELL)$/.test(explicit) ? explicit : 'NO TRADE';
-}
-
-function actionForRecord(record) {
-    const locked = actionForGuess(record?.guess || {});
-    if (/^(BUY|SELL)$/.test(locked)) return locked;
-    const explicit = String(record?.guessAction || record?.guess?.action || '').toUpperCase();
-    return /^(BUY|SELL|NO TRADE)$/.test(explicit) ? explicit : 'NO TRADE';
-}
-
-function colorForGuessAction(action) {
-    return action === 'BUY' ? '#62a8ff' : (action === 'SELL' ? '#f59e0b' : '#8fa4bd');
-}
-
-function normalizeBrowserGuess(candidate) {
-    if (!candidate || typeof candidate !== 'object') return {};
-    return {...candidate};
-}
-
-function setNodeText(id, text) {
-    const node = document.getElementById(id);
-    if (node) node.textContent = text;
-    return node;
-}
-
-function setToneClass(node, tone) {
-    if (!node) return;
-    node.classList.remove('good', 'medium', 'low');
-    if (tone) node.classList.add(tone);
-}
-
-function bellCurveText(profile, source = '') {
-    const bell = profile && typeof profile === 'object' ? profile : {};
-    const prefix = String(source || '').trim() ? `${String(source).toUpperCase()} • ` : '';
-    const evidence = Number(bell.evidence_percent || 0);
-    const zScore = Number(bell.z_score || 0);
-    const observationOrientation = String(bell.observation_orientation || 'HOLD');
-    const executionOrientation = String(bell.orientation || 'HOLD');
-    const reason = String(bell.reason || 'HOLD');
-    const multiplier = Number(bell.stake_multiplier || 0);
-    return `${prefix}BELL ${evidence.toFixed(1)}% · z ${zScore.toFixed(2)} · OBS ${observationOrientation} · EXEC ${executionOrientation} · ${reason} · STAKE x${multiplier.toFixed(3)}`;
-}
-
-function renderPairStats(stats) {
-    (Array.isArray(stats) ? stats : []).forEach(stat => {
-        const pair = String(stat.pair || stat.action || '');
-        if (!/^(BUY|SELL)$/.test(pair)) return;
-        const card = document.getElementById(`pairCard${pair.toLowerCase()}`);
-        if (!card) return;
-        const total = Number(stat.total || 0);
-        const right = Number(stat.right || 0);
-        const wrong = Number(stat.wrong ?? Math.max(0, total - right));
-        const percentage = Number(stat.percentage || 0);
-        const historicalPercentage = Number(stat.historical_percentage ?? percentage);
-        const historicalRight = Number(stat.historical_right ?? right);
-        const historicalWrong = Number(stat.historical_wrong ?? Math.max(0, total - historicalRight));
-        const resultText = stat.flipped
-            ? `HISTORICAL ${historicalPercentage.toFixed(1)}% • ${historicalRight} RIGHT / ${historicalWrong} WRONG / ${total} TOTAL → EFFECTIVE ${percentage.toFixed(1)}% • ${right} RIGHT / ${wrong} WRONG • FLIPPED`
-            : `${right} RIGHT / ${wrong} WRONG / ${total} TOTAL`;
-        const countText = `${resultText} • ${bellCurveText(stat.bell_curve)}`;
-        const value = card.querySelector('[data-pair-percentage]');
-        const count = card.querySelector('[data-pair-count]');
-        if (value) {
-            value.textContent = total > 0 ? `${percentage.toFixed(1)}%` : '—';
-            value.classList.remove('good', 'medium', 'low');
-            value.classList.add(percentage >= 65 ? 'good' : (percentage >= 50 ? 'medium' : 'low'));
-        }
-        if (count) count.textContent = countText;
-    });
-}
-
-function renderForwardAccuracy(data) {
-    const accuracy = Number(data.accuracyEffective ?? data.accuracy ?? 0);
-    const total = Math.min(12, Math.max(0, Number(data.accuracyTotal || 0)));
-    const right = Math.min(total, Math.max(0, Number(data.accuracyRight || 0)));
-    const unverifiedExcluded = Number(data.unverifiedRowsExcluded || 0);
-    const accuracyText = total > 0 ? `${accuracy.toFixed(2)}%` : '—';
-    const accuracyNote = total > 0
-        ? `${right} RIGHT / ${Math.max(0, total - right)} WRONG / ${total} RESOLVED IN LATEST-12 WINDOW`
-            + ` • GUESS ${accuracy.toFixed(2)}% • TARGET 80.00% • CONTROL 65.00%`
-            + ' • VERIFIED TIMESTAMP-LOCKED FORECASTS ONLY • EXECUTION RESULTS EXCLUDED'
-            + (unverifiedExcluded > 0 ? ` • UNVERIFIED ${unverifiedExcluded} EXCLUDED` : '')
-        : '0 RIGHT / 0 WRONG / 0 RESOLVED IN LATEST-12 WINDOW • GUESS UNSCORED';
-    const tone = total <= 0 ? 'medium' : (accuracy >= 65 ? 'good' : (accuracy >= 50 ? 'medium' : 'low'));
-    const valueNode = setNodeText('accuracyValue', accuracyText);
-    const noteNode = setNodeText('accuracyNote', accuracyNote);
-    const carryValueNode = setNodeText('modelCarryValue', accuracyText);
-    const carryNoteNode = setNodeText('modelCarryNote', accuracyNote);
-    setNodeText('modelWinLossValue', `${right} / ${Math.max(0, total - right)}`);
-    const latest = data.latestObservation && typeof data.latestObservation === 'object'
-        ? data.latestObservation
-        : null;
-    let latestLabel = 'No completed observation yet';
-    if (latest) {
-        const predicted = String(latest.predicted || '') === '+'
-            ? 'BUY'
-            : (String(latest.predicted || '') === '-' ? 'SELL' : 'UNKNOWN');
-        const actual = String(latest.actual || '') === '+'
-            ? 'UP'
-            : (String(latest.actual || '') === '-' ? 'DOWN' : 'FLAT');
-        const parsedTime = new Date(String(latest.time || ''));
-        const timeLabel = Number.isNaN(parsedTime.getTime())
-            ? String(latest.time || '')
-            : parsedTime.toLocaleString(undefined, {
-                month: 'short',
-                day: 'numeric',
-                hour: 'numeric',
-                minute: '2-digit',
-                timeZone: dashboardTimeZone,
-                timeZoneName: 'short',
-            });
-        latestLabel = `${String(latest.result || 'UNSCORED')} • GUESS ${predicted} • ACTUAL ${actual}`
-            + (timeLabel ? ` • ${timeLabel}` : '');
-    }
-    setNodeText('modelLastValue', latestLabel);
-    setToneClass(valueNode, tone);
-    setToneClass(carryValueNode, tone);
-    if (noteNode) noteNode.textContent = accuracyNote;
-    if (carryNoteNode) carryNoteNode.textContent = accuracyNote;
-}
-
-function renderStatusMeta(data) {
-    const note = String(data.dataNote || 'Using the current 30-second market feed.');
-    const updated = String(data.updatedAt || '');
-    setNodeText('dataStatusNote', note);
-    setNodeText('dataStatusUpdated', updated ? `Feed file ${updated}` : 'Feed file unavailable');
-}
-
-function renderTrackedPortfolio(data) {
-    const portfolio = data && typeof data.trackedPortfolio === 'object' ? data.trackedPortfolio : null;
-    if (!portfolio) return;
-
-    const floatNode = document.getElementById('portfolioTotalFloat');
-    const outputTotal = Number(portfolio.output_total || 0);
-    const outputCount = Math.max(0, Number(portfolio.output_count || 0));
-    const pnl = Number(portfolio.net_pnl || 0);
-    const unreinvestedSold = Math.max(0, Number(portfolio.unreinvested_sold_total || 0));
-    const valueNode = setNodeText(
-        'portfolioTotalValue',
-        (outputTotal < 0 ? '-' : '') + '$' + number2(Math.abs(outputTotal))
-    );
-
-    const noteNode = document.getElementById('portfolioTotalNote');
-    if (noteNode) {
-        noteNode.textContent = `${outputCount} SYMBOLS • P&L ${pnl >= 0 ? '+' : '-'}$${number2(Math.abs(pnl))}`
-            + ` + UNREINVESTED SOLD $${number2(unreinvestedSold)}`;
-    }
-
-    const tone = outputTotal > 0.00000001 ? 'good' : (outputTotal < -0.00000001 ? 'low' : 'medium');
-    if (floatNode) {
-        floatNode.classList.remove('good', 'medium', 'low');
-        floatNode.classList.add(tone);
-    }
-    setToneClass(valueNode, tone);
-}
-
-function renderTrackedDashboardCards(data) {
-    const cards = Array.isArray(data?.trackedDashboardCards) ? data.trackedDashboardCards : [];
-    cards.forEach(card => {
-        const market = String(card.market || '').toLowerCase();
-        const symbol = String(card.symbol || '').toUpperCase();
-        if (!market || !symbol) return;
-        const node = document.querySelector(`[data-tracked-card][data-market="${CSS.escape(market)}"][data-symbol="${CSS.escape(symbol)}"]`);
-        if (!node) return;
-        const setCardText = (selector, value) => {
-            const target = node.querySelector(selector);
-            if (target) target.textContent = String(value ?? '—');
-            return target;
-        };
-        setCardText('[data-card-updated]', card.updated_label || 'Unavailable');
-        const priceNode = setCardText('[data-card-price]', card.price_label || '—');
-        if (priceNode) {
-            priceNode.title = `${String(card.price_direction || 'FLAT')} asset move`;
-            setToneClass(priceNode, card.price_class || 'medium');
-        }
-        setCardText('[data-card-position]', card.position_label || 'FLAT');
-        setCardText('[data-card-signal]', card.signal_label || 'WATCHING');
-        const spiralNode = setCardText('[data-card-spiral]', card.spiral_guard_label || 'MONITORING');
-        setToneClass(spiralNode, card.spiral_guard_class || 'medium');
-        setCardText('[data-card-equity]', card.equity_label || '—');
-        const netNode = setCardText('[data-card-net]', card.net_label || '—');
-        setToneClass(netNode, card.net_class || 'medium');
-        const alphaNode = setCardText('[data-card-alpha]', card.alpha_label || '—');
-        setToneClass(alphaNode, card.alpha_class || 'medium');
-        setCardText('[data-card-trust]', card.trust_label || '—');
-        setCardText('[data-card-accuracy]', card.accuracy_label || '—');
-        setCardText('[data-card-buy]', card.buy_label || '—');
-        setCardText('[data-card-sell]', card.sell_label || '—');
-        setCardText('[data-card-last-trade]', card.last_trade_label || 'No settled trade yet');
-    });
-}
-
-function renderGlobalWrongBranches(data) {
-    const branches = Array.isArray(data?.globalWrongMarkBranches)
-        ? data.globalWrongMarkBranches.slice(0, 4)
-        : [];
-    const text = branches.length
-        ? branches.map(branch => {
-            const hour = String(branch.hour || '');
-            const position = String(branch.position_label || `#${Number(branch.position || 0)} / 12`);
-            const count = Number(branch.count || 0);
-            const symbols = Array.isArray(branch.symbols) ? branch.symbols.slice(0, 5).join(',') : '';
-            return `${hour} ${position} x${count}${symbols ? ' ' + symbols : ''}`;
-        }).join(' • ')
-        : 'No global 3x wrong-mark branch';
-    setNodeText('globalWrongBranchesValue', text);
-}
-
-function renderModelStance(guess, traderState, data) {
-    adaptiveCompleteFlip = Boolean(data?.adaptiveCompleteFlip);
-    const derivedAction = actionForGuess(guess);
-    const payloadModelAction = String(data?.modelAction || '').toUpperCase();
-    const action = /^(BUY|SELL|NO TRADE)$/.test(payloadModelAction) ? payloadModelAction : derivedAction;
-    const payloadExecutionAction = String(data?.executionAction || 'NO TRADE').toUpperCase();
-    const executionAction = /^(BUY|SELL)$/.test(payloadExecutionAction) ? payloadExecutionAction : 'HOLD';
-    const pair = pairForGuess(guess);
-    const pairLabel = pair === '%' ? 'Unavailable' : pair;
-    const resolutionText = pair === '%'
-        ? 'Signal unavailable'
-        : (adaptiveCompleteFlip ? 'COMPLETE FLIP ACTIVE' : (Boolean(data?.branchFlipActive) ? 'BRANCH FLIP ACTIVE' : 'Current five-minute mark locked'));
-    const currentGuessValueNode = document.getElementById('currentGuessValue');
-    const currentGuessNoteNode = document.getElementById('currentGuessNote');
-    if (currentGuessValueNode) {
-        currentGuessValueNode.textContent = action;
-        setToneClass(currentGuessValueNode, action === 'BUY' ? 'good' : (action === 'SELL' ? 'low' : 'medium'));
-    }
-    if (currentGuessNoteNode) {
-        currentGuessNoteNode.textContent = pair === '%'
-            ? 'Model signal unavailable for the current hour'
-            : `MODEL ${pair} • ${action} • EXEC ${executionAction} • current five-minute mark locked`;
-    }
-    setNodeText('modelPairValue', pairLabel);
-    const resolutionChip = setNodeText('modelResolutionChip', resolutionText);
-    if (resolutionChip) {
-        resolutionChip.classList.remove('is-warning', 'is-neutral');
-        resolutionChip.classList.add(pair === '%' ? 'is-neutral' : 'is-warning');
-    }
-}
-
-function syncChartMeta() {
-    const headingNode = document.getElementById('chartHeading');
-    const canvasNode = document.getElementById('candleChart');
-    const stampNode = document.getElementById('chartTimeStamp');
-    const actualCount = chartTimeline.filter(record => record && record.actual).length;
-    const forecastCount = chartTimeline.filter(record => record && !record.actual && record.guess).length;
-    const scoredCount = chartTimeline.filter(record => record && /^(RIGHT|WRONG|FLAT)$/.test(String(record.guessResult || ''))).length;
-    if (headingNode) headingNode.textContent = `${actualCount} real hourly candles • ${scoredCount} scored 12/12 • ${forecastCount} forecast candles`;
-    if (canvasNode) {
-        canvasNode.setAttribute(
-            'aria-label',
-            `Chart with ${actualCount} real hourly candles, ${scoredCount} scored twelve-mark predictions, and ${forecastCount} combined forecast candlesticks`
-        );
-    }
-    const visibleRecords = chartTimeline.filter(record => record && (record.actual || record.guess));
-    if (stampNode) {
-        if (!visibleRecords.length) {
-            stampNode.textContent = 'Local hourly chart window unavailable';
-        } else {
-            const firstTime = visibleRecords[0].displayTime || visibleRecords[0].time;
-            const lastTime = visibleRecords[visibleRecords.length - 1].displayTime || visibleRecords[visibleRecords.length - 1].time;
-            const currentRecord = visibleRecords.find(record => record && record.phase === 'current') || null;
-            const timeZone = dashboardTimeZone;
-            const formatStamp = value => {
-                const parsed = new Date(value);
-                if (Number.isNaN(parsed.getTime())) return String(value || '');
-                return parsed.toLocaleString([], {
-                    month: '2-digit',
-                    day: '2-digit',
-                    hour: '2-digit',
-                    minute: '2-digit',
-                    timeZone: dashboardTimeZone
-                });
-            };
-            let stampText = `Local hourly chart window ${formatStamp(firstTime)} → ${formatStamp(lastTime)} • ${timeZone}`;
-            if (currentRecord) {
-                const currentTime = currentRecord.displayTime || currentRecord.time;
-                stampText += ` • current boundary ${formatStamp(currentTime)}`;
-            }
-            stampNode.textContent = stampText;
-        }
-    }
-}
-
-function formatChartAxisTime(value) {
-    const parsed = new Date(value);
-    if (Number.isNaN(parsed.getTime())) return String(value || '').slice(-5);
-    return parsed.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', timeZone: dashboardTimeZone});
-}
-
-function formatChartAxisDate(value) {
-    const parsed = new Date(value);
-    if (Number.isNaN(parsed.getTime())) return '';
-    return parsed.toLocaleDateString([], {month:'2-digit', day:'2-digit', timeZone: dashboardTimeZone});
-}
-
-function localizeTableTimes() {
-    document.querySelectorAll('#liveGuessTable td[data-epoch], #hourAuditTable td[data-epoch]').forEach(cell => {
-        const localDate = new Date(Number(cell.dataset.epoch));
-        const compact = localDate.toLocaleString([], {
-            month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', timeZone: dashboardTimeZone
-        });
-        const detailed = localDate.toLocaleString([], {
-            year:'numeric', month:'2-digit', day:'2-digit',
-            hour:'2-digit', minute:'2-digit', second:'2-digit', timeZoneName:'short', timeZone: dashboardTimeZone
-        });
-        cell.textContent = compact;
-        cell.title = detailed;
-        cell.setAttribute('aria-label', detailed);
-    });
-}
-
-function drawCandleChart() {
-    const canvas = document.getElementById('candleChart');
-    if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
-    const dpr = Math.max(1, window.devicePixelRatio || 1);
-    canvas.width = Math.floor(rect.width * dpr);
-    canvas.height = Math.floor(rect.height * dpr);
-    const ctx = canvas.getContext('2d');
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, rect.width, rect.height);
-
-    const pad = {l:72, r:18, t:20, b:56};
-    const width = rect.width - pad.l - pad.r;
-    const height = rect.height - pad.t - pad.b;
-
-    if (!chartTimeline.length) {
-        ctx.fillStyle = '#8fa4bd';
-        ctx.font = '14px system-ui';
-        ctx.fillText('Waiting for hourly candlesticks.', pad.l, pad.t + 35);
-        return;
-    }
-
-    const high = Number(chartPriceMax);
-    const low = Number(chartPriceMin);
-    const y = price => pad.t + height * (1 - (price - low) / Math.max(.000001, high - low));
-    const slot = width / chartTimeline.length;
-    const actualCount = chartTimeline.filter(record => record && record.actual).length;
-    const lastActualIndex = actualCount > 0 ? actualCount - 1 : -1;
-    const firstForecastIndex = actualCount;
-    const lastForecastIndex = chartTimeline.length - 1;
-    const actualPriceLabelIndexes = new Set();
-    const forecastPriceLabelIndexes = new Set();
-    const addPriceLabelIndexes = (target, start, end, spacing) => {
-        if (start > end || start < 0 || end < 0) return;
-        const step = Math.max(1, spacing);
-        target.add(start);
-        target.add(end);
-        for (let index = start; index <= end; index += step) target.add(index);
-    };
-    if (actualCount > 0) {
-        const actualSpacing = slot >= 72 ? 1 : (slot >= 52 ? 2 : (slot >= 38 ? 3 : Math.max(1, Math.ceil(actualCount / 4))));
-        addPriceLabelIndexes(actualPriceLabelIndexes, 0, lastActualIndex, actualSpacing);
-        actualPriceLabelIndexes.add(lastActualIndex);
-    }
-    if (firstForecastIndex <= lastForecastIndex) {
-        const forecastCount = Math.max(0, chartTimeline.length - actualCount);
-        const forecastSpacing = slot >= 70 ? 1 : (slot >= 50 ? 2 : Math.max(1, Math.ceil(Math.max(1, forecastCount) / 3)));
-        addPriceLabelIndexes(forecastPriceLabelIndexes, firstForecastIndex, lastForecastIndex, forecastSpacing);
-        forecastPriceLabelIndexes.add(firstForecastIndex);
-        forecastPriceLabelIndexes.add(lastForecastIndex);
-    }
-    const drawCandleCloseLabel = (candle, center, color, side = 'center') => {
-        if (!candle || !Number.isFinite(Number(candle.close))) return;
-        const close = Number(candle.close);
-        const open = Number(candle.open);
-        const closeY = y(close);
-        const labelCenterY = close >= open ? closeY - 12 : closeY + 12;
-        const offset = Math.max(6, slot * 0.18);
-        const labelX = side === 'left'
-            ? center - offset
-            : (side === 'right' ? center + offset : center);
-        const labelAlign = side === 'left'
-            ? 'right'
-            : (side === 'right' ? 'left' : 'center');
-        drawChartPriceTag(
-            ctx,
-            rect,
-            pad,
-            labelX,
-            labelCenterY,
-            '$' + formatChartPrice(close),
-            {
-                align: labelAlign,
-                background: 'rgba(15,23,42,.94)',
-                border: color,
-                color: '#eef5ff'
-            }
-        );
-    };
-
-    ctx.font = '11px system-ui';
-    ctx.strokeStyle = '#223752';
-    ctx.fillStyle = '#8fa4bd';
-    for (let i = 0; i <= 5; i++) {
-        const y = pad.t + height * i / 5;
-        ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(rect.width - pad.r, y); ctx.stroke();
-        const price = high - (high - low) * i / 5;
-        ctx.fillText(price.toLocaleString(undefined, {maximumFractionDigits: 2}), 5, y + 4);
-    }
-
-    chartTimeline.forEach((record, index) => {
-        const candle = record.actual;
-        if (!candle) return;
-        const center = pad.l + slot * (index + .5) - slot * .15;
-        const rising = candle.close > candle.open;
-        const falling = candle.close < candle.open;
-        const color = rising ? '#4ade80' : (falling ? '#fb7185' : '#94a3b8');
-        ctx.strokeStyle = color;
-        ctx.fillStyle = color;
-        ctx.lineWidth = 1.5;
-        ctx.beginPath(); ctx.moveTo(center, y(candle.high)); ctx.lineTo(center, y(candle.low)); ctx.stroke();
-        const top = y(Math.max(candle.open, candle.close));
-        const bottom = y(Math.min(candle.open, candle.close));
-        const bodyHeight = Math.max(4, bottom - top);
-        ctx.strokeRect(center - slot * .13, top, slot * .26, bodyHeight);
-        if (actualPriceLabelIndexes.has(index)) {
-            drawCandleCloseLabel(candle, center, color, 'right');
-        }
-    });
-
-    chartTimeline.forEach((record, index) => {
-        const guess = record.guess;
-        if (!guess) return;
-        const center = pad.l + slot * (index + .5) + slot * .15;
-        const action = actionForRecord(record);
-        const pair = pairForRecord(record);
-        const color = colorForGuessAction(action);
-        const renderStyle = String(guess.render_style || '');
-        ctx.strokeStyle = color;
-        ctx.fillStyle = color;
-        ctx.lineWidth = 1.5;
-        let gOpen = Number(guess.open), gClose = Number(guess.close);
-        let gHigh = Number(guess.high), gLow = Number(guess.low);
-        if (!Number.isFinite(gOpen)) gOpen = gClose;
-        if (!Number.isFinite(gClose)) gClose = gOpen;
-        if (!Number.isFinite(gHigh)) gHigh = Math.max(gOpen, gClose);
-        if (!Number.isFinite(gLow)) gLow = Math.min(gOpen, gClose);
-        const chartSpan = Math.max(0.000001, high - low);
-        const minPriceBody = chartSpan * 0.012;
-        const minPriceWick = chartSpan * 0.022;
-        const dir = String(guess.direction || action || '');
-        const mid = (gOpen + gClose) / 2;
-        let bodySpan = Math.abs(gClose - gOpen);
-        if (bodySpan < minPriceBody) {
-            bodySpan = minPriceBody;
-            if (dir === '+' || String(action).includes('BUY')) { gOpen = mid - bodySpan / 2; gClose = mid + bodySpan / 2; }
-            else if (dir === '-' || String(action).includes('SELL')) { gOpen = mid + bodySpan / 2; gClose = mid - bodySpan / 2; }
-            else { gOpen = mid - bodySpan / 2; gClose = mid + bodySpan / 2; }
-        }
-        gHigh = Math.max(gHigh, gOpen, gClose); gLow = Math.min(gLow, gOpen, gClose);
-        if ((gHigh - gLow) < minPriceWick) {
-            const wickMid = (gHigh + gLow) / 2;
-            gHigh = wickMid + minPriceWick / 2; gLow = wickMid - minPriceWick / 2;
-        }
-        let top = y(Math.max(gOpen, gClose));
-        let bottom = y(Math.min(gOpen, gClose));
-        const bodyWidth = Math.max(6, slot * .28);
-        let bodyHeight = Math.max(8, bottom - top);
-        if (bodyHeight < 8) { const expand = (8 - bodyHeight) / 2; top -= expand; bottom += expand; bodyHeight = bottom - top; }
-        if (renderStyle !== 'box') {
-            ctx.beginPath(); ctx.moveTo(center, Math.min(y(gHigh), top - 2)); ctx.lineTo(center, Math.max(y(gLow), bottom + 2)); ctx.stroke();
-        }
-        ctx.strokeRect(center - bodyWidth / 2, top, bodyWidth, bodyHeight);
-        ctx.fillStyle = renderStyle === 'box' ? color + '33' : color;
-        ctx.fillRect(center - bodyWidth / 2, top, bodyWidth, bodyHeight);
-        ctx.fillStyle = color;
-        if (pair && slot >= 28) {
-            const labelAnchorHigh = renderStyle === 'box' ? Math.max(guess.open, guess.close) : guess.high;
-            const labelY = Math.max(pad.t + 12, y(labelAnchorHigh) - 6);
-            ctx.font = '10px system-ui';
-            ctx.fillStyle = '#eef5ff';
-            ctx.fillText(pair, center - (ctx.measureText(pair).width / 2), labelY);
-            const directionSequence = String(record.directionSequence || guess.directionSequence || '');
-            if (directionSequence && slot >= 44) {
-                ctx.font = '8px ui-monospace, monospace';
-                ctx.fillStyle = '#8fa4bd';
-                ctx.fillText(directionSequence, center - (ctx.measureText(directionSequence).width / 2), labelY + 10);
-            }
-            ctx.fillStyle = color;
-            ctx.font = '11px system-ui';
-        }
-        if (forecastPriceLabelIndexes.has(index)) {
-            drawCandleCloseLabel(guess, center, color, 'left');
-        }
-        const result = String(record.guessResult || '');
-        const progress = record.markProgress && typeof record.markProgress === 'object' ? record.markProgress : {};
-        const expectedMarks = Math.max(1, Number(progress.expected || record.expectedMarks || 12));
-        const guessMarks = Math.max(0, Number(progress.guess ?? record.combinedMarks ?? guess.combinedMarks ?? 0));
-        const actualMarks = Math.max(0, Number(progress.actual ?? record.actual?.combinedMarks ?? 0));
-        const markStats = record.markStats && typeof record.markStats === 'object' ? record.markStats : {};
-        const rightMarks = Math.max(0, Number(markStats.right || 0));
-        const wrongMarks = Math.max(0, Number(markStats.wrong || 0));
-        const elasticity = record.elasticity && typeof record.elasticity === 'object'
-            ? record.elasticity
-            : (guess.elasticity && typeof guess.elasticity === 'object' ? guess.elasticity : {});
-        const persistence = Math.max(0, Math.min(100, Number(elasticity.persistence_percent || 0)));
-        const elasticityStep = Math.max(0, Number(elasticity.step || 0));
-        const elasticityTotal = Math.max(0, Number(elasticity.total || 0));
-        const netDirectionalSteps = Number(elasticity.net_directional_steps || 0);
-        const isSettledResult = result === 'RIGHT' || result === 'WRONG' || result === 'FLAT';
-        const pathStretch = elasticityTotal > 0.00000001;
-        if (pathStretch) {
-            const guessDirection = String(guess.direction || '');
-            const pathAnchorOpen = Number.isFinite(Number(guess.open)) ? Number(guess.open) : Number(guess.close || 0);
-            const pathAnchorClose = Number.isFinite(Number(guess.close)) ? Number(guess.close) : pathAnchorOpen;
-            let visualHigh = Math.max(pathAnchorOpen, pathAnchorClose);
-            let visualLow = Math.min(pathAnchorOpen, pathAnchorClose);
-            if (guessDirection === '+') {
-                visualLow = Math.min(pathAnchorOpen, pathAnchorClose);
-                visualHigh = visualLow + Math.max(elasticityStep, elasticityTotal);
-            } else if (guessDirection === '-') {
-                visualHigh = Math.max(pathAnchorOpen, pathAnchorClose);
-                visualLow = visualHigh - Math.max(elasticityStep, elasticityTotal);
-            } else {
-                const restingLevel = Number.isFinite(Number(elasticity.resting_level))
-                    ? Number(elasticity.resting_level)
-                    : pathAnchorClose;
-                const visualHalfSpan = Math.max(elasticityStep, elasticityTotal / 2);
-                visualHigh = restingLevel + visualHalfSpan;
-                visualLow = restingLevel - visualHalfSpan;
-            }
-            ctx.save();
-            ctx.strokeStyle = guessDirection === '+'
-                ? 'rgba(98,168,255,.95)'
-                : (guessDirection === '-'
-                    ? 'rgba(245,158,11,.95)'
-                    : 'rgba(143,164,189,.9)');
-            ctx.lineWidth = 2;
-            ctx.setLineDash([6, 3]);
-            ctx.beginPath();
-            ctx.moveTo(center, y(visualHigh));
-            ctx.lineTo(center, y(visualLow));
-            ctx.stroke();
-            ctx.restore();
-        }
-        const progressLabel = isSettledResult
-            ? `${result} ${rightMarks}R/${wrongMarks}W`
-            : (record.actual
-                ? `G${guessMarks}/${expectedMarks} A${actualMarks}/${expectedMarks}`
-                : `${guessMarks}/${expectedMarks} LOCKED`);
-        if (result || guessMarks > 0) {
-            ctx.font = '10px system-ui';
-            ctx.fillStyle = result === 'RIGHT'
-                ? '#4ade80'
-                : (result === 'WRONG'
-                    ? '#fb7185'
-                    : (result === 'FLAT' ? '#94a3b8' : '#fbbf24'));
-            ctx.textAlign = 'center';
-            const resultY = Math.min(rect.height - pad.b - 16, y(guess.low) + 18);
-            ctx.fillText(progressLabel, center, resultY);
-            if (slot >= 34) {
-                const netLabel = `${netDirectionalSteps >= 0 ? '+' : ''}${netDirectionalSteps}`;
-                const elasticityLabel = slot >= 80
-                    ? `STEP $${formatChartPrice(elasticityStep)} • PATH $${formatChartPrice(elasticityTotal)} • NET ${netLabel} • ${persistence.toFixed(0)}%`
-                    : `STEP $${formatChartPrice(elasticityStep)} • PATH $${formatChartPrice(elasticityTotal)}`;
-                ctx.font = '8px ui-monospace, monospace';
-                ctx.fillStyle = '#8fa4bd';
-                ctx.fillText(elasticityLabel, center, resultY + 11);
-            }
-            ctx.textAlign = 'left';
-        }
-    });
-
-    const currentPrice = Number(liveSpotPrice || 0);
-    if (Number.isFinite(currentPrice) && currentPrice > 0 && currentPrice >= low && currentPrice <= high) {
-        const currentY = y(currentPrice);
-        ctx.save();
-        ctx.strokeStyle = 'rgba(238,245,255,.28)';
-        ctx.lineWidth = 1;
-        ctx.setLineDash([5, 4]);
-        ctx.beginPath();
-        ctx.moveTo(pad.l, currentY);
-        ctx.lineTo(rect.width - pad.r, currentY);
-        ctx.stroke();
-        ctx.restore();
-        drawChartPriceTag(
-            ctx,
-            rect,
-            pad,
-            rect.width - pad.r - 2,
-            currentY,
-            'NOW $' + formatChartPrice(currentPrice),
-            {
-                align: 'right',
-                background: 'rgba(11,18,32,.97)',
-                border: 'rgba(238,245,255,.55)',
-                color: '#eef5ff',
-                height: 20
-            }
-        );
-    }
-
-    ctx.font = '10.5px system-ui';
-    let legendX = pad.l;
-    [
-        {label:'Real', color:'#4ade80'},
-        {label:'BUY (++)', color:'#62a8ff'},
-        {label:'SELL (-- / -+ / +-)', color:'#f59e0b'},
-        {label:'NO TRADE (%)', color:'#8fa4bd'}
-    ].forEach(item => {
-        ctx.strokeStyle = item.color;
-        ctx.strokeRect(legendX, 8, 18, 5);
-        ctx.fillStyle = '#eef5ff';
-        ctx.fillText(item.label, legendX + 24, 14);
-        legendX += 24 + ctx.measureText(item.label).width + 18;
-    });
-    ctx.font = '11px system-ui';
-
-    ctx.fillStyle = '#8fa4bd';
-    const axisLastActualIndex = actualCount > 0 ? actualCount - 1 : 0;
-    const labelIndexes = [0, axisLastActualIndex];
-    const actualLabelStep = actualCount > 0
-        ? Math.max(1, Math.ceil(actualCount / (slot < 40 ? 4 : 6)))
-        : 1;
-    for (let index = actualLabelStep; index < axisLastActualIndex; index += actualLabelStep) {
-        labelIndexes.push(index);
-    }
-    for (let index = actualCount; index < chartTimeline.length; index++) labelIndexes.push(index);
-    let previousDateKey = '';
-    [...new Set(labelIndexes)].forEach(index => {
-        if (!chartTimeline[index]) return;
-        const labelTime = chartTimeline[index].displayTime || chartTimeline[index].time;
-        const timeLabel = formatChartAxisTime(labelTime);
-        const dateLabel = formatChartAxisDate(labelTime);
-        const labelX = pad.l + slot * (index + .5);
-        const dateChanged = dateLabel !== '' && dateLabel !== previousDateKey;
-        previousDateKey = dateLabel || previousDateKey;
-        ctx.strokeStyle = 'rgba(143,164,189,.18)';
-        ctx.beginPath();
-        ctx.moveTo(labelX, rect.height - pad.b + 6);
-        ctx.lineTo(labelX, rect.height - pad.b + 14);
-        ctx.stroke();
-        ctx.fillStyle = '#8fa4bd';
-        ctx.textAlign = 'center';
-        ctx.fillText(timeLabel, labelX, rect.height - 22);
-        if (dateChanged || index === 0 || index === axisLastActualIndex || index === chartTimeline.length - 1) {
-            ctx.fillStyle = '#5f7899';
-            ctx.fillText(dateLabel, labelX, rect.height - 8);
-        }
-    });
-    ctx.textAlign = 'start';
-}
-
-window.addEventListener('resize', drawCandleChart);
-localizeTableTimes();
-renderPairStats(pairStats);
-renderForwardAccuracy({
-    accuracy: <?= json_encode($accuracy_effective) ?>,
-    accuracyHistorical: <?= json_encode($accuracy_historical) ?>,
-    accuracyEffective: <?= json_encode($accuracy_effective) ?>,
-    accuracyFlipped: <?= json_encode($accuracy_flipped) ?>,
-    accuracyRight: <?= json_encode($accuracy_right) ?>,
-    accuracyTotal: <?= json_encode($accuracy_total) ?>,
-    accuracyBellCurve: <?= json_encode($accuracy_bell_curve, JSON_UNESCAPED_SLASHES) ?>,
-    latestObservation: <?= json_encode($forecast_observation_state['latest'] ?? null, JSON_UNESCAPED_SLASHES) ?>,
-    legacyHistoricalRowsExcluded: <?= json_encode($legacy_historical_rows_excluded) ?>,
-    unverifiedRowsExcluded: <?= json_encode($forward_unverified_rows_excluded) ?>
-});
-syncChartMeta();
-drawCandleChart();
-
-const fiveMinutes = 5 * 60 * 1000;
-let nextBoundary = (Math.floor(Date.now() / fiveMinutes) + 1) * fiveMinutes;
-let boundaryTimer = null;
-const oneHour = 60 * 60 * 1000;
-let nextHourBoundary = (Math.floor(Date.now() / oneHour) + 1) * oneHour;
-let hourBoundaryTimer = null;
-
-function lockedCurrentGuess(candidate) {
-    const boundary = Math.floor(Date.now() / fiveMinutes);
-    const pageKey = new URL(window.location.href);
-    pageKey.searchParams.delete('live');
-    pageKey.searchParams.delete('refresh');
-    pageKey.searchParams.delete('_');
-    const storageKey = `cngn-current:v2:${pageKey.toString()}:${boundary}`;
-    try {
-        const normalizedCandidate = normalizeBrowserGuess(candidate);
-        const saved = localStorage.getItem(storageKey);
-        if (saved) {
-            const normalizedSaved = normalizeBrowserGuess(JSON.parse(saved));
-            const savedChange = Math.abs(Number(normalizedSaved.change || 0));
-            const candidateChange = Math.abs(Number(normalizedCandidate.change || 0));
-            if (!(savedChange > 0) && candidateChange > 0) {
-                normalizedSaved.change = candidateChange;
-                localStorage.setItem(storageKey, JSON.stringify(normalizedSaved));
-            }
-            return normalizedSaved;
-        }
-        if (/^[+-]{2}$/.test(String(normalizedCandidate.pair || '')) || normalizedCandidate.symbol === '%') {
-            localStorage.setItem(storageKey, JSON.stringify(normalizedCandidate));
-        }
-    } catch (error) {
-        // Continue with the server value if browser storage is unavailable.
-    }
-    return normalizeBrowserGuess(candidate);
-}
-
-function renderLockedCurrentRow(guess, commitmentAmount = 0, currentStateText = 'CURRENT · UNRESOLVED') {
-    const row = document.querySelector('#liveGuessTable tr.current-guess-row');
-    if (!row || !row.cells || row.cells.length < 3) return;
-    const action = actionForGuess(guess);
-    row.cells[1].textContent = action === 'NO TRADE'
-        ? `CURRENT: ${action}`
-        : `CURRENT: ${action} · COMMIT $${number2(commitmentAmount)}`;
-    row.cells[2].textContent = action === 'NO TRADE' ? 'UNKNOWN' : `${currentStateText} · 1 ACTION/5-MIN MARK`;
-}
-
-function number2(value) {
-    return Number(value || 0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
-}
-
-function number4(value) {
-    return Number(value || 0).toLocaleString(undefined, {minimumFractionDigits:4, maximumFractionDigits:4});
-}
-
-function number8(value) {
-    return Number(value || 0).toLocaleString(undefined, {minimumFractionDigits:8, maximumFractionDigits:8});
-}
-
-function formatChartPrice(value) {
-    return Number(value || 0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
-}
-
-function drawChartPriceTag(ctx, rect, pad, x, y, text, options = {}) {
-    const font = String(options.font || '10.5px system-ui');
-    const align = String(options.align || 'center');
-    const background = String(options.background || 'rgba(15,23,42,.92)');
-    const border = String(options.border || 'rgba(143,164,189,.45)');
-    const color = String(options.color || '#eef5ff');
-    const height = Number(options.height || 18);
-    const horizontalPadding = Number(options.horizontalPadding || 5);
-    ctx.save();
-    ctx.font = font;
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'middle';
-    const width = Math.ceil(ctx.measureText(text).width + (horizontalPadding * 2));
-    let left = align === 'right'
-        ? x - width
-        : (align === 'left' ? x : x - (width / 2));
-    left = Math.max(pad.l, Math.min(rect.width - pad.r - width, left));
-    const top = Math.max(pad.t, Math.min(rect.height - pad.b - height, y - (height / 2)));
-    ctx.fillStyle = background;
-    ctx.strokeStyle = border;
-    ctx.lineWidth = 1;
-    ctx.fillRect(left, top, width, height);
-    ctx.strokeRect(left, top, width, height);
-    ctx.fillStyle = color;
-    ctx.fillText(text, left + horizontalPadding, top + (height / 2) + 0.5);
-    ctx.restore();
-}
-
-function renderCurrentPrice(data) {
-    const price = Number(data.currentPrice || 0);
-    const change = Number(data.hourChange ?? data.lastPriceChange ?? 0);
-    const percentage = Number(data.hourChangePercentage ?? data.currentPricePercentage ?? 0);
-    const reference = Number(data.hourReferencePrice || 0);
-    const direction = change > 0 ? 'UP' : (change < 0 ? 'DOWN' : 'FLAT');
-    const source = String(data.currentPriceSource || '');
-    const valueNode = document.getElementById('currentPriceValue');
-    const noteNode = document.getElementById('currentPriceNote');
-    if (!valueNode || !noteNode) return;
-
-    valueNode.textContent = '$' + number2(price);
-    setToneClass(valueNode, change > 0 ? 'good' : (change < 0 ? 'low' : 'medium'));
-    noteNode.textContent = '1H ' + direction
-        + ' ' + (percentage >= 0 ? '+' : '') + percentage.toFixed(2) + '%'
-        + ' • MOVE ' + (change >= 0 ? '+' : '-') + '$' + number2(Math.abs(change))
-        + (reference > 0 ? ' • FROM $' + number2(reference) : '');
-    setNodeText('marketReferenceValue', reference > 0 ? '$' + number2(reference) : '—');
-    const feedLabel = source === 'COINBASE'
-        ? 'Coinbase Exchange'
-        : (source === 'YAHOO'
-            ? 'Yahoo Finance'
-            : (source === 'CRON-CACHE' ? 'Cron JSON' : 'Observed feed'));
-    const chipLabel = source === 'COINBASE'
-        ? 'Coinbase • top of book'
-        : (source === 'YAHOO'
-            ? 'Yahoo • live'
-            : (source === 'CRON-CACHE' ? 'Cron cache' : 'Observed feed'));
-    setNodeText('marketFeedValue', feedLabel);
-    const chipNode = setNodeText('marketSourceChip', chipLabel);
-    if (chipNode) {
-        chipNode.classList.remove('is-live', 'is-file');
-        chipNode.classList.add(source === 'YAHOO' || source === 'COINBASE' ? 'is-live' : 'is-file');
-    }
-    const note = String(data.dataNote || '');
-    const updated = String(data.updatedAt || '');
-    setNodeText(
-        'marketDataNote',
-        (note || updated)
-            ? `${note || 'Using the current 30-second market feed.'}${updated ? ' • Feed file ' + updated : ''}`
-            : 'Using the current 30-second market feed.'
-    );
-}
-
-function renderAutoBreakTrader(state) {
-    state = state && typeof state === 'object' ? state : {};
-    const action = String(state.display_action || 'WATCHING');
-    const position = state.position === 'long' ? 'long' : 'flat';
-    const wins = Number(state.wins || 0);
-    const losses = Number(state.losses || 0);
-    const realizedMove = Number(state.realized_move || 0);
-    const openPnl = Number(state.open_pnl || 0);
-    const simNetMove = Number(state.sim_net_move || 0);
-    const benchmarkPnl = Number(state.benchmark_pnl || 0);
-    const strategyAlpha = Number(state.strategy_alpha || 0);
-    const totalFees = Number(state.total_fees || 0);
-    const slippageCost = Number(state.total_slippage_cost || 0);
-    const spiralGuard = state.spiral_guard && typeof state.spiral_guard === 'object'
-        ? state.spiral_guard
-        : {};
-    const spiralMetrics = spiralGuard.metrics && typeof spiralGuard.metrics === 'object'
-        ? spiralGuard.metrics
-        : {};
-    const spiralPaused = spiralGuard.paused === true;
-    const spiralDrawdown = Number(spiralGuard.drawdown_percent || 0);
-    const spiralDownSteps = Number(spiralGuard.equity_down_steps || 0);
-    const spiralLossStreak = Number(spiralGuard.realized_loss_streak || 0);
-    const spiralRecovery = Number(spiralGuard.recovery_confirmations || 0);
-    const spiralRecoveryRequired = Number(spiralGuard.recovery_confirmations_required || 2);
-    const spiralConfidence = Number(spiralMetrics.effective_confidence || 0);
-    const spiralCompression = Number(spiralMetrics.combined_compression || 0);
-    const spiralReason = String(spiralGuard.reason || 'Risk metrics stable');
-    const lastTradeResult = String(state.last_trade_result || '');
-    const lastTradePnl = Number(state.last_trade_pnl || 0);
-    const bellCurveActive = state.hourly_bell_curve_active === true;
-    const bellCurveAction = String(state.hourly_bell_curve_action || 'NO TRADE').toUpperCase();
-    const bellCurveTrust = Number(state.hourly_bell_curve_effective_trust || 0);
-    const bellCurveSlots = Number(state.hourly_bell_curve_slots || 0);
-    const bellCurveBuyCalls = Number(state.hourly_bell_curve_buy_calls || 0);
-    const bellCurveSellCalls = Number(state.hourly_bell_curve_sell_calls || 0);
-    const bellCurveRequested = Number(state.hourly_bell_curve_total_requested || 0);
-    const bellCurveExecuted = Number(state.hourly_bell_curve_executed_amount || 0);
-    const bellCurveStatus = String(state.hourly_bell_curve_status || 'INACTIVE');
-    const confidenceBellText = bellCurveText(
-        state.confidence_bell_curve,
-        String(state.confidence_bell_curve_source || 'NONE')
-    );
-    const isCryptoPage = String(currentMarketType || '').toLowerCase() === 'crypto';
-    const assetCode = isCryptoPage
-        ? String(currentTicker || '').replace(/-USD$/i, '').trim()
-        : String(currentTicker || '').trim();
-    const assetLeftLabel = assetCode ? `${assetCode} LEFT` : (isCryptoPage ? 'COIN LEFT' : 'UNITS LEFT');
-    const assetBoughtLabel = assetCode ? `${assetCode} BOUGHT` : (isCryptoPage ? 'COIN BOUGHT' : 'UNITS BOUGHT');
-    const assetSoldLabel = assetCode ? `${assetCode} SOLD` : (isCryptoPage ? 'COIN SOLD' : 'UNITS SOLD');
-    const assetLeftAmount = isCryptoPage ? number8(state.asset_units) : number4(state.asset_units);
-    const assetBoughtAmount = isCryptoPage ? number8(state.total_bought_units) : number4(state.total_bought_units);
-    const assetSoldAmount = isCryptoPage ? number8(state.total_sold_units) : number4(state.total_sold_units);
-    const totalBoughtAmount = Number(state.total_bought_amount || 0);
-    const totalSoldAmount = Number(state.total_sold_amount || 0);
-    const pnlBasis = Number(state.portfolio_pnl_basis || 0);
-    const cashNeutralBaseline = Number(state.portfolio_cash_neutral_baseline || 0);
-    const pnlBasisLabel = String(state.portfolio_pnl_basis_label || 'ACTIVE LEG').trim();
-    const cashoutTotal = Number(state.cash_out_amount || 0);
-    const cashoutAfterRejoinFee = Number(state.cash_out_after_rejoin_fee || 0);
-    const cashoutRejoinFee = Number(state.cash_out_rejoin_fee_estimate || 0);
-    const cashoutRejoinLabel = String(state.cash_out_rejoin_fee_label || 'REJOIN FEE').trim();
-    const cashoutReserve = Number(state.cash_out_cash_kitty_reserve || 5000);
-    const cashoutAssetRefillAvailable = Number(
-        state.cash_out_available_for_asset_refill || Math.max(0, Number(state.cash_left || 0) - cashoutReserve)
-    );
-    const pnlBasisText = ' • P&L BASIS $' + number2(pnlBasis)
-        + (cashNeutralBaseline > 0 ? ' ACTIVE + CASH NEUTRAL $' + number2(cashNeutralBaseline) : '')
-        + (pnlBasisLabel ? ' · ' + pnlBasisLabel : '')
-        + ' • CASH KITTY RESERVE $' + number2(cashoutReserve)
-        + ' • ASSET REFILLABLE $' + number2(cashoutAssetRefillAvailable)
-        + ' • CASHOUT AFTER REJOIN FEE $' + number2(cashoutAfterRejoinFee)
-        + ' (' + (cashoutRejoinLabel || 'REJOIN FEE') + ' $' + number2(cashoutRejoinFee) + ')';
-    const bootstrapEntryPrice = Number(state.bootstrap_entry_price || 0);
-    const bootstrapStartedAt = String(state.bootstrap_started_at || '');
-    const valueNode = document.getElementById('autoBreakValue');
-    const noteNode = document.getElementById('autoBreakNote');
-    if (!valueNode || !noteNode) return;
-
-    valueNode.textContent = 'PORTFOLIO P&L ' + (simNetMove >= 0 ? '+' : '-') + '$' + number2(Math.abs(simNetMove));
-    setToneClass(valueNode, simNetMove > 0 ? 'good' : (simNetMove < 0 ? 'low' : 'medium'));
-
-    let noteText = position.toUpperCase()
-        + ' • ' + action
-        + ' • OPEN ' + (position === 'long' ? ((openPnl >= 0 ? '+' : '-') + '$' + number2(Math.abs(openPnl))) : '—')
-        + ' • LAST ' + (lastTradeResult || '—')
-        + ' ' + (lastTradeResult ? ((lastTradePnl >= 0 ? '+' : '-') + '$' + number2(Math.abs(lastTradePnl))) : '—')
-        + ' • EXECUTED EXIT P/L ' + wins + '/' + losses
-        + ' • ALPHA ' + (strategyAlpha >= 0 ? '+' : '-') + '$' + number2(Math.abs(strategyAlpha))
-        + pnlBasisText
-        + ' • FEES $' + number2(totalFees)
-        + ' • GUARD ' + (spiralPaused ? 'PAUSED' : 'MONITORING')
-        + ' • Paper only';
-    noteNode.textContent = noteText;
-    const liveExternalKitty = Math.max(0, Number(state.external_kitty_total || 0), Number(state.cash_out_withdrawn_total || 0), Number(state.cash_out_summary?.withdrawn_total || 0));
-    const liveSoldIntoCashKitty = Math.max(0, Number(state.sold_into_cash_kitty_total || 0));
-    const liveCash = Math.max(0, Number(state.cash_left || 0));
-    const liveHolding = Math.max(0, Number(state.holding_value || 0));
-    // Add only SELL proceeds that have not yet been reinvested. The open
-    // sell-funded rebuy reserve falls as matching BUYs consume those proceeds.
-    const liveTradingPnl = Number(state.net_pnl || 0);
-    const livePrincipal = Math.max(0, Number(state.principal_initial || state.starting_pot || 10000));
-    const livePendingRebuy = Math.max(0, Number(state.pending_rebuy_total || 0));
-    const liveUnreinvestedSold = Math.min(liveSoldIntoCashKitty, livePendingRebuy);
-    const liveTotalPaper = liveTradingPnl + liveUnreinvestedSold;
-    setNodeText(
-        'walletPotValue',
-        (liveTotalPaper < 0 ? '-$' : '$') + number2(Math.abs(liveTotalPaper))
-    );
-    setNodeText(
-        'walletTotalPaperBreakdown',
-        (liveTradingPnl >= 0 ? 'P&L +$' : 'P&L -$')
-            + number2(Math.abs(liveTradingPnl))
-            + ' + UNREINVESTED SOLD $' + number2(liveUnreinvestedSold)
-    );
-    const liveActiveEquity = Math.max(0, Number(state.principal_active_equity || (liveCash + liveHolding)));
-    const livePrincipalExcess = Math.max(0, Number(state.principal_active_excess || (liveActiveEquity - livePrincipal)));
-    const liveIncomeLocked = Math.max(0, Number(state.principal_income_locked_total || 0));
-    const liveLastIncomeLock = Math.max(0, Number(state.principal_income_last_lock || 0));
-    const liveIncomeThreshold = Math.max(0.01, Number(state.principal_income_threshold || 50));
-    const liveNextIncomeLock = Math.max(0, Number(state.principal_next_lock_needed || (liveIncomeThreshold - livePrincipalExcess)));
-    setNodeText('walletIncomeLockedValue', '$' + number2(liveIncomeLocked));
-    setNodeText('walletLastIncomeLockValue', '$' + number2(liveLastIncomeLock));
-    setNodeText('walletSoldIntoCashKittyValue', '$' + number2(liveSoldIntoCashKitty));
-    setNodeText('walletExternalKittyValue', '$' + number2(liveExternalKitty));
-    setNodeText('walletAssetValue', assetLeftAmount);
-    setNodeText('walletHoldingValue', '$' + number2(state.holding_value));
-    setNodeText('walletCashValue', '$' + number2(state.cash_left));
-    setNodeText('walletCashoutTotalValue', '$' + number2(cashoutTotal));
-    setNodeText('walletCashoutAfterRejoinFeeValue', '$' + number2(cashoutAfterRejoinFee));
-    setNodeText('walletCashoutReserveValue', '$' + number2(cashoutReserve));
-    setNodeText('walletAssetRefillAvailableValue', '$' + number2(cashoutAssetRefillAvailable));
-    const liveReserved = Math.max(0, Number(state.reserved_cash || state.pending_rebuy_total || 0));
-    setNodeText('walletReservedValue', '$' + number2(liveReserved));
-    setNodeText('walletNetMoveValue', `${simNetMove >= 0 ? '+' : '-'}$${number2(Math.abs(simNetMove))}`);
-    setNodeText('walletBenchmarkValue', `${benchmarkPnl >= 0 ? '+' : '-'}$${number2(Math.abs(benchmarkPnl))}`);
-    setNodeText('walletStrategyAlphaValue', `${strategyAlpha >= 0 ? '+' : '-'}$${number2(Math.abs(strategyAlpha))}`);
-    setNodeText('walletExecutionCostsValue', `$${number2(totalFees)} / $${number2(slippageCost)}`);
-    const spiralGuardNode = setNodeText(
-        'walletSpiralGuardValue',
-        `${spiralPaused ? 'PAUSED' : 'MONITORING'} • ${spiralReason} • DRAWDOWN ${number2(spiralDrawdown)}% • DOWN STEPS ${spiralDownSteps} • LOSS STREAK ${spiralLossStreak} • RECOVERY ${spiralRecovery}/${spiralRecoveryRequired} • CONF ${number2(spiralConfidence)}% • COMP ${number2(spiralCompression)}%`
-    );
-    if (spiralGuardNode) setToneClass(spiralGuardNode, spiralPaused ? 'low' : 'good');
-    setNodeText('walletRealizedValue', `${realizedMove >= 0 ? '+' : '-'}$${number2(Math.abs(realizedMove))}`);
-    setNodeText('walletOpenPnlValue', `${openPnl >= 0 ? '+' : '-'}$${number2(Math.abs(openPnl))}`);
-    setNodeText(
-        'walletBellCurveValue',
-        bellCurveActive
-            ? `${bellCurveAction} • REQUESTED $${number2(bellCurveRequested)} • EXECUTED $${number2(bellCurveExecuted)} • RESERVED $${number2(liveReserved)} • ${bellCurveStatus} • ${number2(bellCurveTrust)}% • ${bellCurveBuyCalls}/${bellCurveSellCalls}/${bellCurveSlots} • ${confidenceBellText}`
-            : `HOLD • ${confidenceBellText}`
-    );
-    setNodeText('walletBoughtValue', `CUMULATIVE ${assetBoughtLabel} ${assetBoughtAmount} ($${number2(totalBoughtAmount)})`);
-    setNodeText('walletSoldValue', `CUMULATIVE ${assetSoldLabel} ${assetSoldAmount} ($${number2(totalSoldAmount)})`);
-    setNodeText('walletPositionValue', `POSITION ${position.toUpperCase()}`);
-    const lastWalletText = lastTradeResult
-        ? `${lastTradeResult} ${(lastTradePnl >= 0 ? '+' : '-')}$${number2(Math.abs(lastTradePnl))}`
-        : 'No closed trade yet';
-    setNodeText('walletLastTradeValue', lastWalletText);
-    setNodeText('walletSeedChip', `50/50 ${assetCode || 'asset'} + cash`);
-    const seedDate = (() => {
-        if (!bootstrapStartedAt) return 'start unavailable';
-        const parsed = new Date(bootstrapStartedAt);
-        if (Number.isNaN(parsed.getTime())) return bootstrapStartedAt;
-        return parsed.toLocaleString(undefined, {
-            month: 'short',
-            day: 'numeric',
-            year: 'numeric',
-            hour: 'numeric',
-            minute: '2-digit',
-            timeZone: dashboardTimeZone,
-            timeZoneName: 'short',
-        });
-    })();
-    const seedDetail = `Started with $5,000 cash + $5,000 in ${assetCode || 'the asset'}`
-        + (bootstrapEntryPrice > 0 ? ` at $${number2(bootstrapEntryPrice)}` : '')
-        + ` • ${seedDate}`;
-    setNodeText('walletSeedDetail', seedDetail);
-}
-
-function renderCompression(data) {
-    const score = Number(data.compressionScore || 0);
-    const entropy = Number(data.compressionEntropy || 100);
-    const samples = Number(data.compressionSamples || 0);
-    const tailStreak = Number(data.compressionTailStreak || 0);
-    const phaseCount = Number(data.compressionPhaseCount || 0);
-    const phaseChanges = Number(data.compressionPhaseChanges || 0);
-    const perfectMin = Number(data.compressionPerfectMinParts || 0);
-    const perfectMax = Number(data.compressionPerfectMaxParts || 0);
-    const secondaryScore = Number(data.secondaryCompressionScore || 0);
-    const firstLoopScore = Number(data.firstLoopCompressionScore || 0);
-    const primaryScore = Number(data.primaryCompressionScore || score);
-    const combinedScore = Number(data.combinedCompressionScore || ((primaryScore * 0.70) + (secondaryScore * 0.30)));
-    const secondaryState = String(data.secondaryCompressionState || 'DISAGREE');
-    const dominantDirection = String(data.compressionDominantDirection || 'MIXED');
-    const tokenTakeoverActive = data.compressionTokenTakeoverActive === true;
-    const tokenTakeoverAction = String(data.compressionTokenTakeoverAction || 'NO TRADE');
-    const tokenTakeoverThreshold = Number(data.compressionTokenTakeoverThreshold || 60);
-    const tokenTakeoverScore = Number(data.compressionTokenTakeoverScore || primaryScore);
-    const candleBranchFlipActive = data.compressionCandleBranchFlipActive === true;
-    const candleBranchAction = String(data.compressionCandleBranchAction || 'NO TRADE');
-    const candleBranchScore = Number(data.compressionCandleBranchScore || tokenTakeoverScore);
-    const candleBranchThreshold = Number(data.compressionCandleBranchThreshold || 50);
-    const candleBranchHorizon = Number(data.compressionCandleBranchHorizon || 12);
-    const compressionPreFlipAction = String(data.compressionPreFlipAction || 'NO TRADE');
-    const lateWrongActive = data.lateWrongMarkFlipActive === true;
-    const lateWrongAction = String(data.lateWrongMarkFlipAction || 'NO TRADE');
-    const lateWrongPreFlipAction = String(data.lateWrongMarkPreFlipAction || 'NO TRADE');
-    const lateWrongActivation = String(data.lateWrongMarkActivationTime || '');
-    const tokenTakeoverText = tokenTakeoverActive
-        ? ` • TOKEN TAKEOVER ${tokenTakeoverAction} ${number2(tokenTakeoverScore)}% ≥ ${number2(tokenTakeoverThreshold)}%`
-        : ` • token threshold ${number2(tokenTakeoverThreshold)}%`;
-    const candleBranchText = candleBranchFlipActive
-        ? ` • CANDLE BRANCH FLIP ${compressionPreFlipAction}→${candleBranchAction} x${candleBranchHorizon} @ ${number2(candleBranchScore)}%`
-        : ` • candle branch ${candleBranchAction} threshold ${number2(candleBranchThreshold)}%`;
-    const lateWrongRelation = lateWrongPreFlipAction === lateWrongAction ? 'CONFIRMS' : 'SUGGESTS';
-    const lateWrongText = lateWrongActive
-        ? ` • LATE WRONG MARK AUDIT ${lateWrongRelation} ${lateWrongAction} @ +6M${lateWrongActivation ? ` ${lateWrongActivation}` : ''}`
-        : '';
-    const hasSamples = samples > 0 || firstLoopScore > 0 || lateWrongActive;
-    const valueNode = setNodeText('compressionValue', hasSamples ? `${number2(primaryScore)}%` : '—');
-    if (valueNode) {
-        setToneClass(valueNode, !hasSamples ? 'medium' : (primaryScore >= 65 ? 'good' : (primaryScore >= 45 ? 'medium' : 'low')));
-    }
-    setNodeText(
-        'compressionNote',
-        hasSamples && (samples > 0 || firstLoopScore > 0)
-            ? `${dominantDirection} • entropy ${number2(entropy)}% • ${phaseCount} RLE phases / ${phaseChanges} changes • 100% runs ${perfectMin}–${perfectMax} parts • first loop ${number2(firstLoopScore)}% • secondary ${secondaryState} ${number2(secondaryScore)}% • combined ${number2(combinedScore)}%${tokenTakeoverText}${candleBranchText}${lateWrongText}`
-            : (lateWrongActive ? lateWrongText.replace(/^ • /, '') : 'Waiting for resolved family samples')
-    );
-}
-
-function renderAlternation(data) {
-    const evidence = data.alternationEvidence && typeof data.alternationEvidence === 'object'
-        ? data.alternationEvidence
-        : {};
-    const tailState = data.alternationTail && typeof data.alternationTail === 'object'
-        ? data.alternationTail
-        : {};
-    const total = Number(evidence.total || 0);
-    const right = Number(evidence.right || 0);
-    const wrong = Number(evidence.wrong || 0);
-    const rawPercent = Number(evidence.raw_percent || 0);
-    const effectivePercent = Number(evidence.effective_percent || 0);
-    const tail = Array.isArray(tailState.tail) ? tailState.tail : [];
-    const active = tailState.active === true;
-    const valueNode = setNodeText('alternationValue', total > 0 ? `${number2(effectivePercent)}%` : '—');
-    if (valueNode) {
-        setToneClass(valueNode, total <= 0 ? 'medium' : (effectivePercent >= 65 ? 'good' : (effectivePercent >= 50 ? 'medium' : 'low')));
-    }
-    setNodeText(
-        'alternationNote',
-        `${tail.length ? tail.join(' → ') : 'NO TAIL'} • ${active ? 'CURRENT PATTERN' : 'NOT CURRENT'} • ${right} RIGHT / ${wrong} WRONG / ${total} TOTAL • HISTORICAL ${number2(rawPercent)}% • EFFECTIVE ${number2(effectivePercent)}% • ${String(evidence.reason || 'UNSCORED')} • ${bellCurveText(evidence.bell_curve, 'ALTERNATION')}`
-    );
-}
-
-function renderPhaseActionStats(data) {
-    const stats = data.phaseActionStats || {};
-    const buy = stats.BUY || {};
-    const sell = stats.SELL || {};
-    const buyRight = Number(buy.right || 0);
-    const buyTotal = Number(buy.total || 0);
-    const sellRight = Number(sell.right || 0);
-    const sellTotal = Number(sell.total || 0);
-    const buyPct = Number(buy.percentage || 0);
-    const sellPct = Number(sell.percentage || 0);
-    const buyHistoricalRight = Number(buy.historical_right ?? buyRight);
-    const buyHistoricalWrong = Number(buy.historical_wrong ?? Math.max(0, buyTotal - buyHistoricalRight));
-    const sellHistoricalRight = Number(sell.historical_right ?? sellRight);
-    const sellHistoricalWrong = Number(sell.historical_wrong ?? Math.max(0, sellTotal - sellHistoricalRight));
-    const buyBell = bellCurveText(buy.bell_curve);
-    const sellBell = bellCurveText(sell.bell_curve);
-    const buyEffective = buy.flipped
-        ? ` → EFFECTIVE ${buyRight} RIGHT / ${Math.max(0, buyTotal - buyRight)} WRONG • FLIPPED`
-        : '';
-    const sellEffective = sell.flipped
-        ? ` → EFFECTIVE ${sellRight} RIGHT / ${Math.max(0, sellTotal - sellRight)} WRONG • FLIPPED`
-        : '';
-    const buyValue = buyTotal > 0 ? `${buyPct.toFixed(1)}%` : '—';
-    const sellValue = sellTotal > 0 ? `${sellPct.toFixed(1)}%` : '—';
-    setNodeText('phaseChangeValue', `BUY ${buyValue} · SELL ${sellValue}`);
-    setNodeText('phaseChangeNote', `BUY HIST ${buyHistoricalRight} RIGHT / ${buyHistoricalWrong} WRONG / ${buyTotal} TOTAL • ${buyBell}${buyEffective} • SELL HIST ${sellHistoricalRight} RIGHT / ${sellHistoricalWrong} WRONG / ${sellTotal} TOTAL • ${sellBell}${sellEffective}`);
-}
-
-function renderCurrentPhaseStatus(data) {
-    const phase = data.currentPhaseStatus || {};
-    const modelAction = String(data.modelAction || phase.action || 'NO TRADE').toUpperCase();
-    const rawExecutionAction = String(data.executionAction || 'NO TRADE').toUpperCase();
-    const executionAction = /^(BUY|SELL)$/.test(rawExecutionAction) ? rawExecutionAction : 'HOLD';
-    const stepsIn = Number(data.regimeStepCount || phase.steps_in || 0);
-    const stepsUntilChange = phase.steps_until_change === null || phase.steps_until_change === undefined
-        ? null
-        : Number(phase.steps_until_change);
-    const stake = Number(data.phaseStakeAmount || 0);
-    const sizing = data.phaseSizing || {};
-    const requested = Number(sizing.requested_amount ?? stake);
-    const executed = Number(sizing.executed_amount || 0);
-    const available = Number(sizing.available_amount || 0);
-    const shortfall = Number(sizing.shortfall || 0);
-    const gross = Number(sizing.gross_notional || 0);
-    const fee = Number(sizing.fee_amount || 0);
-    const fillPrice = Number(sizing.fill_price || 0);
-    const kittyUnchanged = sizing.kitty_unchanged === true;
-    const eventAction = String(sizing.event_action || '').toUpperCase();
-    const eventState = /^(BUY|SELL)$/.test(eventAction)
-        ? ` • LOCKED EVENT ${eventAction} ${sizing.event_executed === true ? 'EXECUTED' : 'NOT EXECUTED'}`
-        : '';
-    const eventLabel = String(sizing.event_label || '').trim();
-    const confidenceBell = sizing.confidence_bell_curve || data.executionBellCurve || {};
-    const confidenceBellSource = String(sizing.confidence_bell_curve_source || data.executionBellCurveSource || 'NONE');
-    const confidenceBellText = bellCurveText(confidenceBell, confidenceBellSource);
-    const confidenceTradeReason = String(sizing.confidence_bell_curve_trade_reason || data.executionBellCurveTradeReason || 'HOLD');
-    const suffix = stepsUntilChange === null ? 'NO CHANGE IN HORIZON' : `${stepsUntilChange} STEPS LEFT`;
-    const phaseReserved = Math.max(0, Number(sizing.reserved_amount ?? data.autoBreakTrader?.reserved_cash ?? data.autoBreakTrader?.pending_rebuy_total ?? 0));
-    const sizingText = `MODEL ${modelAction} → EXEC ${executionAction}${eventState} • REQUESTED $${number2(requested)} • EXECUTED $${number2(executed)} • AVAILABLE $${number2(available)} • RESERVED $${number2(phaseReserved)}`
-        + (sizing.event_executed === true ? ` • GROSS $${number2(gross)} • FEE $${number2(fee)} • FILL $${number2(fillPrice)}` : '')
-        + (requested > 0.00000001 && executed <= 0.00000001
-            ? (available + 0.00000001 >= requested ? ` • BLOCKED $${number2(requested)}` : ` • SHORT $${number2(Math.max(0, requested - available))}`)
-            : '')
-        + (eventLabel ? ` • ${eventLabel}` : '')
-        + (kittyUnchanged ? ' • KITTY UNCHANGED' : '');
-    setNodeText('phaseStatusValue', `${sizingText} • ${confidenceBellText} • ${confidenceTradeReason} • REGIME HOUR ${stepsIn} / 12 • ${suffix}`);
-    const quarter = data.quarterRegime || {};
-    const quarterRight = Number(quarter.right || 0);
-    const quarterTotal = Number(quarter.total || 0);
-    const quarterHistorical = Number(quarter.historical_percentage ?? quarter.percentage ?? 0);
-    const quarterEffective = Number(quarter.effective_percentage ?? quarterHistorical);
-    const quarterGateLabel = String(data.quarterRegimeGateLabel || (data.quarterBuyAllowed ? 'BUY PATH OPEN' : 'HOLD'));
-    const quarterBellText = bellCurveText(quarter.bell_curve);
-    const quarterScore = quarterTotal > 0
-        ? `HIST ${number2(quarterHistorical)}% • EFFECTIVE ${number2(quarterEffective)}% • ${quarterRight}/${quarterTotal} • ${quarterBellText}`
-        : 'UNSCORED • 0/0';
-    setNodeText('quarterRegimeGateValue', `${quarterGateLabel} • ${String(data.quarterRegimeKey || 'NO REGIME')} • ${quarterScore}`);
-}
-
-function renderInternalAgreement(data) {
-    const historicalRecentPercent = Number(data.internalAgreementRecent || 0);
-    const recentPercent = Number(data.internalAgreementRecentEffective ?? historicalRecentPercent);
-    const right = Number(data.internalAgreementRight || 0);
-    const total = Number(data.internalAgreementTotal || 0);
-    const recentRight = Number(data.internalAgreementRecentRight || 0);
-    const recentTotal = Number(data.internalAgreementRecentTotal || 0);
-    const bellText = bellCurveText(data.internalAgreementBellCurve);
-    const valueNode = setNodeText('internalAgreementValue', recentTotal > 0 ? `${number2(recentPercent)}%` : '—');
-    if (valueNode) {
-        setToneClass(valueNode, recentTotal <= 0 ? 'medium' : (recentPercent >= 65 ? 'good' : (recentPercent >= 50 ? 'medium' : 'low')));
-    }
-    const flipNote = data.internalAgreementRecentFlipped
-        ? ` • HISTORICAL ${number2(historicalRecentPercent)}% • EFFECTIVE ${number2(recentPercent)}% • FLIPPED`
-        : '';
-    setNodeText(
-        'internalAgreementNote',
-        recentTotal > 0
-            ? `Last hour ${recentRight} RIGHT / ${Math.max(0, recentTotal - recentRight)} WRONG / ${recentTotal} TOTAL • all ${right} RIGHT / ${Math.max(0, total - right)} WRONG / ${total} TOTAL • ${bellText}${flipNote}`
-            : 'Waiting for left/right agreement samples'
-    );
-}
-
-function renderFamilyConfidence(data) {
-    const stat = data.currentFamilyConfidence || {};
-    const total = Number(stat.total || 0);
-    const right = Number(stat.right || 0);
-    const historicalPercentage = Number(stat.historical_percentage ?? stat.percentage ?? 0);
-    const flipped = Boolean(data.currentFamilyEffectiveFlip);
-    const percentage = Number(stat.effective_percentage ?? historicalPercentage);
-    const bellText = bellCurveText(stat.bell_curve);
-    const valueNode = setNodeText('familyConfidenceValue', total > 0 ? `${number2(percentage)}%` : '—');
-    if (valueNode) setToneClass(valueNode, total <= 0 ? 'medium' : (percentage >= 65 ? 'good' : (percentage >= 50 ? 'medium' : 'low')));
-    const familyKey = String(data.currentFamilyConfidenceKey || 'NO TRADE');
-    if (total <= 0) {
-        setNodeText('familyConfidenceNote', `${familyKey} • 0 RIGHT / 0 WRONG / 0 TOTAL • UNSCORED${flipped ? ' • STRATEGY FLIP APPLIED' : ''}`);
-        return;
-    }
-    const flipNote = flipped ? ` • HISTORICAL ${number2(historicalPercentage)}% • EFFECTIVE ${number2(percentage)}% • FLIPPED` : '';
-    setNodeText('familyConfidenceNote', `${familyKey} • ${right} RIGHT / ${Math.max(0, total - right)} WRONG / ${total} TOTAL • ${bellText}${flipNote}`);
-}
-
-async function loadLiveData(options = {}) {
-    const priceOnly = options && options.priceOnly === true;
-    const url = new URL(window.location.href);
-    url.searchParams.set('live', '1');
-    url.searchParams.set('cache_only', '1');
-    url.searchParams.set('_', Date.now().toString());
-    try {
-        const response = await fetch(url.toString(), {cache:'no-store'});
-        if (!response.ok) return;
-        const data = await response.json();
-        if (!data.ok) return;
-        currentMarketType = String(data.marketType || currentMarketType || '');
-        liveSpotPrice = Number(data.currentPrice || liveSpotPrice || 0);
-        renderCurrentPrice(data);
-        renderStatusMeta(data);
-        renderTrackedPortfolio(data);
-        renderTrackedDashboardCards(data);
-        renderGlobalWrongBranches(data);
-        const traderState = data.autoBreakTrader || {};
-        renderAutoBreakTrader(traderState);
-        renderInternalAgreement(data);
-        renderFamilyConfidence(data);
-        renderCompression(data);
-        renderAlternation(data);
-        const profit = Number(data.simulatedNetMove ?? data.paperProfit ?? traderState.sim_net_move ?? 0);
-        const profitNode = document.getElementById('paperProfit');
-        if (profitNode) {
-            profitNode.textContent = `PORTFOLIO P&L ${profit >= 0 ? '+' : ''}$${number2(profit)}`;
-            profitNode.style.color = profit >= 0 ? 'var(--accent)' : 'var(--danger)';
-        }
-        // Always accept the newest chart frame, even during the lightweight
-        // 30-second refresh. The previous priceOnly branch repainted stale arrays,
-        // so forward guess candlesticks appeared frozen until a later full refresh.
-        candles = Array.isArray(data.candles) ? data.candles : candles;
-        guessCandles = Array.isArray(data.guessCandles) ? data.guessCandles : guessCandles;
-        timeline = Array.isArray(data.timeline) ? data.timeline : timeline;
-        chartTimeline = Array.isArray(data.chartTimeline) ? data.chartTimeline : chartTimeline;
-        chartPriceMin = Number(data.chartPriceMin || chartPriceMin || 0);
-        chartPriceMax = Number(data.chartPriceMax || chartPriceMax || 1);
-        syncChartMeta();
-
-        if (priceOnly) {
-            drawCandleChart();
-            return;
-        }
-        pairStats = Array.isArray(data.pairStats) ? data.pairStats : [];
-        pairDirectionMap = (data.pairDirectionMap && typeof data.pairDirectionMap === 'object')
-            ? data.pairDirectionMap
-            : pairDirectionMap;
-        renderPairStats(pairStats);
-        renderForwardAccuracy(data);
-        renderPhaseActionStats(data);
-        renderCurrentPhaseStatus(data);
-        chartPriceMin = Number(data.chartPriceMin || 0);
-        chartPriceMax = Number(data.chartPriceMax || 1);
-        document.getElementById('liveGuessTable').innerHTML = data.tableHtml || '';
-        const hourAuditTableNode = document.getElementById('hourAuditTable');
-        if (hourAuditTableNode && data.hourAuditTableHtml) hourAuditTableNode.innerHTML = data.hourAuditTableHtml;
-        const selloffTipChip = document.getElementById('selloffTipChip');
-        if (selloffTipChip) {
-            const sellSignalStreak = Number(data.sellSignalStreak || 0);
-            selloffTipChip.textContent = `Selloff tip ${data.selloffTip ? 'ON' : 'OFF'} • SELL run ${sellSignalStreak}`;
-        }
-        localizeTableTimes();
-        const guess = lockedCurrentGuess(data.currentGuess || {});
-        renderModelStance(guess, traderState, data);
-        const rawAverageMove = Number(data.averageChange || 0);
-        const buyAverageCommitment = Number(data.averageBuyCommitment || (rawAverageMove * Number(data.buyMultiplier || 1)));
-        const sellAverageCommitment = Number(data.averageSellCommitment || (rawAverageMove * Number(data.sellMultiplier || 1)));
-        document.getElementById('chartStats').textContent = `Price range ${number2(chartPriceMin)}–${number2(chartPriceMax)} • Raw avg ${number2(rawAverageMove)} • BUY avg ${number2(buyAverageCommitment)} • SELL avg ${number2(sellAverageCommitment)}`;
-        document.getElementById('averageMove').textContent = `RAW AVG ${rawAverageMove >= 0 ? '+' : ''}$${number2(rawAverageMove)} · BUY $${number2(buyAverageCommitment)} · SELL $${number2(sellAverageCommitment)}`;
-        syncChartMeta();
-        drawCandleChart();
-    } catch (error) {
-        // Keep the last good live frame visible during a temporary data failure.
-    }
-}
-
-let lastBoundaryExecutionAttempt = '';
-let boundaryExecutionInFlight = false;
-
-async function requestBoundaryExecution(force = false) {
-    const boundaryEpoch = Math.floor(Date.now() / fiveMinutes) * fiveMinutes;
-    const boundaryKey = new Date(boundaryEpoch).toISOString();
-    if (!force && (boundaryExecutionInFlight || lastBoundaryExecutionAttempt === boundaryKey)) return false;
-
-    boundaryExecutionInFlight = true;
-    lastBoundaryExecutionAttempt = boundaryKey;
-    try {
-        const url = new URL(window.location.href);
-        url.searchParams.delete('live');
-        url.searchParams.delete('cache_only');
-        url.searchParams.set('run_analysis', '1');
-        url.searchParams.set('_', String(Date.now()));
-        const response = await fetch(url.toString(), {
-            method: 'GET',
-            credentials: 'same-origin',
-            cache: 'no-store',
-            headers: {'X-Requested-With': 'boundary-execution'}
-        });
-        return response.ok;
-    } catch (error) {
-        // The next live refresh or boundary timer can retry this mark.
-        lastBoundaryExecutionAttempt = '';
-        return false;
-    } finally {
-        boundaryExecutionInFlight = false;
-    }
-}
-
-function scheduleBoundaryRequest() {
-    clearTimeout(boundaryTimer);
-    const delay = Math.max(250, nextBoundary - Date.now() + 1500);
-    boundaryTimer = setTimeout(async () => {
-        await requestBoundaryExecution(true);
-        await loadLiveData({priceOnly: false});
-        while (nextBoundary <= Date.now()) nextBoundary += fiveMinutes;
-        scheduleBoundaryRequest();
-    }, delay);
-}
-
-function scheduleHourBoundaryRequest() {
-    clearTimeout(hourBoundaryTimer);
-    const delay = Math.max(250, nextHourBoundary - Date.now() + 1500);
-    hourBoundaryTimer = setTimeout(async () => {
-        window.location.reload();
-        while (nextHourBoundary <= Date.now()) nextHourBoundary += oneHour;
-        scheduleHourBoundaryRequest();
-    }, delay);
-}
-
-function updateRetrieveTimer() {
-    const remaining = Math.max(0, nextBoundary - Date.now());
-    const totalSeconds = Math.ceil(remaining / 1000);
-    const minutes = Math.floor(totalSeconds / 60);
-    const seconds = totalSeconds % 60;
-    document.getElementById('retrieveCountdown').textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
-    document.getElementById('retrieveTime').textContent = new Date(nextBoundary).toLocaleTimeString([], {
-        hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: dashboardTimeZone
-    });
-}
-
-function setupMarqueeCarousel() {
-    const marquee = document.querySelector('.symbol-marquee');
-    if (!marquee) return;
-    const track = marquee.querySelector('.symbol-marquee-track');
-    if (!track) return;
-    const spacers = Array.from(track.querySelectorAll('.symbol-marquee-spacer'));
-    const tailSpacer = spacers[spacers.length - 1] || null;
-    const getSlides = () => Array.from(track.querySelectorAll('.symbol-item'));
-    if (getSlides().length < 2) return;
-
-    let timer = null;
-    let resumeTimer = null;
-    let moveTimer = null;
-
-    const slideStep = () => {
-        const firstSlide = getSlides()[0];
-        if (!firstSlide) return 0;
-        const gapValue = window.getComputedStyle(track).columnGap || window.getComputedStyle(track).gap || '0';
-        const gap = Number.parseFloat(gapValue) || 0;
-        return firstSlide.getBoundingClientRect().width + gap;
-    };
-
-    const queueAdvance = () => {
-        const step = slideStep();
-        if (step <= 0) return;
-        marquee.scrollBy({ left: step, behavior: 'smooth' });
-        if (moveTimer) clearTimeout(moveTimer);
-        moveTimer = window.setTimeout(() => {
-            const firstSlide = getSlides()[0];
-            if (!firstSlide || !tailSpacer) return;
-            track.insertBefore(firstSlide, tailSpacer);
-            marquee.scrollLeft = Math.max(0, marquee.scrollLeft - step);
-        }, 560);
-    };
-
-    const start = () => {
-        if (timer) return;
-        timer = window.setInterval(() => {
-            queueAdvance();
-        }, 2200);
-    };
-
-    const stop = () => {
-        if (!timer) return;
-        clearInterval(timer);
-        timer = null;
-        if (moveTimer) clearTimeout(moveTimer);
-        moveTimer = null;
-    };
-
-    const queueResume = () => {
-        if (resumeTimer) {
-            clearTimeout(resumeTimer);
-        }
-        resumeTimer = window.setTimeout(() => {
-            start();
-        }, 600);
-    };
-
-    marquee.addEventListener('mouseenter', stop);
-    marquee.addEventListener('mouseleave', queueResume);
-    marquee.addEventListener('pointerdown', stop);
-    marquee.addEventListener('focusin', stop);
-    marquee.addEventListener('focusout', queueResume);
-    start();
-}
-
-function setupMarqueeScroll() {
-    const marquee = document.querySelector('.symbol-marquee');
-    if (!marquee) return;
-
-    let autoTimer = null;
-    const autoStep = 1;
-
-    const autoScrollStep = () => {
-        const maxScrollLeft = Math.max(0, marquee.scrollWidth - marquee.clientWidth);
-        if (maxScrollLeft > 0 && !document.hidden) {
-            marquee.scrollLeft += autoStep;
-            if (marquee.scrollLeft >= maxScrollLeft - 1) {
-                marquee.scrollLeft = 0;
-            }
-        }
-    };
-
-    marquee.addEventListener('wheel', (event) => {
-        if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
-        event.preventDefault();
-        marquee.scrollLeft += event.deltaY;
-    }, { passive: false });
-
-    let isDragging = false;
-    let startX = 0;
-    let startScrollLeft = 0;
-
-    marquee.addEventListener('pointerdown', (event) => {
-        if (event.target.closest('.symbol-remove-text, .symbol-remove-form')) return;
-        isDragging = true;
-        startX = event.clientX;
-        startScrollLeft = marquee.scrollLeft;
-        marquee.classList.add('is-dragging');
-        marquee.setPointerCapture?.(event.pointerId);
-        if (autoTimer) {
-            clearInterval(autoTimer);
-            autoTimer = null;
-        }
-    });
-
-    marquee.addEventListener('pointermove', (event) => {
-        if (!isDragging) return;
-        const delta = event.clientX - startX;
-        marquee.scrollLeft = startScrollLeft - delta;
-    });
-
-    const stopDragging = (event) => {
-        if (!isDragging) return;
-        isDragging = false;
-        marquee.classList.remove('is-dragging');
-        if (event && marquee.hasPointerCapture?.(event.pointerId)) {
-            marquee.releasePointerCapture(event.pointerId);
-        }
-        if (!autoTimer) {
-            autoTimer = window.setInterval(autoScrollStep, 18);
-        }
-    };
-
-    marquee.addEventListener('pointerup', stopDragging);
-    marquee.addEventListener('pointercancel', stopDragging);
-    marquee.addEventListener('mouseleave', () => {
-        isDragging = false;
-        marquee.classList.remove('is-dragging');
-        if (!autoTimer) {
-            autoTimer = window.setInterval(autoScrollStep, 18);
-        }
-    });
-    autoTimer = window.setInterval(autoScrollStep, 18);
-    window.setTimeout(autoScrollStep, 150);
-}
-
-function setupTrackedDashboardCarousel() {
-    const track = document.querySelector('.tracked-dashboard-grid');
-    if (!track) return;
-    const prev = document.querySelector('[data-dashboard-prev]');
-    const next = document.querySelector('[data-dashboard-next]');
-    if (!prev || !next) return;
-
-    const cardStep = () => {
-        const firstCard = track.querySelector('.tracked-dashboard-card');
-        if (!firstCard) return 280;
-        const gapValue = window.getComputedStyle(track).columnGap || window.getComputedStyle(track).gap || '0';
-        const gap = Number.parseFloat(gapValue) || 0;
-        return firstCard.getBoundingClientRect().width + gap;
-    };
-
-    prev.addEventListener('click', () => {
-        track.scrollBy({ left: -cardStep(), behavior: 'smooth' });
-    });
-
-    next.addEventListener('click', () => {
-        track.scrollBy({ left: cardStep(), behavior: 'smooth' });
-    });
-}
-
-function setupDashboardRefreshButton() {
-    document.querySelectorAll('[data-refresh-dashboard]').forEach((button) => {
-        button.addEventListener('click', async () => {
-            button.disabled = true;
-            const originalText = button.textContent || 'Refresh';
-            button.textContent = 'Refreshing...';
-            await loadLiveData({priceOnly: false});
-            button.disabled = false;
-            button.textContent = originalText;
-        });
-    });
-}
-
-function setupCashoutPinPad() {
-    document.querySelectorAll('[data-cashout-pin-form]').forEach((form) => {
-        const input = form.querySelector('[data-cashout-pin-value]');
-        const submit = form.querySelector('[data-cashout-submit]');
-        const buttons = Array.from(form.querySelectorAll('[data-cashout-pin-button]'));
-        const status = form.querySelector('[data-cashout-pin-status]');
-        const clear = form.querySelector('[data-cashout-pin-clear]');
-        if (!input || !submit || buttons.length !== 4) return;
-        let pin = '';
-        const render = () => {
-            input.value = pin;
-            buttons.forEach((button) => {
-                const digit = String(button.getAttribute('data-cashout-pin-button') || '');
-                button.classList.toggle('is-used', pin.includes(digit));
-            });
-            if (status) status.textContent = `PIN: ${pin.length} / 4${pin.length ? ` • ${pin}` : ''}`;
-            submit.disabled = pin.length !== 4;
-        };
-        buttons.forEach((button) => {
-            button.addEventListener('click', () => {
-                const digit = String(button.getAttribute('data-cashout-pin-button') || '');
-                if (!/^[1-4]$/.test(digit) || pin.length >= 4) return;
-                pin += digit;
-                render();
-            });
-        });
-        if (clear) {
-            clear.addEventListener('click', () => {
-                pin = '';
-                render();
-            });
-        }
-        form.addEventListener('submit', (event) => {
-            if (!/^[1-4]{4}$/.test(pin)) {
-                event.preventDefault();
-                render();
-            }
-        });
-        render();
-    });
-}
-
-function setupReferenceCloseButtons() {
-    document.querySelectorAll('[data-close-reference]').forEach((button) => {
-        button.addEventListener('click', () => {
-            const drawer = button.closest('.reference-drawer');
-            if (drawer) drawer.open = false;
-        });
-    });
-}
-
-function clearOneShotDashboardParams() {
-    const url = new URL(window.location.href);
-    let changed = false;
-    ['run_analysis', 'wallet_reset_done', 'wallet_cash_out_done', 'wallet_buy_back_done', 'live', 'cache_only', '_'].forEach((name) => {
-        if (!url.searchParams.has(name)) return;
-        url.searchParams.delete(name);
-        changed = true;
-    });
-    if (changed) {
-        window.history.replaceState(window.history.state, document.title, `${url.pathname}${url.search}${url.hash}`);
-    }
-}
-
-// An explicit Analyze request may execute one boundary. Browser refreshes are
-// display-only; the five-minute scheduler is the authoritative execution path.
-clearOneShotDashboardParams();
-setupMarqueeCarousel();
-setupTrackedDashboardCarousel();
-setupDashboardRefreshButton();
-setupCashoutPinPad();
-setupReferenceCloseButtons();
-updateRetrieveTimer();
-setInterval(updateRetrieveTimer, 250);
-setInterval(() => {
-    loadLiveData({priceOnly: true});
-}, 15000);
-// Repaint the complete dashboard independently of five-minute boundary changes.
-// The live payload carries tracked cards and the aggregate paper portfolio, so
-// manual and timed refreshes use the same no-order, display-only path.
-setInterval(async () => {
-    // Catch up a boundary that an external cron or sleeping browser missed.
-    await requestBoundaryExecution(false);
-    await loadLiveData({priceOnly: false});
-}, 45000);
-// Process the current five-minute mark once on initial load as well. This is
-// idempotent server-side, so a cron and the browser cannot place two orders.
-requestBoundaryExecution(false).then(() => loadLiveData({priceOnly: false}));
-scheduleBoundaryRequest();
-scheduleHourBoundaryRequest();
-</script>
-
-<script>
-(function () {
-  function clamp(n, a, b) { return Math.min(b, Math.max(a, n)); }
-  function valueToAngle(v, min, max) { return -135 + clamp((v - min) / (max - min || 1), 0, 1) * 270; }
-  function angleToValue(a, min, max) { return min + ((a + 135) / 270) * (max - min); }
-  function pointerAngle(face, x, y) {
-    const r = face.getBoundingClientRect();
-    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
-    let d = Math.atan2(y - cy, x - cx) * 180 / Math.PI + 90;
-    if (d > 180) d -= 360;
-    return clamp(d, -135, 135);
-  }
-  document.querySelectorAll('[data-dial]').forEach(function (root) {
-    const input = document.getElementById(root.getAttribute('data-input'));
-    if (!input) return;
-    const min = +root.getAttribute('data-min') || 0;
-    const max = +root.getAttribute('data-max') || 100;
-    const step = +root.getAttribute('data-step') || 1;
-    const dec = parseInt(root.getAttribute('data-decimals') || '2', 10);
-    const unit = root.getAttribute('data-unit') || '';
-    const face = root.querySelector('.steam-dial-face');
-    const pointer = root.querySelector('.steam-dial-pointer');
-    const valueEl = root.querySelector('.steam-dial-value');
-    if (!face || !pointer || !valueEl) return;
-    function quantize(v) { return clamp(parseFloat((Math.round(v / step) * step).toFixed(dec + 2)), min, max); }
-    function render(v, notifyChange) {
-      v = quantize(v);
-      const nextValue = v.toFixed(dec);
-      const changed = input.value !== nextValue;
-      pointer.style.transform = 'rotate(' + valueToAngle(v, min, max) + 'deg)';
-      valueEl.textContent = nextValue + unit;
-      input.value = nextValue;
-      if (notifyChange && changed) {
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-      }
-    }
-    let dragging = false;
-    face.addEventListener('pointerdown', function (e) {
-      dragging = true; root.classList.add('is-dragging'); face.setPointerCapture(e.pointerId);
-      render(angleToValue(pointerAngle(face, e.clientX, e.clientY), min, max), true); e.preventDefault();
-    });
-    face.addEventListener('pointermove', function (e) {
-      if (!dragging) return;
-      render(angleToValue(pointerAngle(face, e.clientX, e.clientY), min, max), true);
-    });
-    function end(e) {
-      if (!dragging) return; dragging = false; root.classList.remove('is-dragging');
-      try { face.releasePointerCapture(e.pointerId); } catch (err) {}
-    }
-    face.addEventListener('pointerup', end); face.addEventListener('pointercancel', end);
-    root.addEventListener('wheel', function (e) {
-      e.preventDefault();
-      render((+input.value || min) + (e.deltaY < 0 ? 1 : -1) * step, true);
-    }, { passive: false });
-    render(+input.value || min, false);
-  });
-})();
-
-(function () {
-  const settingIds = ['buyMultiplier', 'sellMultiplier', 'trustPercent', 'breakBuy', 'breakGain', 'breakLoss', 'lossBuySpreePercent'];
-  const settings = settingIds.map(id => document.getElementById(id)).filter(Boolean);
-  if (!settings.length) return;
-
-  let saveTimer = null;
-  let saveController = null;
-  let lastSavedSignature = settings.map(input => input.value).join('|');
-
-  function setSaveState(text, state) {
-    document.querySelectorAll('[data-settings-save-state]').forEach(function (element) {
-      element.textContent = text;
-      element.setAttribute('data-state', state || '');
-    });
-  }
-
-  async function saveSettings() {
-    const signature = settings.map(input => input.value).join('|');
-    if (signature === lastSavedSignature) {
-      setSaveState('Settings saved', 'saved');
-      return;
-    }
-
-    if (saveController) saveController.abort();
-    saveController = new AbortController();
-    const body = new URLSearchParams({
-      save_dashboard_settings: '1',
-      market_type: <?= json_encode($market_type) ?>,
-      symbol: <?= json_encode($ticker) ?>,
-      buy_multiplier: document.getElementById('buyMultiplier')?.value || '',
-      sell_multiplier: document.getElementById('sellMultiplier')?.value || '',
-      trust_percent: document.getElementById('trustPercent')?.value || '',
-      break_buy: document.getElementById('breakBuy')?.value || '',
-      break_gain: document.getElementById('breakGain')?.value || '',
-      break_loss: document.getElementById('breakLoss')?.value || '',
-      loss_buy_spree_percent: document.getElementById('lossBuySpreePercent')?.value || ''
-    });
-
-    setSaveState('Saving settings…', 'saving');
-    try {
-      const response = await fetch(window.location.pathname, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
-        body: body.toString(),
-        signal: saveController.signal,
-        credentials: 'same-origin',
-        cache: 'no-store'
-      });
-      const result = await response.json();
-      if (!response.ok || !result.ok) throw new Error(result.error || 'Save failed');
-      lastSavedSignature = settings.map(input => input.value).join('|');
-      setSaveState('Settings saved', 'saved');
-    } catch (error) {
-      if (error && error.name === 'AbortError') return;
-      setSaveState('Settings not saved · retrying after next change', 'error');
-    }
-  }
-
-  function scheduleSave() {
-    if (saveTimer) clearTimeout(saveTimer);
-    setSaveState('Settings changed · saving in 10 seconds', 'pending');
-    saveTimer = setTimeout(saveSettings, 10000);
-  }
-
-  settings.forEach(input => input.addEventListener('input', scheduleSave));
-  window.addEventListener('beforeunload', function () {
-    if (!saveTimer) return;
-    const body = new URLSearchParams({
-      save_dashboard_settings: '1', market_type: <?= json_encode($market_type) ?>, symbol: <?= json_encode($ticker) ?>,
-      buy_multiplier: document.getElementById('buyMultiplier')?.value || '', sell_multiplier: document.getElementById('sellMultiplier')?.value || '',
-      trust_percent: document.getElementById('trustPercent')?.value || '', break_buy: document.getElementById('breakBuy')?.value || '',
-      break_gain: document.getElementById('breakGain')?.value || '', break_loss: document.getElementById('breakLoss')?.value || '',
-      loss_buy_spree_percent: document.getElementById('lossBuySpreePercent')?.value || ''
-    });
-    navigator.sendBeacon(window.location.pathname, new Blob([body.toString()], {type: 'application/x-www-form-urlencoded;charset=UTF-8'}));
-  });
-})();
-</script>
-
-
-<script>
-(function () {
-    const money = (value) => {
-        const n = Number(String(value ?? '').replace(/[^0-9.-]/g, ''));
-        return Number.isFinite(n) ? '$' + n.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2}) : '$0.00';
-    };
-    function syncLogicPoemUX() {
-        const actionText = (document.getElementById('currentGuessValue')?.textContent || 'HOLD').trim().toUpperCase();
-        const action = actionText.includes('BUY') ? 'BUY' : (actionText.includes('SELL') ? 'SELL' : 'HOLD');
-        const wallet = document.getElementById('autoBreakNote')?.textContent || '';
-        const spiral = document.getElementById('walletSpiralGuardValue')?.textContent || 'MONITORING';
-        const reserved = document.getElementById('walletReservedValue')?.textContent || '$0.00';
-        const pot = document.getElementById('walletPotValue')?.textContent || '$0.00';
-        const realized = document.getElementById('walletRealizedValue')?.textContent || '$0.00';
-        const decisionNode = document.getElementById('logicPoemDecision');
-        const decisionText = decisionNode?.textContent || '0/3 YES · WAITING';
-        const approved = /RESOLVED|APPROVED/.test(decisionText);
-        const coordinate = document.getElementById('logicPoemCoordinate');
-        if (coordinate) coordinate.textContent = document.getElementById('currentGuessNote')?.textContent || 'Five-minute boundary unresolved';
-        const spiralNode = document.getElementById('logicPoemSpiral');
-        if (spiralNode) spiralNode.textContent = /PAUSED/.test(spiral.toUpperCase()) ? 'SELLS CONSTRAINED · BUYS EXIST' : 'BOUNDARY QUIET · BOTH SIDES EXIST';
-        const reservedNode = document.getElementById('logicPoemReserved');
-        if (reservedNode) reservedNode.textContent = reserved + ' AWAITS ITS OPPOSITE';
-        const verse = document.getElementById('logicPoemVerse');
-        if (verse) {
-            const voice = approved
-                ? '<span class="good">Two voices agree; the room closes and ' + action + ' must meet reality.</span>'
-                : '<span class="warn">The room remains open; evidence has not yet constrained the future.</span>';
-            verse.innerHTML = 'The guess enters as <b>' + action + '</b>; it is not fate, only a coordinate.<br>'
-                + voice + '<br>'
-                + 'The wallet names itself ' + pot + '; realized consequence is ' + realized + '.<br>'
-                + 'Every BUY seeks its SELL. Every SELL reserves the BUY that completes its circle.';
-        }
-        const trace = document.getElementById('logicPoemTrace');
-        if (trace) trace.textContent = [
-            'action=' + action,
-            'decision=' + decisionText,
-            'reserved=' + reserved,
-            'pot=' + pot,
-            'realized=' + realized,
-            'spiral=' + spiral,
-            'wallet=' + wallet
-        ].join('\n');
-    }
-    document.addEventListener('DOMContentLoaded', syncLogicPoemUX);
-    const observer = new MutationObserver(syncLogicPoemUX);
-    document.addEventListener('DOMContentLoaded', () => {
-        ['currentGuessValue','currentGuessNote','walletSpiralGuardValue','walletReservedValue','walletPotValue','walletRealizedValue','autoBreakNote']
-            .map(id => document.getElementById(id)).filter(Boolean)
-            .forEach(node => observer.observe(node, {childList:true, subtree:true, characterData:true}));
-    });
-    setInterval(syncLogicPoemUX, 15000);
-})();
-</script>
-
-</body>
-</html>
