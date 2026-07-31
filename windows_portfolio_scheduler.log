@@ -71400,3 +71400,3530 @@
 }
 [2026-07-31T14:06:10-04:00] php runner end
 
+[2026-07-31T14:11:24-04:00] php runner start
+{
+    "ran_at": "2026-07-31T18:11:02Z",
+    "target_count": 2,
+    "target_batch_limit": 2,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 2,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T18:11:13Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T18:11:23Z"
+        }
+    ]
+}
+[2026-07-31T14:11:24-04:00] php runner end
+
+[2026-07-31T14:16:09-04:00] php runner start
+{
+    "ran_at": "2026-07-31T18:16:02Z",
+    "target_count": 2,
+    "target_batch_limit": 2,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 2,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T18:16:06Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T18:16:09Z"
+        }
+    ]
+}
+[2026-07-31T14:16:09-04:00] php runner end
+
+[2026-07-31T14:21:06-04:00] php runner start
+{
+    "ran_at": "2026-07-31T18:21:02Z",
+    "target_count": 2,
+    "target_batch_limit": 2,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 2,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T18:21:05Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://127.0.0.1:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T18:21:06Z"
+        }
+    ]
+}
+[2026-07-31T14:21:06-04:00] php runner end
+
+[2026-07-31T14:26:09-04:00] php runner start
+{
+    "ran_at": "2026-07-31T18:26:02Z",
+    "target_count": 2,
+    "target_batch_limit": 2,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 2,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T18:26:05Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T18:26:09Z"
+        }
+    ]
+}
+[2026-07-31T14:26:09-04:00] php runner end
+
+[2026-07-31T14:31:12-04:00] php runner start
+{
+    "ran_at": "2026-07-31T18:31:02Z",
+    "target_count": 2,
+    "target_batch_limit": 2,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 2,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T18:31:08Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T18:31:12Z"
+        }
+    ]
+}
+[2026-07-31T14:31:12-04:00] php runner end
+
+[2026-07-31T14:36:28-04:00] php runner start
+{
+    "ran_at": "2026-07-31T18:36:02Z",
+    "target_count": 2,
+    "target_batch_limit": 2,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 2,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/BTC-USD?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T18:36:16Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T18:36:28Z"
+        }
+    ]
+}
+[2026-07-31T14:36:28-04:00] php runner end
+
+[2026-07-31T14:41:24-04:00] php runner start
+{
+    "ran_at": "2026-07-31T18:41:02Z",
+    "target_count": 6,
+    "target_batch_limit": 6,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 6,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T18:41:07Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://127.0.0.1:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T18:41:08Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "AAPL",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=AAPL&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T18:41:12Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "GM",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=GM&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T18:41:16Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "MSFT",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=MSFT&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T18:41:20Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "TSLA",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=TSLA&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T18:41:24Z"
+        }
+    ]
+}
+[2026-07-31T14:41:24-04:00] php runner end
+
+[2026-07-31T14:46:25-04:00] php runner start
+{
+    "ran_at": "2026-07-31T18:46:02Z",
+    "target_count": 6,
+    "target_batch_limit": 6,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 6,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T18:46:07Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://127.0.0.1:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T18:46:09Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "AAPL",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=AAPL&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T18:46:13Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "GM",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=GM&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T18:46:17Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "MSFT",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=MSFT&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T18:46:21Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "TSLA",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=TSLA&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T18:46:24Z"
+        }
+    ]
+}
+[2026-07-31T14:46:25-04:00] php runner end
+
+[2026-07-31T14:51:27-04:00] php runner start
+{
+    "ran_at": "2026-07-31T18:51:02Z",
+    "target_count": 6,
+    "target_batch_limit": 6,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 6,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T18:51:07Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://127.0.0.1:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T18:51:10Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "AAPL",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=AAPL&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T18:51:14Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "GM",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=GM&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T18:51:19Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "MSFT",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=MSFT&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T18:51:23Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "TSLA",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=TSLA&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T18:51:27Z"
+        }
+    ]
+}
+[2026-07-31T14:51:27-04:00] php runner end
+
+[2026-07-31T14:56:25-04:00] php runner start
+{
+    "ran_at": "2026-07-31T18:56:02Z",
+    "target_count": 6,
+    "target_batch_limit": 6,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 6,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T18:56:07Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://127.0.0.1:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T18:56:08Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "AAPL",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=AAPL&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T18:56:13Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "GM",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=GM&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T18:56:17Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "MSFT",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=MSFT&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T18:56:21Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "TSLA",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=TSLA&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T18:56:25Z"
+        }
+    ]
+}
+[2026-07-31T14:56:25-04:00] php runner end
+
+[2026-07-31T15:01:31-04:00] php runner start
+{
+    "ran_at": "2026-07-31T19:01:02Z",
+    "target_count": 6,
+    "target_batch_limit": 6,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 6,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:01:08Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://127.0.0.1:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:01:11Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "AAPL",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=AAPL&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:01:16Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "GM",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=GM&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:01:21Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "MSFT",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=MSFT&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:01:26Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "TSLA",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=TSLA&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:01:30Z"
+        }
+    ]
+}
+[2026-07-31T15:01:31-04:00] php runner end
+
+[2026-07-31T15:06:31-04:00] php runner start
+{
+    "ran_at": "2026-07-31T19:06:02Z",
+    "target_count": 6,
+    "target_batch_limit": 6,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 6,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:06:08Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://127.0.0.1:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:06:13Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "AAPL",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=AAPL&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:06:17Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "GM",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=GM&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:06:22Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "MSFT",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=MSFT&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:06:26Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "TSLA",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=TSLA&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:06:30Z"
+        }
+    ]
+}
+[2026-07-31T15:06:31-04:00] php runner end
+
+[2026-07-31T15:11:44-04:00] php runner start
+{
+    "ran_at": "2026-07-31T19:11:02Z",
+    "target_count": 6,
+    "target_batch_limit": 6,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 6,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/BTC-USD?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T19:11:16Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://127.0.0.1:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/ETH-USD?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T19:11:28Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "AAPL",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=AAPL&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:11:32Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "GM",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=GM&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:11:36Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "MSFT",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=MSFT&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:11:40Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "TSLA",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=TSLA&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:11:44Z"
+        }
+    ]
+}
+[2026-07-31T15:11:44-04:00] php runner end
+
+[2026-07-31T15:16:32-04:00] php runner start
+{
+    "ran_at": "2026-07-31T19:16:02Z",
+    "target_count": 6,
+    "target_batch_limit": 6,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 6,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:16:08Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://127.0.0.1:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:16:11Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "AAPL",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=AAPL&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:16:16Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "GM",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=GM&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:16:22Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "MSFT",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=MSFT&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:16:27Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "TSLA",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=TSLA&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:16:31Z"
+        }
+    ]
+}
+[2026-07-31T15:16:32-04:00] php runner end
+
+[2026-07-31T15:21:29-04:00] php runner start
+{
+    "ran_at": "2026-07-31T19:21:02Z",
+    "target_count": 6,
+    "target_batch_limit": 6,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 6,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:21:07Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://127.0.0.1:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:21:11Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "AAPL",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=AAPL&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:21:16Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "GM",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=GM&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:21:21Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "MSFT",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=MSFT&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:21:25Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "TSLA",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=TSLA&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:21:29Z"
+        }
+    ]
+}
+[2026-07-31T15:21:29-04:00] php runner end
+
+[2026-07-31T15:26:32-04:00] php runner start
+{
+    "ran_at": "2026-07-31T19:26:02Z",
+    "target_count": 6,
+    "target_batch_limit": 6,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 6,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:26:07Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://127.0.0.1:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:26:11Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "AAPL",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=AAPL&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:26:18Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "GM",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=GM&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:26:24Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "MSFT",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=MSFT&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:26:28Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "TSLA",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=TSLA&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:26:32Z"
+        }
+    ]
+}
+[2026-07-31T15:26:32-04:00] php runner end
+
+[2026-07-31T15:31:30-04:00] php runner start
+{
+    "ran_at": "2026-07-31T19:31:02Z",
+    "target_count": 6,
+    "target_batch_limit": 6,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 6,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:31:12Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://127.0.0.1:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:31:14Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "AAPL",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=AAPL&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:31:18Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "GM",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=GM&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:31:23Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "MSFT",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=MSFT&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:31:26Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "TSLA",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=TSLA&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:31:30Z"
+        }
+    ]
+}
+[2026-07-31T15:31:30-04:00] php runner end
+
+[2026-07-31T15:36:25-04:00] php runner start
+{
+    "ran_at": "2026-07-31T19:36:02Z",
+    "target_count": 6,
+    "target_batch_limit": 6,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 6,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:36:06Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://127.0.0.1:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:36:08Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "AAPL",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=AAPL&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:36:12Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "GM",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=GM&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:36:16Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "MSFT",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=MSFT&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:36:20Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "TSLA",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=TSLA&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:36:25Z"
+        }
+    ]
+}
+[2026-07-31T15:36:25-04:00] php runner end
+
+[2026-07-31T15:41:30-04:00] php runner start
+{
+    "ran_at": "2026-07-31T19:41:03Z",
+    "target_count": 6,
+    "target_batch_limit": 6,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 6,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:41:10Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://127.0.0.1:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:41:13Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "AAPL",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=AAPL&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:41:17Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "GM",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=GM&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:41:21Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "MSFT",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=MSFT&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:41:25Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "TSLA",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=TSLA&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:41:30Z"
+        }
+    ]
+}
+[2026-07-31T15:41:30-04:00] php runner end
+
+[2026-07-31T15:46:25-04:00] php runner start
+{
+    "ran_at": "2026-07-31T19:46:02Z",
+    "target_count": 6,
+    "target_batch_limit": 6,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 6,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:46:07Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://127.0.0.1:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:46:09Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "AAPL",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=AAPL&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:46:13Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "GM",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=GM&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:46:17Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "MSFT",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=MSFT&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:46:21Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "TSLA",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=TSLA&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:46:24Z"
+        }
+    ]
+}
+[2026-07-31T15:46:25-04:00] php runner end
+
+[2026-07-31T15:51:27-04:00] php runner start
+{
+    "ran_at": "2026-07-31T19:51:03Z",
+    "target_count": 6,
+    "target_batch_limit": 6,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 6,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:51:10Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://127.0.0.1:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:51:12Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "AAPL",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=AAPL&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:51:16Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "GM",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=GM&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:51:19Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "MSFT",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=MSFT&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:51:23Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "TSLA",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=TSLA&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:51:27Z"
+        }
+    ]
+}
+[2026-07-31T15:51:27-04:00] php runner end
+
+[2026-07-31T15:56:24-04:00] php runner start
+{
+    "ran_at": "2026-07-31T19:56:03Z",
+    "target_count": 6,
+    "target_batch_limit": 6,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 6,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:56:07Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://127.0.0.1:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:56:08Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "AAPL",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=AAPL&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:56:12Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "GM",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=GM&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:56:15Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "MSFT",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=MSFT&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:56:21Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "TSLA",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=TSLA&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T19:56:24Z"
+        }
+    ]
+}
+[2026-07-31T15:56:24-04:00] php runner end
+
+[2026-07-31T16:01:30-04:00] php runner start
+{
+    "ran_at": "2026-07-31T20:01:02Z",
+    "target_count": 6,
+    "target_batch_limit": 6,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 6,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T20:01:12Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://127.0.0.1:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T20:01:14Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "AAPL",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=AAPL&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T20:01:19Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "GM",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=GM&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T20:01:23Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "MSFT",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=MSFT&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T20:01:26Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "TSLA",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=TSLA&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T20:01:30Z"
+        }
+    ]
+}
+[2026-07-31T16:01:30-04:00] php runner end
+
+[2026-07-31T16:06:23-04:00] php runner start
+{
+    "ran_at": "2026-07-31T20:06:02Z",
+    "target_count": 6,
+    "target_batch_limit": 6,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 6,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T20:06:06Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://127.0.0.1:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T20:06:08Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "AAPL",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=AAPL&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T20:06:11Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "GM",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=GM&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T20:06:15Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "MSFT",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=MSFT&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T20:06:19Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "TSLA",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=TSLA&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T20:06:22Z"
+        }
+    ]
+}
+[2026-07-31T16:06:23-04:00] php runner end
+
+[2026-07-31T16:11:21-04:00] php runner start
+{
+    "ran_at": "2026-07-31T20:11:02Z",
+    "target_count": 6,
+    "target_batch_limit": 6,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 6,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T20:11:06Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://127.0.0.1:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T20:11:10Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "AAPL",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=AAPL&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T20:11:13Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "GM",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=GM&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T20:11:17Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "MSFT",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=MSFT&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 404,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/MSFT?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": true,
+            "remove_reason": "Removed after missing usable price CSV/JSON and failing the Yahoo stock symbol probe while Google or Microsoft connectivity probe succeeded.",
+            "checked_at": "2026-07-31T20:11:19Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "TSLA",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=TSLA&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 404,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/TSLA?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": true,
+            "remove_reason": "Removed after missing usable price CSV/JSON and failing the Yahoo stock symbol probe while Google or Microsoft connectivity probe succeeded.",
+            "checked_at": "2026-07-31T20:11:21Z"
+        }
+    ]
+}
+[2026-07-31T16:11:21-04:00] php runner end
+
+[2026-07-31T16:17:04-04:00] php runner start
+{
+    "ran_at": "2026-07-31T20:16:02Z",
+    "target_count": 6,
+    "target_batch_limit": 6,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 6,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/BTC-USD?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T20:16:16Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://127.0.0.1:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/ETH-USD?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T20:16:28Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "AAPL",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=AAPL&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T20:16:38Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "GM",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=GM&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T20:16:51Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "MSFT",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=MSFT&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T20:16:56Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "TSLA",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=TSLA&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T20:17:04Z"
+        }
+    ]
+}
+[2026-07-31T16:17:04-04:00] php runner end
+
+[2026-07-31T16:21:53-04:00] php runner start
+{
+    "ran_at": "2026-07-31T20:21:02Z",
+    "target_count": 6,
+    "target_batch_limit": 6,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 6,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T20:21:16Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://127.0.0.1:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T20:21:25Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "AAPL",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=AAPL&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T20:21:29Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "GM",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=GM&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T20:21:40Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "MSFT",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=MSFT&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T20:21:44Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "TSLA",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=TSLA&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T20:21:53Z"
+        }
+    ]
+}
+[2026-07-31T16:21:53-04:00] php runner end
+
+[2026-07-31T16:26:59-04:00] php runner start
+{
+    "ran_at": "2026-07-31T20:26:02Z",
+    "target_count": 6,
+    "target_batch_limit": 6,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 6,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/BTC-USD?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T20:26:17Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://127.0.0.1:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/ETH-USD?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T20:26:29Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "AAPL",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=AAPL&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T20:26:37Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "GM",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=GM&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T20:26:47Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "MSFT",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=MSFT&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T20:26:51Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "TSLA",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=TSLA&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T20:26:58Z"
+        }
+    ]
+}
+[2026-07-31T16:26:59-04:00] php runner end
+
+[2026-07-31T16:31:58-04:00] php runner start
+{
+    "ran_at": "2026-07-31T20:31:02Z",
+    "target_count": 6,
+    "target_batch_limit": 6,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 6,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/BTC-USD?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T20:31:16Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://127.0.0.1:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/ETH-USD?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T20:31:28Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "AAPL",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=AAPL&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T20:31:34Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "GM",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=GM&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T20:31:46Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "MSFT",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=MSFT&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T20:31:50Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "TSLA",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=TSLA&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T20:31:58Z"
+        }
+    ]
+}
+[2026-07-31T16:31:58-04:00] php runner end
+
+[2026-07-31T16:37:25-04:00] php runner start
+{
+    "ran_at": "2026-07-31T20:36:02Z",
+    "target_count": 6,
+    "target_batch_limit": 6,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 6,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/BTC-USD?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T20:36:16Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://127.0.0.1:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/ETH-USD?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T20:36:28Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "AAPL",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=AAPL&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/AAPL?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T20:36:42Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "GM",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=GM&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/GM?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T20:36:57Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "MSFT",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=MSFT&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/MSFT?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T20:37:11Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "TSLA",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=TSLA&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/TSLA?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T20:37:25Z"
+        }
+    ]
+}
+[2026-07-31T16:37:25-04:00] php runner end
+
+[2026-07-31T16:42:19-04:00] php runner start
+{
+    "ran_at": "2026-07-31T20:41:02Z",
+    "target_count": 6,
+    "target_batch_limit": 6,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 6,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/BTC-USD?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T20:41:16Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://127.0.0.1:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/ETH-USD?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T20:41:28Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "AAPL",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=AAPL&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T20:41:36Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "GM",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=GM&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/GM?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T20:41:50Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "MSFT",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=MSFT&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/MSFT?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T20:42:04Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "TSLA",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=TSLA&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/TSLA?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T20:42:18Z"
+        }
+    ]
+}
+[2026-07-31T16:42:19-04:00] php runner end
+
+[2026-07-31T16:47:25-04:00] php runner start
+{
+    "ran_at": "2026-07-31T20:46:02Z",
+    "target_count": 6,
+    "target_batch_limit": 6,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 6,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/BTC-USD?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T20:46:16Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://127.0.0.1:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/ETH-USD?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T20:46:28Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "AAPL",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=AAPL&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/AAPL?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T20:46:43Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "GM",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=GM&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/GM?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T20:46:57Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "MSFT",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=MSFT&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/MSFT?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T20:47:11Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "TSLA",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=TSLA&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/TSLA?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T20:47:25Z"
+        }
+    ]
+}
+[2026-07-31T16:47:25-04:00] php runner end
+
+[2026-07-31T16:52:13-04:00] php runner start
+{
+    "ran_at": "2026-07-31T20:51:02Z",
+    "target_count": 6,
+    "target_batch_limit": 6,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 6,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/BTC-USD?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T20:51:16Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://127.0.0.1:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T20:51:27Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "AAPL",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=AAPL&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T20:51:34Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "GM",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=GM&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/GM?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T20:51:48Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "MSFT",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=MSFT&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T20:51:59Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "TSLA",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=TSLA&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/TSLA?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T20:52:13Z"
+        }
+    ]
+}
+[2026-07-31T16:52:13-04:00] php runner end
+
+[2026-07-31T16:57:14-04:00] php runner start
+{
+    "ran_at": "2026-07-31T20:56:02Z",
+    "target_count": 6,
+    "target_batch_limit": 6,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 6,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/BTC-USD?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T20:56:16Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://127.0.0.1:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/ETH-USD?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T20:56:28Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "AAPL",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=AAPL&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T20:56:37Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "GM",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=GM&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/GM?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T20:56:51Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "MSFT",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=MSFT&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T20:57:00Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "TSLA",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=TSLA&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/TSLA?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T20:57:14Z"
+        }
+    ]
+}
+[2026-07-31T16:57:14-04:00] php runner end
+
+[2026-07-31T17:02:12-04:00] php runner start
+{
+    "ran_at": "2026-07-31T21:01:02Z",
+    "target_count": 6,
+    "target_batch_limit": 6,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 6,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/BTC-USD?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T21:01:16Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://127.0.0.1:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T21:01:26Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "AAPL",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=AAPL&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T21:01:32Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "GM",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=GM&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/GM?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T21:01:46Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "MSFT",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=MSFT&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T21:01:59Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "TSLA",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=TSLA&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T21:02:12Z"
+        }
+    ]
+}
+[2026-07-31T17:02:12-04:00] php runner end
+
+[2026-07-31T17:07:12-04:00] php runner start
+{
+    "ran_at": "2026-07-31T21:06:02Z",
+    "target_count": 6,
+    "target_batch_limit": 6,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 6,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/BTC-USD?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T21:06:16Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://127.0.0.1:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T21:06:26Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "AAPL",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=AAPL&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T21:06:33Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "GM",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=GM&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/GM?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T21:06:47Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "MSFT",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=MSFT&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T21:06:58Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "TSLA",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=TSLA&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/TSLA?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T21:07:12Z"
+        }
+    ]
+}
+[2026-07-31T17:07:12-04:00] php runner end
+
+[2026-07-31T17:12:17-04:00] php runner start
+{
+    "ran_at": "2026-07-31T21:11:02Z",
+    "target_count": 6,
+    "target_batch_limit": 6,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 6,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/BTC-USD?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T21:11:17Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://127.0.0.1:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/ETH-USD?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T21:11:29Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "AAPL",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=AAPL&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T21:11:35Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "GM",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=GM&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/GM?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T21:11:49Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "MSFT",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=MSFT&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/MSFT?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T21:12:03Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "TSLA",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=TSLA&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/TSLA?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T21:12:17Z"
+        }
+    ]
+}
+[2026-07-31T17:12:17-04:00] php runner end
+
+[2026-07-31T17:17:05-04:00] php runner start
+{
+    "ran_at": "2026-07-31T21:16:02Z",
+    "target_count": 6,
+    "target_batch_limit": 6,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 6,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/BTC-USD?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T21:16:16Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://127.0.0.1:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/ETH-USD?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T21:16:28Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "AAPL",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=AAPL&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T21:16:35Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "GM",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=GM&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T21:16:47Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "MSFT",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=MSFT&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T21:16:51Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "TSLA",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=TSLA&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/TSLA?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T21:17:05Z"
+        }
+    ]
+}
+[2026-07-31T17:17:05-04:00] php runner end
+
+[2026-07-31T17:22:25-04:00] php runner start
+{
+    "ran_at": "2026-07-31T21:21:03Z",
+    "target_count": 6,
+    "target_batch_limit": 6,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 6,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/BTC-USD?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T21:21:17Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://127.0.0.1:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/ETH-USD?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T21:21:29Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "AAPL",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=AAPL&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/AAPL?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T21:21:43Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "GM",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=GM&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/GM?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T21:21:57Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "MSFT",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=MSFT&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/MSFT?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T21:22:11Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "TSLA",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=TSLA&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/TSLA?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T21:22:25Z"
+        }
+    ]
+}
+[2026-07-31T17:22:25-04:00] php runner end
+
+[2026-07-31T17:27:25-04:00] php runner start
+{
+    "ran_at": "2026-07-31T21:26:02Z",
+    "target_count": 6,
+    "target_batch_limit": 6,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 6,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/BTC-USD?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T21:26:17Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://127.0.0.1:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/ETH-USD?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T21:26:29Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "AAPL",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=AAPL&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/AAPL?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T21:26:43Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "GM",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=GM&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/GM?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T21:26:57Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "MSFT",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=MSFT&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/MSFT?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T21:27:11Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "TSLA",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=TSLA&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/TSLA?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T21:27:25Z"
+        }
+    ]
+}
+[2026-07-31T17:27:25-04:00] php runner end
+
+[2026-07-31T17:32:25-04:00] php runner start
+{
+    "ran_at": "2026-07-31T21:31:02Z",
+    "target_count": 6,
+    "target_batch_limit": 6,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 6,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/BTC-USD?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T21:31:17Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://127.0.0.1:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/ETH-USD?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T21:31:29Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "AAPL",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=AAPL&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/AAPL?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T21:31:43Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "GM",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=GM&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/GM?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T21:31:57Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "MSFT",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=MSFT&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/MSFT?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T21:32:11Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "TSLA",
+            "requested_url": "http://localhost:8081/index.php?market_type=stock&symbol=TSLA&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": false,
+            "status": 0,
+            "has_price_payload": false,
+            "symbol_probe": {
+                "url": "https://query1.finance.yahoo.com/v8/finance/chart/TSLA?range=1d&interval=5m&includePrePost=false",
+                "ok": false,
+                "status": 0,
+                "looks_real": false
+            },
+            "removed_from_list": false,
+            "remove_reason": "Kept symbol because the local market page did not respond, so this looked like an app availability issue rather than proof that the symbol was invalid.",
+            "checked_at": "2026-07-31T21:32:25Z"
+        }
+    ]
+}
+[2026-07-31T17:32:25-04:00] php runner end
+

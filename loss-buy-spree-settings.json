@@ -4,7 +4,11 @@
         "updated_at": "2026-07-31T17:53:42Z"
     },
     "crypto:ETH-USD": {
-        "percent": 9,
-        "updated_at": "2026-07-31T17:21:07Z"
+        "percent": 4,
+        "updated_at": "2026-07-31T18:17:06Z"
+    },
+    "stock:MSFT": {
+        "percent": 5,
+        "updated_at": "2026-07-31T18:49:59Z"
     }
 }

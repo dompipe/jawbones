@@ -1,15 +1,23 @@
 Auto-generated cPanel cron commands
-Generated at: 2026-07-31 18:06:15 UTC
+Generated at: 2026-07-31 21:32:28 UTC
 
 Per-symbol cron entries
 ----------------------
 5,10,15,20,25,30,35,40,45,50,55 * * * * /usr/local/bin/php -q 'E:\coinbase\wsl_portfolio_cron.php' --registry='E:\coinbase\cron_targets.json' --market-type='crypto' --symbol='BTC-USD' --base-url='http://localhost:8081/index.php' >/dev/null 2>&1
-5,10,15,20,25,30,35,40,45,50,55 * * * * /usr/local/bin/php -q 'E:\coinbase\wsl_portfolio_cron.php' --registry='E:\coinbase\cron_targets.json' --market-type='crypto' --symbol='ETH-USD' --base-url='http://localhost:8081/index.php' >/dev/null 2>&1
+5,10,15,20,25,30,35,40,45,50,55 * * * * /usr/local/bin/php -q 'E:\coinbase\wsl_portfolio_cron.php' --registry='E:\coinbase\cron_targets.json' --market-type='crypto' --symbol='ETH-USD' --base-url='http://127.0.0.1:8081/index.php' >/dev/null 2>&1
+5,10,15,20,25,30,35,40,45,50,55 * * * * /usr/local/bin/php -q 'E:\coinbase\wsl_portfolio_cron.php' --registry='E:\coinbase\cron_targets.json' --market-type='stock' --symbol='AAPL' --base-url='http://localhost:8081/index.php' >/dev/null 2>&1
+5,10,15,20,25,30,35,40,45,50,55 * * * * /usr/local/bin/php -q 'E:\coinbase\wsl_portfolio_cron.php' --registry='E:\coinbase\cron_targets.json' --market-type='stock' --symbol='GM' --base-url='http://localhost:8081/index.php' >/dev/null 2>&1
+5,10,15,20,25,30,35,40,45,50,55 * * * * /usr/local/bin/php -q 'E:\coinbase\wsl_portfolio_cron.php' --registry='E:\coinbase\cron_targets.json' --market-type='stock' --symbol='MSFT' --base-url='http://localhost:8081/index.php' >/dev/null 2>&1
+5,10,15,20,25,30,35,40,45,50,55 * * * * /usr/local/bin/php -q 'E:\coinbase\wsl_portfolio_cron.php' --registry='E:\coinbase\cron_targets.json' --market-type='stock' --symbol='TSLA' --base-url='http://localhost:8081/index.php' >/dev/null 2>&1
 
 Registered targets
 ------------------
 [CRYPTO BTC-USD] http://localhost:8081/index.php trust=50 break_buy=0.50 break_gain=0.50 break_loss=0.50
-[CRYPTO ETH-USD] http://localhost:8081/index.php trust=50 break_buy=0.50 break_gain=0.50 break_loss=0.50
+[CRYPTO ETH-USD] http://127.0.0.1:8081/index.php trust=50 break_buy=0.50 break_gain=0.50 break_loss=0.50
+[STOCK AAPL] http://localhost:8081/index.php trust=50 break_buy=0.50 break_gain=0.50 break_loss=0.50
+[STOCK GM] http://localhost:8081/index.php trust=50 break_buy=0.50 break_gain=0.50 break_loss=0.50
+[STOCK MSFT] http://localhost:8081/index.php trust=50 break_buy=0.50 break_gain=0.50 break_loss=0.50
+[STOCK TSLA] http://localhost:8081/index.php trust=50 break_buy=0.50 break_gain=0.50 break_loss=0.50
 
 Notes
 -----

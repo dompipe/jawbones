@@ -10,11 +10,23 @@
             "break_buy": "0.50",
             "break_gain": "0.50",
             "break_loss": "0.50",
-            "updated_at": "2026-07-31T18:06:04Z"
+            "updated_at": "2026-07-31T21:32:09Z"
         },
         {
             "market_type": "crypto",
             "symbol": "ETH-USD",
+            "base_url": "http://127.0.0.1:8081/index.php",
+            "buy_multiplier": 0.5,
+            "sell_multiplier": 0.4,
+            "trust_percent": 50,
+            "break_buy": "0.50",
+            "break_gain": "0.50",
+            "break_loss": "0.50",
+            "updated_at": "2026-07-31T21:32:08Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "AAPL",
             "base_url": "http://localhost:8081/index.php",
             "buy_multiplier": 0.5,
             "sell_multiplier": 0.4,
@@ -22,7 +34,43 @@
             "break_buy": "0.50",
             "break_gain": "0.50",
             "break_loss": "0.50",
-            "updated_at": "2026-07-31T18:06:15Z"
+            "updated_at": "2026-07-31T21:32:02Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "GM",
+            "base_url": "http://localhost:8081/index.php",
+            "buy_multiplier": 0.5,
+            "sell_multiplier": 0.4,
+            "trust_percent": 50,
+            "break_buy": "0.50",
+            "break_gain": "0.50",
+            "break_loss": "0.50",
+            "updated_at": "2026-07-31T21:32:15Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "MSFT",
+            "base_url": "http://localhost:8081/index.php",
+            "buy_multiplier": 0.5,
+            "sell_multiplier": 0.4,
+            "trust_percent": 50,
+            "break_buy": "0.50",
+            "break_gain": "0.50",
+            "break_loss": "0.50",
+            "updated_at": "2026-07-31T21:32:28Z"
+        },
+        {
+            "market_type": "stock",
+            "symbol": "TSLA",
+            "base_url": "http://localhost:8081/index.php",
+            "buy_multiplier": 0.5,
+            "sell_multiplier": 0.4,
+            "trust_percent": 50,
+            "break_buy": "0.50",
+            "break_gain": "0.50",
+            "break_loss": "0.50",
+            "updated_at": "2026-07-31T21:27:32Z"
         }
     ]
 }

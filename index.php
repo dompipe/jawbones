@@ -1238,31 +1238,35 @@ function coinbaseCdpJwt(string $method, string $host, string $path): ?string
 
 function coinbaseConnectionHealth(): array
 {
-    $host = 'api.coinbase.com';
-    $public = brokerHttpJson('GET', 'https://' . $host . '/api/v3/brokerage/time', [], null, 8);
-    $jwt = coinbaseCdpJwt('GET', $host, '/api/v3/brokerage/key_permissions');
-    if ($jwt === null) {
-        return ['provider' => 'COINBASE', 'public_ok' => $public['ok'], 'authenticated' => false, 'trade_permission' => false, 'mode' => 'MARKET_DATA_ONLY', 'message' => $public['ok'] ? 'Public Advanced Trade API reachable; CDP ECDSA credentials not configured.' : 'Coinbase Advanced Trade public endpoint could not be reached from this server.'];
+    $mode = strtolower(trim(localEnvironmentValue('COINBASE_MODE') ?: 'sandbox'));
+    if ($mode !== 'sandbox') {
+        return ['provider' => 'COINBASE', 'authenticated' => false, 'trade_permission' => false, 'mode' => strtoupper($mode), 'sandbox_only' => true, 'message' => 'Live Coinbase mode is disabled; set COINBASE_MODE=sandbox.'];
     }
-    $private = brokerHttpJson('GET', 'https://' . $host . '/api/v3/brokerage/key_permissions', ['Authorization' => 'Bearer ' . $jwt], null, 10);
-    $permissions = is_array($private['json'] ?? null) ? $private['json'] : [];
+    $response = brokerHttpJson('GET', 'https://api-sandbox.coinbase.com/api/v3/brokerage/accounts', [], null, 10);
     return [
-        'provider' => 'COINBASE', 'public_ok' => $public['ok'], 'authenticated' => $private['ok'],
-        'trade_permission' => ($permissions['can_trade'] ?? false) === true,
-        'view_permission' => ($permissions['can_view'] ?? false) === true,
-        'mode' => strtoupper(trim(localEnvironmentValue('COINBASE_MODE') ?: 'READ_ONLY')),
-        'http_code' => $private['http_code'],
-        'message' => $private['ok'] ? 'Coinbase CDP authentication accepted.' : ('Coinbase authentication failed: ' . ($private['error'] ?: 'unknown response')),
+        'provider' => 'COINBASE',
+        'authenticated' => false,
+        'trade_permission' => false,
+        'contract_reachable' => $response['ok'],
+        'mode' => 'STATIC_SANDBOX',
+        'sandbox_only' => true,
+        'stateful_fills' => false,
+        'http_code' => $response['http_code'],
+        'message' => $response['ok']
+            ? 'Coinbase Advanced Trade static sandbox is reachable. Responses are predefined and do not represent account state or real fills.'
+            : ('Coinbase static sandbox is unreachable: ' . ($response['error'] ?: 'unknown response')),
     ];
 }
-
 function alpacaConnectionHealth(): array
 {
     $key = trim(localEnvironmentValue('ALPACA_API_KEY_ID'));
     $secret = trim(localEnvironmentValue('ALPACA_API_SECRET_KEY'));
     $mode = strtolower(trim(localEnvironmentValue('ALPACA_MODE') ?: 'paper'));
-    $paper = $mode !== 'live';
-    $base = $paper ? 'https://paper-api.alpaca.markets' : 'https://api.alpaca.markets';
+    if ($mode !== 'paper') {
+        return ['provider' => 'ALPACA', 'authenticated' => false, 'trading_blocked' => true, 'mode' => strtoupper($mode), 'sandbox_only' => true, 'message' => 'Live Alpaca mode is disabled; set ALPACA_MODE=paper.'];
+    }
+    $paper = true;
+    $base = 'https://paper-api.alpaca.markets';
     if ($key === '' || $secret === '') {
         return ['provider' => 'ALPACA', 'authenticated' => false, 'trading_blocked' => true, 'mode' => $paper ? 'PAPER' : 'LIVE', 'message' => 'Alpaca credentials not configured.'];
     }
@@ -1293,6 +1297,220 @@ if (isset($_GET['broker_health']) && (string)$_GET['broker_health'] === '1') {
 
 
 
+
+/** Production-style sandbox execution settings. Live hosts are intentionally forbidden. */
+function brokerSandboxSettings(): array
+{
+    return [
+        'live_trading_enabled' => false,
+        'coinbase_mode' => strtolower(trim(localEnvironmentValue('COINBASE_MODE') ?: 'sandbox')),
+        'alpaca_mode' => strtolower(trim(localEnvironmentValue('ALPACA_MODE') ?: 'paper')),
+        'poll_timeout_ms' => max(1000, min(30000, (int)(localEnvironmentValue('BROKER_FILL_POLL_TIMEOUT_MS') ?: 9000))),
+        'poll_interval_ms' => max(200, min(2000, (int)(localEnvironmentValue('BROKER_FILL_POLL_INTERVAL_MS') ?: 500))),
+        'allow_open_stock_orders' => !in_array(strtolower(trim(localEnvironmentValue('ALPACA_ALLOW_OPEN_ORDERS') ?: '1')), ['0','false','no','off'], true),
+        'stock_order_type' => in_array(strtolower(trim(localEnvironmentValue('ALPACA_STOCK_ORDER_TYPE') ?: 'limit')), ['market','limit'], true) ? strtolower(trim(localEnvironmentValue('ALPACA_STOCK_ORDER_TYPE') ?: 'limit')) : 'limit',
+        'journal_path' => __DIR__ . '/broker-order-journal.json',
+    ];
+}
+
+function assertSandboxOnlyBrokerModes(): void
+{
+    $settings = brokerSandboxSettings();
+    if (($settings['live_trading_enabled'] ?? true) !== false) {
+        throw new RuntimeException('Live trading is hard-disabled in this build.');
+    }
+    if (($settings['coinbase_mode'] ?? '') !== 'sandbox') {
+        throw new RuntimeException('COINBASE_MODE must be sandbox.');
+    }
+    if (($settings['alpaca_mode'] ?? '') !== 'paper') {
+        throw new RuntimeException('ALPACA_MODE must be paper.');
+    }
+}
+
+function brokerOrderJournalMutate(callable $mutator): array
+{
+    $path = (string)(brokerSandboxSettings()['journal_path'] ?? (__DIR__ . '/broker-order-journal.json'));
+    $handle = @fopen($path, 'c+');
+    if ($handle === false) return [];
+    try {
+        if (!flock($handle, LOCK_EX)) return [];
+        rewind($handle);
+        $raw = stream_get_contents($handle);
+        $state = is_string($raw) && trim($raw) !== '' ? json_decode($raw, true) : [];
+        if (!is_array($state)) $state = [];
+        $state['schema'] = 'broker-order-journal-v1';
+        $state['orders'] = is_array($state['orders'] ?? null) ? $state['orders'] : [];
+        $state = $mutator($state);
+        if (!is_array($state)) $state = [];
+        $state['updated_at'] = gmdate('c');
+        rewind($handle);
+        ftruncate($handle, 0);
+        fwrite($handle, json_encode($state, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+        fflush($handle);
+        return $state;
+    } finally {
+        @flock($handle, LOCK_UN);
+        @fclose($handle);
+    }
+}
+
+function brokerJournalUpsert(array $order): void
+{
+    $key = trim((string)($order['client_order_id'] ?? $order['order_id'] ?? ''));
+    if ($key === '') return;
+    brokerOrderJournalMutate(static function (array $state) use ($key, $order): array {
+        $previous = is_array($state['orders'][$key] ?? null) ? $state['orders'][$key] : [];
+        $state['orders'][$key] = array_merge($previous, $order, ['journal_key' => $key, 'updated_at' => gmdate('c')]);
+        if (count($state['orders']) > 1000) {
+            $state['orders'] = array_slice($state['orders'], -1000, null, true);
+        }
+        return $state;
+    });
+}
+
+function alpacaPaperHeaders(): array
+{
+    return [
+        'APCA-API-KEY-ID' => trim(localEnvironmentValue('ALPACA_API_KEY_ID')),
+        'APCA-API-SECRET-KEY' => trim(localEnvironmentValue('ALPACA_API_SECRET_KEY')),
+    ];
+}
+
+function alpacaPaperGetOrder(string $orderId = '', string $clientOrderId = ''): array
+{
+    $headers = alpacaPaperHeaders();
+    if (($headers['APCA-API-KEY-ID'] ?? '') === '' || ($headers['APCA-API-SECRET-KEY'] ?? '') === '') {
+        return ['ok' => false, 'json' => null, 'http_code' => 0, 'error' => 'Alpaca paper credentials not configured.'];
+    }
+    if ($orderId !== '') {
+        $url = 'https://paper-api.alpaca.markets/v2/orders/' . rawurlencode($orderId);
+    } elseif ($clientOrderId !== '') {
+        $url = 'https://paper-api.alpaca.markets/v2/orders:by_client_order_id?client_order_id=' . rawurlencode($clientOrderId);
+    } else {
+        return ['ok' => false, 'json' => null, 'http_code' => 0, 'error' => 'Missing Alpaca order identifier.'];
+    }
+    return brokerHttpJson('GET', $url, $headers, null, 10);
+}
+
+
+/** Return Alpaca paper orders that are still working at the broker. */
+function alpacaPaperOpenOrders(string $symbol = ''): array
+{
+    $headers = alpacaPaperHeaders();
+    if (($headers['APCA-API-KEY-ID'] ?? '') === '' || ($headers['APCA-API-SECRET-KEY'] ?? '') === '') return [];
+    $url = 'https://paper-api.alpaca.markets/v2/orders?status=open&limit=500&direction=asc&nested=true';
+    $response = brokerHttpJson('GET', $url, $headers, null, 10);
+    $rows = is_array($response['json'] ?? null) ? $response['json'] : [];
+    $wanted = strtoupper(trim($symbol));
+    return array_values(array_filter($rows, static function ($row) use ($wanted): bool {
+        if (!is_array($row)) return false;
+        if ($wanted !== '' && strtoupper(trim((string)($row['symbol'] ?? ''))) !== $wanted) return false;
+        $status = strtolower(trim((string)($row['status'] ?? '')));
+        return !in_array($status, ['filled','canceled','expired','rejected','suspended'], true);
+    }));
+}
+
+/** Cash/share reservations created by currently open Alpaca paper orders. */
+function alpacaPaperOpenOrderExposure(string $symbol): array
+{
+    $buyNotional = 0.0;
+    $sellQty = 0.0;
+    $buyCount = 0;
+    $sellCount = 0;
+    foreach (alpacaPaperOpenOrders($symbol) as $order) {
+        $side = strtolower(trim((string)($order['side'] ?? '')));
+        $qty = is_numeric($order['qty'] ?? null) ? max(0.0, (float)$order['qty']) : 0.0;
+        $filled = is_numeric($order['filled_qty'] ?? null) ? max(0.0, (float)$order['filled_qty']) : 0.0;
+        $remainingQty = max(0.0, $qty - $filled);
+        $notional = is_numeric($order['notional'] ?? null) ? max(0.0, (float)$order['notional']) : 0.0;
+        $limitPrice = is_numeric($order['limit_price'] ?? null) ? max(0.0, (float)$order['limit_price']) : 0.0;
+        if ($side === 'buy') {
+            $buyCount++;
+            $buyNotional += $notional > 0.0 ? $notional : ($remainingQty * $limitPrice);
+        } elseif ($side === 'sell') {
+            $sellCount++;
+            $sellQty += $remainingQty;
+        }
+    }
+    return [
+        'buy_notional_reserved' => round($buyNotional, 8),
+        'sell_qty_reserved' => round($sellQty, 9),
+        'buy_open_count' => $buyCount,
+        'sell_open_count' => $sellCount,
+        'open_count' => $buyCount + $sellCount,
+    ];
+}
+
+function alpacaPaperPollOrder(string $orderId, string $clientOrderId): array
+{
+    $settings = brokerSandboxSettings();
+    $timeoutMs = (int)$settings['poll_timeout_ms'];
+    $intervalMs = (int)$settings['poll_interval_ms'];
+    $started = (int)round(microtime(true) * 1000);
+    $last = ['ok' => false, 'json' => null, 'http_code' => 0, 'error' => 'No order response.'];
+    do {
+        $last = alpacaPaperGetOrder($orderId, $clientOrderId);
+        $order = is_array($last['json'] ?? null) ? $last['json'] : [];
+        $status = strtolower(trim((string)($order['status'] ?? '')));
+        $filledQty = is_numeric($order['filled_qty'] ?? null) ? (float)$order['filled_qty'] : 0.0;
+        if ($filledQty > 0.0 || in_array($status, ['filled','canceled','expired','rejected','suspended'], true)) break;
+        usleep($intervalMs * 1000);
+    } while (((int)round(microtime(true) * 1000) - $started) < $timeoutMs);
+    return $last;
+}
+
+function normalizeAlpacaPaperOrder(array $order, string $clientOrderId): array
+{
+    $status = strtolower(trim((string)($order['status'] ?? 'unknown')));
+    $filledQty = is_numeric($order['filled_qty'] ?? null) ? max(0.0, (float)$order['filled_qty']) : 0.0;
+    $averagePrice = is_numeric($order['filled_avg_price'] ?? null) ? max(0.0, (float)$order['filled_avg_price']) : 0.0;
+    $terminal = in_array($status, ['filled','canceled','expired','rejected','suspended'], true);
+    return [
+        'attempted' => true,
+        'accepted' => !in_array($status, ['rejected','canceled','expired','suspended'], true),
+        'provider' => 'ALPACA',
+        'mode' => 'PAPER',
+        'order_id' => (string)($order['id'] ?? ''),
+        'client_order_id' => (string)($order['client_order_id'] ?? $clientOrderId),
+        'status' => strtoupper($status),
+        'terminal' => $terminal,
+        'filled' => $filledQty > 0.0,
+        'filled_qty' => $filledQty,
+        'filled_avg_price' => $averagePrice,
+        'submitted_qty' => is_numeric($order['qty'] ?? null) ? (float)$order['qty'] : null,
+        'submitted_notional' => is_numeric($order['notional'] ?? null) ? (float)$order['notional'] : null,
+        'message' => $filledQty > 0.0
+            ? 'Alpaca paper reported a broker fill.'
+            : ($terminal ? 'Alpaca paper order ended without a fill.' : 'Alpaca paper order accepted but is not filled yet.'),
+    ];
+}
+
+function brokerReconciliationSnapshot(): array
+{
+    $settings = brokerSandboxSettings();
+    $path = (string)$settings['journal_path'];
+    $state = is_file($path) ? json_decode((string)@file_get_contents($path), true) : [];
+    if (!is_array($state)) $state = [];
+    $orders = is_array($state['orders'] ?? null) ? $state['orders'] : [];
+    $summary = ['total' => 0, 'filled' => 0, 'pending' => 0, 'failed' => 0];
+    foreach ($orders as $order) {
+        if (!is_array($order)) continue;
+        $summary['total']++;
+        $status = strtoupper(trim((string)($order['status'] ?? '')));
+        if (($order['filled'] ?? false) === true || $status === 'FILLED') $summary['filled']++;
+        elseif (in_array($status, ['REJECTED','CANCELED','CANCELLED','EXPIRED','FAILED','SUSPENDED'], true)) $summary['failed']++;
+        else $summary['pending']++;
+    }
+    return ['checked_at' => gmdate('c'), 'sandbox_only' => true, 'summary' => $summary, 'orders' => array_values(array_slice($orders, -100, null, true))];
+}
+
+if (isset($_GET['broker_reconcile']) && (string)$_GET['broker_reconcile'] === '1') {
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store, max-age=0');
+    echo json_encode(brokerReconciliationSnapshot(), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+    exit;
+}
+
 /**
  * Submit an order only to a non-production broker environment.
  * Crypto uses Coinbase Advanced Trade's static sandbox. Stocks use Alpaca paper.
@@ -1304,81 +1522,106 @@ function sandboxBrokerOrder(
     string $symbol,
     string $action,
     array $paperFill,
-    string $clientOrderId
+    string $clientOrderId,
+    array $context = []
 ): array {
+    try {
+        assertSandboxOnlyBrokerModes();
+    } catch (Throwable $exception) {
+        return ['attempted' => false, 'accepted' => false, 'filled' => false, 'mode' => 'BLOCKED', 'message' => $exception->getMessage()];
+    }
     $marketType = strtolower(trim($marketType));
     $action = strtoupper(trim($action));
+    $clientOrderId = substr(preg_replace('/[^A-Za-z0-9_-]+/', '-', $clientOrderId) ?: bin2hex(random_bytes(8)), 0, 48);
     if (($action !== 'BUY' && $action !== 'SELL') || (($paperFill['eligible'] ?? false) !== true)) {
-        return ['attempted' => false, 'accepted' => false, 'mode' => 'NONE', 'message' => 'No eligible order to submit.'];
+        return ['attempted' => false, 'accepted' => false, 'filled' => false, 'mode' => 'NONE', 'message' => 'No eligible order to submit.'];
     }
 
     if ($marketType === 'crypto') {
-        $mode = strtolower(trim(localEnvironmentValue('COINBASE_MODE') ?: 'sandbox'));
-        if ($mode !== 'sandbox') {
-            return ['attempted' => false, 'accepted' => false, 'mode' => strtoupper($mode), 'message' => 'Coinbase live submission disabled; set COINBASE_MODE=sandbox.'];
-        }
         $productId = coinbaseProductIdForTicker($symbol) ?: strtoupper(trim($symbol));
         $quoteSize = number_format(max(0.0, (float)($paperFill['executed_amount'] ?? 0.0)), 2, '.', '');
         $baseSize = rtrim(rtrim(number_format(max(0.0, (float)($paperFill['units'] ?? 0.0)), 12, '.', ''), '0'), '.');
         $body = [
-            'client_order_id' => substr(preg_replace('/[^A-Za-z0-9_-]+/', '-', $clientOrderId) ?: bin2hex(random_bytes(8)), 0, 64),
+            'client_order_id' => $clientOrderId,
             'product_id' => $productId,
             'side' => $action,
             'order_configuration' => [
-                'market_market_ioc' => $action === 'BUY'
-                    ? ['quote_size' => $quoteSize]
-                    : ['base_size' => $baseSize],
+                'market_market_ioc' => $action === 'BUY' ? ['quote_size' => $quoteSize] : ['base_size' => $baseSize],
             ],
         ];
         $response = brokerHttpJson('POST', 'https://api-sandbox.coinbase.com/api/v3/brokerage/orders', [], $body, 12);
-        return [
+        $orderId = (string)($response['json']['success_response']['order_id'] ?? '');
+        $result = [
             'attempted' => true,
             'accepted' => $response['ok'],
+            'filled' => $response['ok'],
+            'mock_fill' => true,
             'provider' => 'COINBASE',
             'mode' => 'STATIC_SANDBOX',
             'http_code' => (int)$response['http_code'],
-            'order_id' => (string)($response['json']['success_response']['order_id'] ?? ''),
-            'message' => $response['ok'] ? 'Coinbase static sandbox accepted the order request.' : ('Coinbase sandbox rejected the request: ' . ($response['error'] ?: 'unknown response')),
+            'order_id' => $orderId,
+            'client_order_id' => $clientOrderId,
+            'status' => $response['ok'] ? 'MOCK_FILLED' : 'REJECTED',
+            'filled_qty' => (float)($paperFill['units'] ?? 0.0),
+            'filled_avg_price' => (float)($paperFill['fill_price'] ?? 0.0),
+            'message' => $response['ok']
+                ? 'Coinbase static sandbox validated the order contract; fill values remain simulated because sandbox responses are predefined.'
+                : ('Coinbase sandbox rejected the request: ' . ($response['error'] ?: 'unknown response')),
         ];
+        brokerJournalUpsert(array_merge($result, ['symbol' => $symbol, 'side' => $action, 'submitted_at' => gmdate('c')]));
+        return $result;
     }
 
-    $mode = strtolower(trim(localEnvironmentValue('ALPACA_MODE') ?: 'paper'));
-    if ($mode !== 'paper') {
-        return ['attempted' => false, 'accepted' => false, 'provider' => 'ALPACA', 'mode' => strtoupper($mode), 'message' => 'Alpaca live submission disabled; set ALPACA_MODE=paper.'];
+    $headers = alpacaPaperHeaders();
+    if (($headers['APCA-API-KEY-ID'] ?? '') === '' || ($headers['APCA-API-SECRET-KEY'] ?? '') === '') {
+        return ['attempted' => false, 'accepted' => false, 'filled' => false, 'provider' => 'ALPACA', 'mode' => 'PAPER', 'message' => 'Alpaca paper credentials not configured.'];
     }
-    $key = trim(localEnvironmentValue('ALPACA_API_KEY_ID'));
-    $secret = trim(localEnvironmentValue('ALPACA_API_SECRET_KEY'));
-    if ($key === '' || $secret === '') {
-        return ['attempted' => false, 'accepted' => false, 'provider' => 'ALPACA', 'mode' => 'PAPER', 'message' => 'Alpaca paper credentials not configured.'];
-    }
+    $settings = brokerSandboxSettings();
+    $orderType = (($settings['allow_open_stock_orders'] ?? true) === true)
+        ? (string)($settings['stock_order_type'] ?? 'limit')
+        : 'market';
     $body = [
         'symbol' => strtoupper(trim($symbol)),
         'side' => strtolower($action),
-        'type' => 'market',
+        'type' => $orderType,
         'time_in_force' => 'day',
-        'client_order_id' => substr(preg_replace('/[^A-Za-z0-9_-]+/', '-', $clientOrderId) ?: bin2hex(random_bytes(8)), 0, 48),
+        'client_order_id' => $clientOrderId,
     ];
-    if ($action === 'BUY') {
-        $body['notional'] = number_format(max(0.0, (float)($paperFill['executed_amount'] ?? 0.0)), 2, '.', '');
-    } else {
-        $body['qty'] = rtrim(rtrim(number_format(max(0.0, (float)($paperFill['units'] ?? 0.0)), 9, '.', ''), '0'), '.');
+    if ($action === 'BUY') $body['notional'] = number_format(max(0.0, (float)($paperFill['executed_amount'] ?? 0.0)), 2, '.', '');
+    else $body['qty'] = rtrim(rtrim(number_format(max(0.0, (float)($paperFill['units'] ?? 0.0)), 9, '.', ''), '0'), '.');
+    if ($orderType === 'limit') {
+        $limitPrice = max(0.01, (float)($context['limit_price'] ?? $paperFill['fill_price'] ?? 0.0));
+        $body['limit_price'] = number_format($limitPrice, 2, '.', '');
     }
-    $response = brokerHttpJson('POST', 'https://paper-api.alpaca.markets/v2/orders', [
-        'APCA-API-KEY-ID' => $key,
-        'APCA-API-SECRET-KEY' => $secret,
-    ], $body, 12);
-    return [
-        'attempted' => true,
-        'accepted' => $response['ok'],
-        'provider' => 'ALPACA',
-        'mode' => 'PAPER',
-        'http_code' => (int)$response['http_code'],
-        'order_id' => (string)($response['json']['id'] ?? ''),
-        'status' => (string)($response['json']['status'] ?? ''),
-        'message' => $response['ok'] ? 'Alpaca paper accepted the order.' : ('Alpaca paper rejected the order: ' . ($response['error'] ?: 'unknown response')),
-    ];
-}
 
+    $response = brokerHttpJson('POST', 'https://paper-api.alpaca.markets/v2/orders', $headers, $body, 12);
+    if (!$response['ok']) {
+        $result = ['attempted' => true, 'accepted' => false, 'filled' => false, 'provider' => 'ALPACA', 'mode' => 'PAPER', 'http_code' => (int)$response['http_code'], 'client_order_id' => $clientOrderId, 'status' => 'REJECTED', 'message' => 'Alpaca paper rejected the order: ' . ($response['error'] ?: 'unknown response')];
+        brokerJournalUpsert(array_merge($result, ['symbol' => $symbol, 'side' => $action, 'submitted_at' => gmdate('c')]));
+        return $result;
+    }
+    $submitted = is_array($response['json'] ?? null) ? $response['json'] : [];
+    $orderId = (string)($submitted['id'] ?? '');
+    $polled = alpacaPaperPollOrder($orderId, $clientOrderId);
+    $finalOrder = is_array($polled['json'] ?? null) ? $polled['json'] : $submitted;
+    $result = normalizeAlpacaPaperOrder($finalOrder, $clientOrderId);
+    $result['http_code'] = (int)($polled['http_code'] ?? $response['http_code']);
+    brokerJournalUpsert(array_merge($result, [
+        'symbol' => $symbol, 'market_type' => $marketType, 'side' => $action,
+        'submitted_at' => (string)($submitted['submitted_at'] ?? gmdate('c')),
+        'proposal_units' => (float)($paperFill['units'] ?? 0.0),
+        'proposal_amount' => (float)($paperFill['executed_amount'] ?? 0.0),
+        'proposal_price' => (float)($paperFill['fill_price'] ?? 0.0),
+        'accounted_filled_qty' => 0.0,
+        'allow_open_order' => (($settings['allow_open_stock_orders'] ?? true) === true),
+    ]));
+    return $result;
+}
+/**
+ * CANONICAL EXECUTION GATEWAY.
+ * Every wallet-mutating BUY/SELL path must call this function. paperExecutionFill()
+ * is preview/sizing math only and must never be used directly before state mutation.
+ */
 function resolvePaperOrSandboxFill(
     string $action,
     float $requestedAmount,
@@ -1388,22 +1631,45 @@ function resolvePaperOrSandboxFill(
     float $availableUnits = 0.0,
     bool $useTopOfBook = false
 ): array {
-    $fill = paperExecutionFill($action, $requestedAmount, $availableAmount, $referencePrice, $context, $availableUnits, $useTopOfBook);
-    if (($fill['eligible'] ?? false) !== true) return $fill;
     $marketType = (string)($context['market_type'] ?? '');
     $symbol = (string)($context['symbol'] ?? $context['product_id'] ?? '');
+    $openExposure = ['buy_notional_reserved' => 0.0, 'sell_qty_reserved' => 0.0, 'buy_open_count' => 0, 'sell_open_count' => 0, 'open_count' => 0];
+    if (strtolower(trim($marketType)) === 'stock' && $symbol !== '') {
+        $openExposure = alpacaPaperOpenOrderExposure($symbol);
+        $actionUpper = strtoupper(trim($action));
+        // Same-side working orders may coexist. Opposite-side orders are blocked to avoid crossing our own order.
+        if (($actionUpper === 'BUY' && (int)$openExposure['sell_open_count'] > 0)
+            || ($actionUpper === 'SELL' && (int)$openExposure['buy_open_count'] > 0)) {
+            return [
+                'eligible' => false,
+                'requested_amount' => $requestedAmount,
+                'available_amount' => $availableAmount,
+                'units' => 0.0,
+                'executed_amount' => 0.0,
+                'blocked_reason' => 'OPPOSITE_ALPACA_ORDER_OPEN',
+                'broker_open_exposure' => $openExposure,
+            ];
+        }
+        if ($actionUpper === 'BUY') {
+            $availableAmount = max(0.0, $availableAmount - (float)$openExposure['buy_notional_reserved']);
+        } else {
+            $availableUnits = max(0.0, $availableUnits - (float)$openExposure['sell_qty_reserved']);
+            $availableAmount = min(max(0.0, $availableAmount), $availableUnits * max(0.0, $referencePrice));
+        }
+    }
+    $fill = paperExecutionFill($action, $requestedAmount, $availableAmount, $referencePrice, $context, $availableUnits, $useTopOfBook);
+    $fill['broker_open_exposure'] = $openExposure;
+    if (($fill['eligible'] ?? false) !== true) return $fill;
     $clientOrderId = (string)($context['client_order_id'] ?? ('mw-' . gmdate('YmdHis') . '-' . bin2hex(random_bytes(4))));
-    $broker = sandboxBrokerOrder($marketType, $symbol, $action, $fill, $clientOrderId);
-    $fill['broker_attempted'] = ($broker['attempted'] ?? false) === true;
-    $fill['broker_accepted'] = ($broker['accepted'] ?? false) === true;
-    $fill['broker_provider'] = (string)($broker['provider'] ?? '');
-    $fill['broker_mode'] = (string)($broker['mode'] ?? '');
-    $fill['broker_order_id'] = (string)($broker['order_id'] ?? '');
-    $fill['broker_status'] = (string)($broker['status'] ?? '');
-    $fill['broker_message'] = (string)($broker['message'] ?? '');
-    // Preserve the complete locally calculated fill before applying broker policy.
-    // FIFO and lot accounting must never receive zero units merely because a
-    // broker request failed; broker rejection is a broker gate, not a lot error.
+    $broker = sandboxBrokerOrder($marketType, $symbol, $action, $fill, $clientOrderId, $context);
+    foreach ([
+        'attempted' => 'broker_attempted', 'accepted' => 'broker_accepted', 'filled' => 'broker_filled',
+        'provider' => 'broker_provider', 'mode' => 'broker_mode', 'order_id' => 'broker_order_id',
+        'client_order_id' => 'broker_client_order_id', 'status' => 'broker_status', 'message' => 'broker_message',
+        'mock_fill' => 'broker_mock_fill', 'terminal' => 'broker_terminal',
+        'filled_qty' => 'broker_filled_qty', 'filled_avg_price' => 'broker_filled_avg_price'
+    ] as $source => $target) $fill[$target] = $broker[$source] ?? (($source === 'attempted' || $source === 'accepted' || $source === 'filled' || $source === 'mock_fill') ? false : '');
+
     $fill['proposed_executed_amount'] = (float)($fill['executed_amount'] ?? 0.0);
     $fill['proposed_gross_notional'] = (float)($fill['gross_notional'] ?? 0.0);
     $fill['proposed_fee_amount'] = (float)($fill['fee_amount'] ?? 0.0);
@@ -1411,25 +1677,9 @@ function resolvePaperOrSandboxFill(
     $fill['proposed_cash_delta'] = (float)($fill['cash_delta'] ?? 0.0);
     $fill['proposed_units'] = (float)($fill['units'] ?? 0.0);
     $fill['proposed_asset_units_delta'] = (float)($fill['asset_units_delta'] ?? 0.0);
+    $fill['broker_acceptance_required'] = true;
 
-    // Alpaca paper is stateful, so acceptance remains required by default.
-    // Coinbase Advanced Trade's public sandbox is static/mock; it is contacted
-    // and recorded, but local paper accounting may continue unless explicitly
-    // configured to require a successful static response.
-    $provider = strtoupper(trim((string)($broker['provider'] ?? '')));
-    $globalRequired = strtolower(trim(localEnvironmentValue('BROKER_SANDBOX_REQUIRED') ?: ''));
-    if ($globalRequired === '0') {
-        $requireSandbox = false;
-    } elseif ($globalRequired === '1') {
-        $requireSandbox = true;
-    } elseif ($provider === 'COINBASE') {
-        $requireSandbox = strtolower(trim(localEnvironmentValue('COINBASE_SANDBOX_REQUIRED') ?: '0')) !== '0';
-    } else {
-        $requireSandbox = strtolower(trim(localEnvironmentValue('ALPACA_PAPER_REQUIRED') ?: '1')) !== '0';
-    }
-    $fill['broker_acceptance_required'] = $requireSandbox;
-
-    if ($requireSandbox && (($broker['accepted'] ?? false) !== true)) {
+    if (($broker['accepted'] ?? false) !== true || ($broker['filled'] ?? false) !== true) {
         $fill['eligible'] = false;
         $fill['executed_amount'] = 0.0;
         $fill['executable_amount'] = 0.0;
@@ -1441,14 +1691,63 @@ function resolvePaperOrSandboxFill(
         $fill['asset_units_delta'] = 0.0;
         $fill['shortfall'] = round(max(0.0, $requestedAmount - $availableAmount), 8);
         $fill['blocked_amount'] = round(min(max(0.0, $requestedAmount), max(0.0, $availableAmount)), 8);
-        $fill['blocked_reason'] = 'BROKER_ORDER_NOT_ACCEPTED';
-    } elseif (($broker['accepted'] ?? false) !== true) {
-        $fill['execution_source'] = trim((string)($fill['execution_source'] ?? 'PAPER_ASSUMPTION')) . ' + BROKER SANDBOX ATTEMPT';
-        $fill['broker_nonblocking'] = true;
+        $fill['blocked_reason'] = (($broker['accepted'] ?? false) === true) ? 'BROKER_ORDER_OPEN_PENDING_FILL' : 'BROKER_ORDER_NOT_ACCEPTED';
+        $fill['broker_order_open'] = (($broker['accepted'] ?? false) === true) && (($broker['terminal'] ?? false) !== true);
+        $fill['broker_order_remains_working'] = $fill['broker_order_open'];
+        $fill['broker_pending_does_not_block_new_same_side_orders'] = true;
+        return $fill;
     }
+
+    // Alpaca paper supplies actual filled quantity and average fill price. These values become authoritative.
+    if (strtoupper((string)($broker['provider'] ?? '')) === 'ALPACA' && ($broker['mock_fill'] ?? false) !== true) {
+        $units = max(0.0, (float)($broker['filled_qty'] ?? 0.0));
+        $price = max(0.0, (float)($broker['filled_avg_price'] ?? 0.0));
+        if ($units <= 0.0 || $price <= 0.0) {
+            $fill['eligible'] = false;
+            $fill['blocked_reason'] = 'BROKER_FILL_MISSING_QUANTITY_OR_PRICE';
+            return $fill;
+        }
+        $gross = $units * $price;
+        $fee = 0.0;
+        $fill['units'] = $units;
+        $fill['fill_price'] = $price;
+        $fill['gross_notional'] = $gross;
+        $fill['fee_amount'] = $fee;
+        $fill['executed_amount'] = $gross;
+        $fill['executable_amount'] = $gross;
+        if (strtoupper($action) === 'BUY') {
+            $fill['net_cash_amount'] = $gross + $fee;
+            $fill['cash_delta'] = -($gross + $fee);
+            $fill['asset_units_delta'] = $units;
+        } else {
+            $fill['net_cash_amount'] = $gross - $fee;
+            $fill['cash_delta'] = $gross - $fee;
+            $fill['asset_units_delta'] = -$units;
+        }
+        $fill['execution_source'] = 'ALPACA PAPER BROKER-CONFIRMED FILL';
+        // The originating execution path applies this immediate fill now, so mark it accounted.
+        brokerJournalUpsert([
+            'client_order_id' => (string)($broker['client_order_id'] ?? $clientOrderId),
+            'order_id' => (string)($broker['order_id'] ?? ''),
+            'symbol' => $symbol,
+            'market_type' => $marketType,
+            'side' => strtoupper($action),
+            'provider' => 'ALPACA',
+            'mode' => 'PAPER',
+            'status' => (string)($broker['status'] ?? ''),
+            'filled' => true,
+            'filled_qty' => $units,
+            'filled_avg_price' => $price,
+            'accounted_filled_qty' => $units,
+            'wallet_applied_at' => gmdate('c'),
+        ]);
+    } else {
+        $fill['execution_source'] = 'COINBASE STATIC SANDBOX CONTRACT-VALIDATED MOCK FILL';
+    }
+    $fill['eligible'] = true;
+    $fill['shortfall'] = round(max(0.0, $requestedAmount - (float)$fill['executed_amount']), 8);
     return $fill;
 }
-
 function walletResetPasswordMatches(string $configuredPassword, string $providedPassword): bool
 {
     if ($configuredPassword === '' || $providedPassword === '') return false;
@@ -1474,6 +1773,113 @@ function randomCashOutPin(): string
         $pin .= (string)random_int(1, 4);
     }
     return $pin;
+}
+
+
+/**
+ * Import delayed Alpaca paper fills into the local wallet exactly once.
+ * This is called before the symbol wallet is loaded for rendering/analysis.
+ */
+function reconcileDelayedAlpacaFillsIntoWallet(string $walletStatePath, string $marketType, string $symbol): array
+{
+    if (strtolower(trim($marketType)) !== 'stock' || trim($symbol) === '' || !is_file($walletStatePath)) {
+        return ['applied' => 0, 'filled_units' => 0.0];
+    }
+    $journalPath = (string)(brokerSandboxSettings()['journal_path'] ?? (__DIR__ . '/broker-order-journal.json'));
+    $journal = is_file($journalPath) ? json_decode((string)@file_get_contents($journalPath), true) : [];
+    $orders = is_array($journal['orders'] ?? null) ? $journal['orders'] : [];
+    $wallet = loadLocalJsonArray($walletStatePath);
+    if (!is_array($wallet)) $wallet = [];
+    $applied = 0;
+    $appliedUnits = 0.0;
+    foreach ($orders as $key => $record) {
+        if (!is_array($record)) continue;
+        if (strtoupper(trim((string)($record['symbol'] ?? ''))) !== strtoupper(trim($symbol))) continue;
+        if (strtoupper(trim((string)($record['provider'] ?? ''))) !== 'ALPACA') continue;
+        $orderId = trim((string)($record['order_id'] ?? ''));
+        $clientId = trim((string)($record['client_order_id'] ?? ''));
+        if ($orderId === '' && $clientId === '') continue;
+        $response = alpacaPaperGetOrder($orderId, $clientId);
+        $order = is_array($response['json'] ?? null) ? $response['json'] : [];
+        if (!$order) continue;
+        $normalized = normalizeAlpacaPaperOrder($order, $clientId);
+        $filledQty = max(0.0, (float)($normalized['filled_qty'] ?? 0.0));
+        $accounted = max(0.0, (float)($record['accounted_filled_qty'] ?? 0.0));
+        $delta = max(0.0, $filledQty - $accounted);
+        brokerJournalUpsert(array_merge($normalized, [
+            'symbol' => $symbol,
+            'market_type' => 'stock',
+            'side' => (string)($record['side'] ?? ''),
+            'accounted_filled_qty' => $accounted,
+        ]));
+        if ($delta <= 0.000000001) continue;
+        $price = max(0.0, (float)($normalized['filled_avg_price'] ?? 0.0));
+        if ($price <= 0.0) continue;
+        $side = strtoupper(trim((string)($record['side'] ?? '')));
+        $gross = $delta * $price;
+        $wallet['cash_left'] = max(0.0, (float)($wallet['cash_left'] ?? 0.0));
+        $wallet['asset_units'] = max(0.0, (float)($wallet['asset_units'] ?? 0.0));
+        $wallet['asset_cost_basis'] = max(0.0, (float)($wallet['asset_cost_basis'] ?? 0.0));
+        $wallet['trades'] = is_array($wallet['trades'] ?? null) ? $wallet['trades'] : [];
+        if ($side === 'BUY') {
+            $spend = min($gross, $wallet['cash_left']);
+            $actualQty = $price > 0.0 ? min($delta, $spend / $price) : 0.0;
+            if ($actualQty <= 0.0) continue;
+            $actualGross = $actualQty * $price;
+            $wallet['cash_left'] -= $actualGross;
+            $wallet['asset_units'] += $actualQty;
+            $wallet['asset_cost_basis'] += $actualGross;
+            $wallet['total_bought_units'] = (float)($wallet['total_bought_units'] ?? 0.0) + $actualQty;
+            $wallet['total_bought_amount'] = (float)($wallet['total_bought_amount'] ?? 0.0) + $actualGross;
+            if (function_exists('paperWalletRecordBuyLot')) {
+                $wallet = paperWalletRecordBuyLot($wallet, $actualQty, $price, $actualGross, gmdate('c'), $price, null);
+            }
+            $delta = $actualQty;
+            $gross = $actualGross;
+        } elseif ($side === 'SELL') {
+            $actualQty = min($delta, $wallet['asset_units']);
+            if ($actualQty <= 0.0) continue;
+            $unitsBefore = max(0.0, $wallet['asset_units']);
+            $costPortion = $unitsBefore > 0.0 ? $wallet['asset_cost_basis'] * ($actualQty / $unitsBefore) : 0.0;
+            if (function_exists('paperWalletConsumeSellLots')) {
+                $consumed = paperWalletConsumeSellLots($wallet, $actualQty, $price, true);
+                $wallet = is_array($consumed['state'] ?? null) ? $consumed['state'] : $wallet;
+                $costPortion = is_numeric($consumed['cost_basis'] ?? null) ? (float)$consumed['cost_basis'] : $costPortion;
+            }
+            $gross = $actualQty * $price;
+            $wallet['cash_left'] += $gross;
+            $wallet['asset_units'] = max(0.0, $wallet['asset_units'] - $actualQty);
+            $wallet['asset_cost_basis'] = max(0.0, $wallet['asset_cost_basis'] - $costPortion);
+            $wallet['total_sold_units'] = (float)($wallet['total_sold_units'] ?? 0.0) + $actualQty;
+            $wallet['total_sold_amount'] = (float)($wallet['total_sold_amount'] ?? 0.0) + $gross;
+            $delta = $actualQty;
+        } else continue;
+        $wallet['trades'][] = [
+            'action' => $side . ' DELAYED BROKER FILL',
+            'side' => $side,
+            'executed' => true,
+            'time' => gmdate('c'),
+            'price' => $price,
+            'units' => $delta,
+            'amount' => $gross,
+            'broker_provider' => 'ALPACA',
+            'broker_mode' => 'PAPER',
+            'broker_order_id' => $orderId,
+            'broker_client_order_id' => $clientId,
+            'broker_status' => (string)($normalized['status'] ?? ''),
+            'delayed_fill_reconciled' => true,
+        ];
+        $wallet['trades'] = array_slice($wallet['trades'], -500);
+        saveLocalJsonArray($walletStatePath, normalizeTraderDisplayState($wallet));
+        brokerJournalUpsert(array_merge($normalized, [
+            'symbol' => $symbol, 'market_type' => 'stock', 'side' => $side,
+            'accounted_filled_qty' => $accounted + $delta,
+            'wallet_applied_at' => gmdate('c'),
+        ]));
+        $applied++;
+        $appliedUnits += $delta;
+    }
+    return ['applied' => $applied, 'filled_units' => $appliedUnits];
 }
 
 function paperWalletCashOutPinPath(string $directory, string $marketType, string $symbol): string
@@ -2018,24 +2424,23 @@ function buildTrackedDashboardCards(
         $equity = $walletEquity > 0.0 ? $walletEquity : ($liveTraderEquity > 0.0 ? $liveTraderEquity : null);
         $wallet['equity_value'] = $walletEquity;
         $liveTrader['equity_value'] = $liveTraderEquity;
-        $netPnl = is_numeric($wallet['net_pnl'] ?? null)
-            ? (float)$wallet['net_pnl']
-            : (is_numeric($liveTrader['net_pnl'] ?? null)
-                ? (float)$liveTrader['net_pnl']
-                : (is_numeric($summary['paperProfit'] ?? null) ? (float)$summary['paperProfit'] : null));
+        // Carousel P&L is active trading P&L only. It deliberately excludes
+        // protected/withdrawn sell-off proceeds already removed from the active wallet.
+        $pnlState = $walletEquity > 0.0 ? $wallet : $liveTrader;
+        $netPnl = paperWalletActiveTradingPnl($pnlState);
         $strategyAlpha = is_numeric($wallet['strategy_alpha'] ?? null)
             ? (float)$wallet['strategy_alpha']
             : (is_numeric($liveTrader['strategy_alpha'] ?? null) ? (float)$liveTrader['strategy_alpha'] : null);
 
-        // Per-symbol output total: signed P&L plus only SELL proceeds that
-        // remain reserved and have not yet been reinvested into the asset.
+        // Per-symbol OUTPUT TOTAL keeps active trading P&L separate from
+        // completed sell-offs, then adds every real output ledger exactly once:
+        // active P&L + unreinvested sold proceeds + completed $50+ income locks.
         $trackedStateForOutput = $walletEquity > 0.0 ? $wallet : $liveTrader;
-        $trackedSoldCumulative = paperWalletSoldIntoCashKittyTotal($trackedStateForOutput);
-        $trackedSoldUnreinvested = min(
-            max(0.0, (float)$trackedSoldCumulative),
-            max(0.0, (float)($trackedStateForOutput['pending_rebuy_total'] ?? 0.0))
-        );
-        $trackedOutputTotal = (is_numeric($netPnl) ? (float)$netPnl : 0.0) + $trackedSoldUnreinvested;
+        $trackedSoldUnreinvested = paperWalletUnreinvestedSoldTotal($trackedStateForOutput);
+        $trackedIncomeLocked = paperWalletPrincipalSelloffCashedOutTotal($trackedStateForOutput);
+        $trackedOutputTotal = (is_numeric($netPnl) ? (float)$netPnl : 0.0)
+            + $trackedSoldUnreinvested
+            + $trackedIncomeLocked;
         $position = strtoupper(trim((string)($wallet['position'] ?? ($liveTrader['position'] ?? 'flat'))));
         if ($position === '') $position = 'FLAT';
         $signal = trim((string)($wallet['display_action'] ?? ($liveTrader['display_action'] ?? 'WATCHING')));
@@ -2089,6 +2494,7 @@ function buildTrackedDashboardCards(
             'net_value' => $netPnl,
             'net_class' => is_numeric($netPnl) ? ((float)$netPnl >= 0 ? 'good' : 'low') : 'medium',
             'sold_unreinvested_value' => round($trackedSoldUnreinvested, 6),
+            'income_locked_value' => round($trackedIncomeLocked, 6),
             'output_total_value' => round($trackedOutputTotal, 6),
             'output_total_label' => ($trackedOutputTotal >= 0.0 ? '+' : '-') . '$' . number_format(abs($trackedOutputTotal), 2),
             'alpha_label' => is_numeric($strategyAlpha)
@@ -2131,8 +2537,15 @@ function aggregateTrackedDashboardPortfolio(array $trackedDashboardCards, ?array
     $outputTotal = 0.0;
     $outputCount = 0;
     $unreinvestedSoldTotal = 0.0;
+    $incomeLockedTotal = 0.0;
+    $symbolBreakdown = [];
+    $seenSymbols = [];
     foreach ($trackedDashboardCards as $card) {
         if (!is_array($card)) continue;
+        $symbolKey = strtolower(trim((string)($card['market'] ?? '')))
+            . ':' . strtoupper(trim((string)($card['symbol'] ?? '')));
+        if ($symbolKey === ':' || isset($seenSymbols[$symbolKey])) continue;
+        $seenSymbols[$symbolKey] = true;
         if (is_numeric($card['net_value'] ?? null)) {
             $netPnl += (float)$card['net_value'];
             $netCount++;
@@ -2148,6 +2561,28 @@ function aggregateTrackedDashboardPortfolio(array $trackedDashboardCards, ?array
         if (is_numeric($card['sold_unreinvested_value'] ?? null)) {
             $unreinvestedSoldTotal += max(0.0, (float)$card['sold_unreinvested_value']);
         }
+        if (is_numeric($card['income_locked_value'] ?? null)) {
+            $incomeLockedTotal += max(0.0, (float)$card['income_locked_value']);
+        }
+        $cardPnl = is_numeric($card['net_value'] ?? null) ? (float)$card['net_value'] : 0.0;
+        $cardSold = is_numeric($card['sold_unreinvested_value'] ?? null)
+            ? max(0.0, (float)$card['sold_unreinvested_value']) : 0.0;
+        $cardLocked = is_numeric($card['income_locked_value'] ?? null)
+            ? max(0.0, (float)$card['income_locked_value']) : 0.0;
+        $cardCalculated = $cardPnl + $cardSold + $cardLocked;
+        $cardStored = is_numeric($card['output_total_value'] ?? null)
+            ? (float)$card['output_total_value'] : $cardCalculated;
+        $symbolBreakdown[] = [
+            'key' => $symbolKey,
+            'market' => strtoupper((string)($card['market'] ?? '')),
+            'symbol' => strtoupper((string)($card['symbol'] ?? '')),
+            'active_pnl' => round($cardPnl, 6),
+            'unreinvested_sold' => round($cardSold, 6),
+            'locked_income' => round($cardLocked, 6),
+            'calculated_total' => round($cardCalculated, 6),
+            'stored_total' => round($cardStored, 6),
+            'difference' => round($cardStored - $cardCalculated, 6),
+        ];
     }
     $globalEffective = is_array($globalObservationState) && is_numeric($globalObservationState['effective_percent'] ?? null)
         ? (float)$globalObservationState['effective_percent']
@@ -2163,6 +2598,8 @@ function aggregateTrackedDashboardPortfolio(array $trackedDashboardCards, ?array
             . ($globalFlipped ? ' flipped' : '')
             . ' across ' . $globalTotal . ' observations'
         : 'global forecast unscored';
+    $componentTotal = $netPnl + $unreinvestedSoldTotal + $incomeLockedTotal;
+    $reconciliationDifference = $outputTotal - $componentTotal;
     return [
         'net_pnl' => round($netPnl, 6),
         'net_count' => $netCount,
@@ -2175,11 +2612,16 @@ function aggregateTrackedDashboardPortfolio(array $trackedDashboardCards, ?array
         'output_count' => $outputCount,
         'output_total_label' => ($outputTotal >= 0.0 ? '+' : '-') . '$' . number_format(abs($outputTotal), 2),
         'unreinvested_sold_total' => round($unreinvestedSoldTotal, 6),
+        'income_locked_total' => round($incomeLockedTotal, 6),
+        'component_total' => round($componentTotal, 6),
+        'reconciliation_difference' => round($reconciliationDifference, 6),
+        'reconciled' => abs($reconciliationDifference) < 0.005,
+        'symbol_breakdown' => $symbolBreakdown,
         'global_accuracy_effective' => $globalEffective,
         'global_accuracy_historical' => $globalHistorical,
         'global_accuracy_flipped' => $globalFlipped,
         'global_accuracy_total' => $globalTotal,
-        'note_label' => $netCount . ' tracked assets • portfolio P&L'
+        'note_label' => $netCount . ' tracked assets • OUTPUT = active P&L + unreinvested sold + locked income'
             . "\n" . 'strategy alpha ' . ($strategyAlpha >= 0.0 ? '+' : '-') . '$' . number_format(abs($strategyAlpha), 2)
             . ' across ' . $strategyAlphaCount
             . "\n" . $globalNote,
@@ -2357,6 +2799,7 @@ $remove_tracked_symbol = is_string($_POST['remove_symbol'] ?? null)
 $wallet_bootstrap_path = paperWalletBootstrapPath($dir, $market_type, $ticker);
 $model_wallet_state_path = $dir . $ticker . '-model-wallet-state.json';
 $wallet_cash_out_pin_path = paperWalletCashOutPinPath($dir, $market_type, $ticker);
+$delayed_alpaca_fill_reconciliation = reconcileDelayedAlpacaFillsIntoWallet($model_wallet_state_path, $market_type, $ticker);
 $current_wallet_cash_out_pin = loadOrCreateCashOutPin($wallet_cash_out_pin_path, $market_type, $ticker);
 if ($wallet_reset_requested) {
     if (!walletResetPasswordMatches($configured_wallet_reset_password, $provided_wallet_reset_password)) {
@@ -4188,6 +4631,118 @@ function syncObservationSourceRows(string $observationPath, string $sourcePath, 
  * Download fresh Yahoo Finance chart data and convert it to the CSV layout
  * expected by CNGN::bitcoin(): Date,Open,High,Low,Close,Adj Close,Volume.
  */
+
+/**
+ * Return the latest daily OHLC rows for the Spot Pulse table.
+ * The response is cached briefly so the 15-second dashboard refresh does not
+ * create a new remote daily-chart request every time.
+ */
+function fetchYahooDailyOhlcRows(string $ticker, string $cacheDirectory, int $limit = 15): array
+{
+    $limit = max(1, min(60, $limit));
+    $safeTicker = preg_replace('/[^A-Z0-9._-]/i', '_', strtoupper(trim($ticker)));
+    $cachePath = rtrim($cacheDirectory, '/\\') . DIRECTORY_SEPARATOR . $safeTicker . '-daily-ohlc.json';
+    $cached = loadLocalJsonArray($cachePath);
+    $cachedRows = is_array($cached['rows'] ?? null) ? $cached['rows'] : [];
+    $cachedAt = (int)($cached['fetched_at'] ?? 0);
+    if ($cachedRows && $cachedAt > 0 && (time() - $cachedAt) < 60) {
+        return array_slice($cachedRows, -$limit);
+    }
+
+    $encoded = rawurlencode($ticker);
+    $path = "/v8/finance/chart/{$encoded}?range=1mo&interval=1d&includePrePost=false&events=div%2Csplits&_=" . time();
+    $headers = [
+        'Accept: application/json',
+        'Cache-Control: no-cache',
+        'User-Agent: Mozilla/5.0 (compatible; CST-Market-Wave/1.0)',
+    ];
+    $body = false;
+    foreach (['query1.finance.yahoo.com', 'query2.finance.yahoo.com'] as $host) {
+        $url = 'https://' . $host . $path;
+        if (function_exists('curl_init')) {
+            $curl = curl_init($url);
+            curl_setopt_array($curl, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_FOLLOWLOCATION => true,
+                CURLOPT_CONNECTTIMEOUT => 5,
+                CURLOPT_TIMEOUT => 10,
+                CURLOPT_HTTPHEADER => $headers,
+                CURLOPT_ENCODING => '',
+            ]);
+            $body = curl_exec($curl);
+            $status = (int)curl_getinfo($curl, CURLINFO_HTTP_CODE);
+            curl_close($curl);
+            if (is_string($body) && $body !== '' && $status >= 200 && $status < 300) break;
+        } else {
+            $context = stream_context_create(['http' => [
+                'method' => 'GET',
+                'timeout' => 10,
+                'ignore_errors' => true,
+                'header' => implode("\r\n", $headers),
+            ]]);
+            $body = @file_get_contents($url, false, $context);
+            if (is_string($body) && $body !== '') break;
+        }
+    }
+
+    $json = is_string($body) ? json_decode($body, true) : null;
+    $result = is_array($json) ? ($json['chart']['result'][0] ?? null) : null;
+    $timestamps = is_array($result['timestamp'] ?? null) ? $result['timestamp'] : [];
+    $quote = is_array($result['indicators']['quote'][0] ?? null) ? $result['indicators']['quote'][0] : [];
+    $rows = [];
+    foreach ($timestamps as $index => $timestamp) {
+        $open = $quote['open'][$index] ?? null;
+        $high = $quote['high'][$index] ?? null;
+        $low = $quote['low'][$index] ?? null;
+        $close = $quote['close'][$index] ?? null;
+        if (!is_numeric($timestamp) || !is_numeric($open) || !is_numeric($high) || !is_numeric($low) || !is_numeric($close)) continue;
+        $open = (float)$open;
+        $high = (float)$high;
+        $low = (float)$low;
+        $close = (float)$close;
+        if ($open <= 0.0 || $high <= 0.0 || $low <= 0.0 || $close <= 0.0) continue;
+        $rows[] = [
+            'date' => gmdate('Y-m-d', (int)$timestamp),
+            'open' => $open,
+            'high' => $high,
+            'low' => $low,
+            'close' => $close,
+            'pnl' => $close - $open,
+            'pnl_percent' => $open != 0.0 ? (($close - $open) / $open) * 100.0 : 0.0,
+            'current' => false,
+        ];
+    }
+    if ($rows) {
+        saveLocalJsonArray($cachePath, ['fetched_at' => time(), 'rows' => $rows]);
+        return array_slice($rows, -$limit);
+    }
+    return array_slice($cachedRows, -$limit);
+}
+
+function renderSpotPulseDailyRows(array $rows): string
+{
+    if (!$rows) {
+        return '<tr><td colspan="7" class="spot-pulse-empty">Daily OHLC unavailable</td></tr>';
+    }
+    $html = '';
+    foreach (array_reverse($rows) as $row) {
+        if (!is_array($row)) continue;
+        $pnl = (float)($row['pnl'] ?? 0.0);
+        $tone = $pnl > 0.0 ? 'is-positive' : ($pnl < 0.0 ? 'is-negative' : 'is-flat');
+        $current = (($row['current'] ?? false) === true);
+        $html .= '<tr' . ($current ? ' class="is-current"' : '') . '>'
+            . '<td>' . htmlspecialchars((string)($row['date'] ?? '')) . ($current ? '<small>LIVE</small>' : '') . '</td>'
+            . '<td>' . number_format((float)($row['open'] ?? 0.0), 2) . '</td>'
+            . '<td>' . number_format((float)($row['high'] ?? 0.0), 2) . '</td>'
+            . '<td>' . number_format((float)($row['low'] ?? 0.0), 2) . '</td>'
+            . '<td>' . number_format((float)($row['close'] ?? 0.0), 2) . '</td>'
+            . '<td class="' . $tone . '">' . ($pnl >= 0.0 ? '+' : '') . number_format($pnl, 2) . '</td>'
+            . '<td class="' . $tone . '">' . ($pnl >= 0.0 ? '+' : '') . number_format((float)($row['pnl_percent'] ?? 0.0), 2) . '%</td>'
+            . '</tr>';
+    }
+    return $html;
+}
+
 function fetchYahooChartCsv(string $ticker, string $range = '5d', int $minimumPoints = 100, string $marketType = 'crypto'): array
 {
     $encoded = rawurlencode($ticker);
@@ -7519,11 +8074,41 @@ function cashOutAndRebalancePaperWallet(
     }
     $sellRequest = exchangeFloorTradeRequestAmount('SELL', $excessHoldings, (float)($executionContext['minimum_funds'] ?? MIN_TRADE_AMOUNT));
     $sellRequest = min($sellRequest, $holdingValueBefore);
-    $fillFn = function_exists('resolvePaperOrSandboxFill') ? 'resolvePaperOrSandboxFill' : 'paperExecutionFill';
-    $sellFill = $fillFn('SELL', $sellRequest, $holdingValueBefore, $price, $executionContext, $unitsBefore, true);
-    if (($sellFill['eligible'] ?? false) !== true || (float)($sellFill['units'] ?? 0.0) <= 0.0) {
-        $state['display_action'] = 'CASH OUT · SELL BLOCKED';
+
+    // Cash Out is an execution request, not a local accounting shortcut. A
+    // broker-routed sandbox/paper SELL must be attempted and filled before any
+    // wallet units or cash-out ledgers are changed.
+    if (!function_exists('resolvePaperOrSandboxFill')) {
+        $state['display_action'] = 'CASH OUT · BROKER EXECUTION ROUTE UNAVAILABLE';
+        $state['cash_out_blocked_reason'] = 'BROKER_EXECUTION_ROUTE_UNAVAILABLE';
         $state['cash_out_refill_pending'] = false;
+        $state['cash_out_last_executed'] = false;
+        saveLocalJsonArray($walletStatePath, normalizeTraderDisplayState($state));
+        return $state;
+    }
+    $cashOutContext = $executionContext;
+    $cashOutContext['client_order_id'] = 'cashout-' . strtolower(preg_replace('/[^a-z0-9]+/i', '-', $symbol))
+        . '-' . gmdate('YmdHis') . '-' . bin2hex(random_bytes(3));
+    $cashOutContext['execution_reason'] = 'CASH_OUT_BROKER_SELL';
+    $sellFill = resolvePaperOrSandboxFill('SELL', $sellRequest, $holdingValueBefore, $price, $cashOutContext, $unitsBefore, true);
+    $brokerFilled = (($sellFill['broker_attempted'] ?? false) === true)
+        && (($sellFill['broker_accepted'] ?? false) === true)
+        && (($sellFill['broker_filled'] ?? false) === true);
+    if (($sellFill['eligible'] ?? false) !== true || !$brokerFilled || (float)($sellFill['units'] ?? 0.0) <= 0.0) {
+        $reason = trim((string)($sellFill['blocked_reason'] ?? $sellFill['broker_message'] ?? 'BROKER SELL NOT FILLED'));
+        $state['display_action'] = 'CASH OUT · SELL NOT FILLED' . ($reason !== '' ? ' · ' . $reason : '');
+        $state['cash_out_blocked_reason'] = $reason !== '' ? $reason : 'BROKER_SELL_NOT_FILLED';
+        $state['cash_out_refill_pending'] = false;
+        $state['cash_out_last_executed'] = false;
+        $state['cash_out_last_broker'] = [
+            'provider' => (string)($sellFill['broker_provider'] ?? ''),
+            'mode' => (string)($sellFill['broker_mode'] ?? ''),
+            'order_id' => (string)($sellFill['broker_order_id'] ?? ''),
+            'client_order_id' => (string)($sellFill['broker_client_order_id'] ?? ''),
+            'status' => (string)($sellFill['broker_status'] ?? ''),
+            'message' => (string)($sellFill['broker_message'] ?? ''),
+            'mock_fill' => (($sellFill['broker_mock_fill'] ?? false) === true),
+        ];
         saveLocalJsonArray($walletStatePath, normalizeTraderDisplayState($state));
         return $state;
     }
@@ -7531,8 +8116,29 @@ function cashOutAndRebalancePaperWallet(
     $maxSellUnits = max(0.0, $unitsBefore - ($price > 0.0 ? ($KEEP_HOLDINGS / $price) : 0.0));
     if ($maxSellUnits > 0.0 && $sellUnits > $maxSellUnits * 1.001) {
         $tighter = min($excessHoldings, $maxSellUnits * $price);
-        $sellFill = $fillFn('SELL', exchangeFloorTradeRequestAmount('SELL', $tighter, (float)($executionContext['minimum_funds'] ?? MIN_TRADE_AMOUNT)), $holdingValueBefore, $price, $executionContext, $unitsBefore, true);
-        if (($sellFill['eligible'] ?? false) === true) $sellUnits = (float)($sellFill['units'] ?? 0.0);
+        $cashOutContext['client_order_id'] = 'cashout-tight-' . strtolower(preg_replace('/[^a-z0-9]+/i', '-', $symbol))
+            . '-' . gmdate('YmdHis') . '-' . bin2hex(random_bytes(3));
+        $sellFill = resolvePaperOrSandboxFill(
+            'SELL',
+            exchangeFloorTradeRequestAmount('SELL', $tighter, (float)($executionContext['minimum_funds'] ?? MIN_TRADE_AMOUNT)),
+            $holdingValueBefore,
+            $price,
+            $cashOutContext,
+            $unitsBefore,
+            true
+        );
+        $tightBrokerFilled = (($sellFill['broker_attempted'] ?? false) === true)
+            && (($sellFill['broker_accepted'] ?? false) === true)
+            && (($sellFill['broker_filled'] ?? false) === true);
+        if (($sellFill['eligible'] ?? false) === true && $tightBrokerFilled) {
+            $sellUnits = (float)($sellFill['units'] ?? 0.0);
+        } else {
+            $state['display_action'] = 'CASH OUT · TIGHTENED BROKER SELL NOT FILLED';
+            $state['cash_out_blocked_reason'] = (string)($sellFill['blocked_reason'] ?? 'TIGHTENED_BROKER_SELL_NOT_FILLED');
+            $state['cash_out_last_executed'] = false;
+            saveLocalJsonArray($walletStatePath, normalizeTraderDisplayState($state));
+            return $state;
+        }
     }
     $costPortion = $unitsBefore > 0.0 ? $costBasisBefore * ($sellUnits / $unitsBefore) : 0.0;
     $realizedPnl = (float)$sellFill['net_cash_amount'] - $costPortion;
@@ -7555,11 +8161,31 @@ function cashOutAndRebalancePaperWallet(
     $costAfter = max(0.0, $costBasisBefore - $costPortion);
     $holdingAfter = $unitsAfter * $price;
     $sellEvent = [
-        'action' => 'SELL', 'label' => 'CASH OUT · TO KITTY', 'executed' => true,
-        'amount' => round($netProceeds, 8), 'units' => round($sellUnits, 12),
+        'action' => 'SELL',
+        'side' => 'SELL',
+        'trade_side' => 'SELL',
+        'trade_reason' => 'CASH_OUT_BROKER_SELL',
+        'label' => 'CASH OUT · BROKER SELL FILLED · TO KITTY',
+        'executed' => true,
+        'amount' => round($netProceeds, 8),
+        'units' => round($sellUnits, 12),
         'price' => (float)($sellFill['fill_price'] ?? $price),
+        'fill_price' => (float)($sellFill['fill_price'] ?? $price),
         'fee_amount' => (float)($sellFill['fee_amount'] ?? 0.0),
-        'realized_pnl' => round($realizedPnl, 8), 'to_kitty' => true, 'time' => $eventTime,
+        'realized_pnl' => round($realizedPnl, 8),
+        'to_kitty' => true,
+        'time' => $eventTime,
+        'broker_attempted' => (bool)($sellFill['broker_attempted'] ?? false),
+        'broker_accepted' => (bool)($sellFill['broker_accepted'] ?? false),
+        'broker_filled' => (bool)($sellFill['broker_filled'] ?? false),
+        'broker_provider' => (string)($sellFill['broker_provider'] ?? ''),
+        'broker_mode' => (string)($sellFill['broker_mode'] ?? ''),
+        'broker_order_id' => (string)($sellFill['broker_order_id'] ?? ''),
+        'broker_client_order_id' => (string)($sellFill['broker_client_order_id'] ?? ''),
+        'broker_status' => (string)($sellFill['broker_status'] ?? ''),
+        'broker_message' => (string)($sellFill['broker_message'] ?? ''),
+        'broker_mock_fill' => (bool)($sellFill['broker_mock_fill'] ?? false),
+        'execution_source' => (string)($sellFill['execution_source'] ?? ''),
     ];
     $position = $unitsAfter > 0.00000001 ? 'long' : 'flat';
     $avgCost = ($unitsAfter > 0.0 && $costAfter > 0.0) ? ($costAfter / $unitsAfter) : null;
@@ -7580,6 +8206,19 @@ function cashOutAndRebalancePaperWallet(
     $state['equity_value'] = round(paperWalletTotalEquity($state, $cashAfter, $holdingAfter), 8);
     $state['last_trade'] = $sellEvent;
     $state['last_trade_pnl'] = round($realizedPnl, 8);
+    $state['cash_out_last_executed'] = true;
+    $state['cash_out_last_broker'] = [
+        'provider' => (string)($sellFill['broker_provider'] ?? ''),
+        'mode' => (string)($sellFill['broker_mode'] ?? ''),
+        'order_id' => (string)($sellFill['broker_order_id'] ?? ''),
+        'client_order_id' => (string)($sellFill['broker_client_order_id'] ?? ''),
+        'status' => (string)($sellFill['broker_status'] ?? ''),
+        'message' => (string)($sellFill['broker_message'] ?? ''),
+        'mock_fill' => (($sellFill['broker_mock_fill'] ?? false) === true),
+        'fill_price' => (float)($sellFill['fill_price'] ?? $price),
+        'filled_units' => round($sellUnits, 12),
+        'net_proceeds' => round($netProceeds, 8),
+    ];
     $state['trades'] = $trades;
     $state['events_by_time'] = $events;
     $state['cash_out_refill_pending'] = false;
@@ -7812,6 +8451,28 @@ function paperWalletSoldIntoCashKittyTotal(array $state): float
     return max($stored, $derived);
 }
 
+function paperWalletUnreinvestedSoldTotal(array $state): float
+{
+    $soldTotal = paperWalletSoldIntoCashKittyTotal($state);
+
+    // Prefer the live reserve queue because it is reduced as sell-funded BUYs
+    // consume the proceeds. Fall back to the persisted aggregate for compacted
+    // wallets that no longer retain every queue row.
+    $queueRemaining = 0.0;
+    $queueObserved = false;
+    foreach ((array)($state['pending_rebuys'] ?? []) as $reserve) {
+        if (!is_array($reserve) || !is_numeric($reserve['remaining_amount'] ?? null)) continue;
+        $queueObserved = true;
+        $queueRemaining += max(0.0, (float)$reserve['remaining_amount']);
+    }
+    $persistedRemaining = is_numeric($state['pending_rebuy_total'] ?? null)
+        ? max(0.0, (float)$state['pending_rebuy_total'])
+        : 0.0;
+    $remaining = $queueObserved ? $queueRemaining : $persistedRemaining;
+
+    return min(max(0.0, $soldTotal), max(0.0, $remaining));
+}
+
 function paperWalletPrincipalSelloffCashedOutTotal(array $state): float
 {
     $total = 0.0;
@@ -7864,6 +8525,25 @@ function paperWalletTotalEquity(array $state, ?float $cash = null, ?float $holdi
         ? max(0.0, $holdingValue)
         : max(0.0, (float)($state['holding_value'] ?? 0.0));
     return $activeCash + $activeHolding + paperWalletExternalKittyTotal($state);
+}
+
+/**
+ * Display-only active trading P&L. Protected/withdrawn sell-off proceeds are
+ * intentionally excluded so carousel P&L cannot count income that has already
+ * left the active paper wallet.
+ */
+function paperWalletActiveTradingPnl(array $state): float
+{
+    $activeValue = max(0.0, (float)($state['cash_left'] ?? 0.0))
+        + max(0.0, (float)($state['holding_value'] ?? 0.0));
+
+    $baseline = is_numeric($state['portfolio_pnl_baseline'] ?? null)
+        ? max(0.0, (float)$state['portfolio_pnl_baseline'])
+        : (is_numeric($state['starting_pot'] ?? null)
+            ? max(0.0, (float)$state['starting_pot'])
+            : 0.0);
+
+    return $activeValue - $baseline;
 }
 
 /** Normalize all wallet totals from the real component pools. */
@@ -8115,6 +8795,7 @@ function applySpiralDownCircuitBreaker(
     $verifiedSamples = max(0, (int)($metricContext['verified_samples'] ?? 0));
     $bellEligible = (($metricContext['bell_eligible'] ?? false) === true);
     $effectiveConfidence = max(0.0, min(100.0, (float)($metricContext['effective_confidence'] ?? 0.0)));
+    $liveGuessPercent = max(0.0, min(100.0, (float)($metricContext['live_guess_percent'] ?? $effectiveConfidence)));
     $combinedCompression = max(0.0, min(100.0, (float)($metricContext['combined_compression'] ?? 0.0)));
     $internalAgreement = max(0.0, min(100.0, (float)($metricContext['internal_agreement'] ?? 0.0)));
     $evidenceSource = strtoupper(trim((string)($metricContext['evidence_source'] ?? 'NONE')));
@@ -8180,6 +8861,30 @@ function applySpiralDownCircuitBreaker(
             $guard['recovery_confirmations'] = 0;
             $guard['last_recovery_hour'] = null;
         }
+    }
+
+    if (($guard['paused'] ?? false) === true && $liveGuessPercent > 65.0) {
+        // The live latest-12 template score is the immediate SELL-resume authority.
+        // BUY behavior is unchanged; only the SELL pause is cleared here.
+        $guard['paused'] = false;
+        $guard['status'] = 'MONITORING';
+        $guard['reason'] = 'SELLS RESUMED · LIVE GUESS ' . number_format($liveGuessPercent, 1) . '% > 65%';
+        $guard['resumed_at'] = $boundaryTime !== '' ? $boundaryTime : gmdate('Y-m-d\TH:i:s\Z');
+        $guard['recovery_ready'] = false;
+        $guard['recovery_confirmations'] = 0;
+        $guard['last_recovery_hour'] = null;
+        $guard['trade_count_ignore_before'] = count($trades);
+        $guard['peak_equity'] = round(max(0.00000001, $currentEquity), 8);
+        $guard['peak_rebased'] = true;
+        $guard['drawdown_percent'] = 0.0;
+        $history = $boundaryTime !== ''
+            ? [[
+                'time' => $boundaryTime,
+                'equity' => round($currentEquity, 8),
+                'strategy_alpha_percent' => round($strategyAlphaPercent, 8),
+                'price' => round(max(0.0, $currentPrice), 8),
+            ]]
+            : [];
     }
 
     if (($guard['paused'] ?? false) === true) {
@@ -9958,7 +10663,10 @@ function updatePaperBreakTrader(
                 'source' => 'BREAK_TRADER_PAPER',
                 'quote_source' => 'CURRENT_PRICE',
             ];
-            $buyFill = paperExecutionFill(
+            $breakExecutionContext['market_type'] = (string)($state['market_type'] ?? $state['asset_type'] ?? '');
+            $breakExecutionContext['symbol'] = (string)($state['symbol'] ?? $state['ticker'] ?? '');
+            $breakExecutionContext['client_order_id'] = 'break-buy-' . substr(hash('sha256', $observedTime . '|' . $currentPrice), 0, 24);
+            $buyFill = resolvePaperOrSandboxFill(
                 'BUY',
                 $requestedBuyAmount,
                 (float)$state['cash_left'],
@@ -10531,12 +11239,14 @@ function buildModelPaperTraderState(
                 }
                 $buyAmount = exchangeFloorTradeRequestAmount('BUY', $buyAmount, $minimumFunds);
                 $buySizing = canonicalTradeSizing('BUY', $buyAmount, (float)$state['cash_left'], $minimumFunds, $minimumFundsSource);
-                $buyFill = paperExecutionFill(
+                $brokerBuyContext = $executionContext;
+                $brokerBuyContext['client_order_id'] = 'model-buy-' . substr(hash('sha256', $time . '|' . $tradePrice . '|' . (float)$buySizing['requested_amount']), 0, 24);
+                $buyFill = resolvePaperOrSandboxFill(
                     'BUY',
                     (float)$buySizing['requested_amount'],
                     (float)$state['cash_left'],
                     $tradePrice,
-                    $executionContext,
+                    $brokerBuyContext,
                     0.0,
                     false
                 );
@@ -10676,12 +11386,14 @@ function buildModelPaperTraderState(
                 $state['display_action'] = 'HOLD LONG · EACH LOT MUST MEET BREAK';
                 continue;
             }
-            $sellFill = paperExecutionFill(
+            $brokerSellContext = $executionContext;
+            $brokerSellContext['client_order_id'] = 'model-sell-' . substr(hash('sha256', $time . '|' . $tradePrice . '|' . $sellBaseAmount), 0, 24);
+            $sellFill = resolvePaperOrSandboxFill(
                 'SELL',
                 exchangeFloorTradeRequestAmount('SELL', $sellBaseAmount, $minimumFunds),
                 $sellAvailableAmount,
                 $tradePrice,
-                $executionContext,
+                $brokerSellContext,
                 $eligibleLotUnits,
                 false
             );
@@ -11005,12 +11717,14 @@ function applyPrincipalIncomeLock(
 
     // Request enough gross notional to externalize the complete active excess.
     $requested = min($holding, $excess);
-    $fill = paperExecutionFill(
+    $principalLockContext = $executionContext;
+    $principalLockContext['client_order_id'] = 'principal-lock-' . substr(hash('sha256', $eventKey . '|' . $requested), 0, 24);
+    $fill = resolvePaperOrSandboxFill(
         'SELL',
         $requested,
         $holding,
         $currentPrice,
-        $executionContext,
+        $principalLockContext,
         $units,
         true
     );
@@ -13141,6 +13855,31 @@ if ($current_price <= 0.0 && is_numeric($cron_summary['currentPrice'] ?? null)) 
         $hour_price_percentage = ($hour_price_change / $hour_reference_price) * 100.0;
     }
 }
+$spot_pulse_daily_rows = fetchYahooDailyOhlcRows($ticker, $dir, 15);
+if ($spot_pulse_daily_rows) {
+    $lastDailyIndex = count($spot_pulse_daily_rows) - 1;
+    $todayUtc = gmdate('Y-m-d');
+    $lastDailyDate = (string)($spot_pulse_daily_rows[$lastDailyIndex]['date'] ?? '');
+    if ($lastDailyDate === $todayUtc && $current_price > 0.0) {
+        $dayOpen = (float)($spot_pulse_daily_rows[$lastDailyIndex]['open'] ?? $current_price);
+        $spot_pulse_daily_rows[$lastDailyIndex]['close'] = $current_price;
+        $spot_pulse_daily_rows[$lastDailyIndex]['high'] = max(
+            (float)($spot_pulse_daily_rows[$lastDailyIndex]['high'] ?? $current_price),
+            $current_price
+        );
+        $spot_pulse_daily_rows[$lastDailyIndex]['low'] = min(
+            (float)($spot_pulse_daily_rows[$lastDailyIndex]['low'] ?? $current_price),
+            $current_price
+        );
+        $spot_pulse_daily_rows[$lastDailyIndex]['pnl'] = $current_price - $dayOpen;
+        $spot_pulse_daily_rows[$lastDailyIndex]['pnl_percent'] = $dayOpen != 0.0
+            ? (($current_price - $dayOpen) / $dayOpen) * 100.0
+            : 0.0;
+        $spot_pulse_daily_rows[$lastDailyIndex]['current'] = true;
+    }
+}
+$spot_pulse_daily_table_html = renderSpotPulseDailyRows($spot_pulse_daily_rows);
+
 $coinbase_product_rules = $market_type === 'crypto'
     ? fetchCoinbaseProductRules($ticker)
     : [];
@@ -13268,7 +14007,7 @@ if ($wallet_cash_out_requested) {
         $wallet_cash_out_requested = false;
     } else {
         backupPaperWalletFiles($model_wallet_state_path, $wallet_bootstrap_path, $ticker, 'cash-out-before-rebalance');
-        cashOutAndRebalancePaperWallet(
+        $cashOutState = cashOutAndRebalancePaperWallet(
             $model_wallet_state_path,
             $wallet_bootstrap_path,
             $market_type,
@@ -13277,20 +14016,26 @@ if ($wallet_cash_out_requested) {
             $early_boundary_key,
             $paper_execution_context
         );
-        deleteLocalFileIfExists($dir . $ticker . '-live-output.json');
-        deleteLocalFileIfExists($dir . $ticker . '-cron-summary.json');
-        $current_wallet_cash_out_pin = rotateCashOutPin($wallet_cash_out_pin_path, $market_type, $ticker);
-        if (PHP_SAPI !== 'cli') {
-            $redirectParams = $_GET;
-            $redirectParams['wallet_cash_out_done'] = '1';
-            unset($redirectParams['wallet_reset_done'], $redirectParams['run_analysis']);
-            $redirectParams['_'] = (string)time();
-            $scriptPath = (string)($_SERVER['PHP_SELF'] ?? 'index.php');
-            $redirectTarget = $scriptPath . ($redirectParams ? ('?' . http_build_query($redirectParams)) : '');
-            header('Location: ' . $redirectTarget);
-            exit;
+        $cashOutExecuted = (($cashOutState['cash_out_last_executed'] ?? false) === true);
+        if ($cashOutExecuted) {
+            deleteLocalFileIfExists($dir . $ticker . '-live-output.json');
+            deleteLocalFileIfExists($dir . $ticker . '-cron-summary.json');
+            $current_wallet_cash_out_pin = rotateCashOutPin($wallet_cash_out_pin_path, $market_type, $ticker);
+            if (PHP_SAPI !== 'cli') {
+                $redirectParams = $_GET;
+                $redirectParams['wallet_cash_out_done'] = '1';
+                unset($redirectParams['wallet_reset_done'], $redirectParams['run_analysis']);
+                $redirectParams['_'] = (string)time();
+                $scriptPath = (string)($_SERVER['PHP_SELF'] ?? 'index.php');
+                $redirectTarget = $scriptPath . ($redirectParams ? ('?' . http_build_query($redirectParams)) : '');
+                header('Location: ' . $redirectTarget);
+                exit;
+            }
+            $wallet_cash_out_done = true;
+        } else {
+            $wallet_cash_out_error = trim((string)($cashOutState['display_action'] ?? 'Cash out SELL was not filled by the sandbox broker.'));
+            $wallet_cash_out_done = false;
         }
-        $wallet_cash_out_done = true;
         $paper_wallet_bootstrap = loadOrCreatePaperWalletBootstrap(
             $wallet_bootstrap_path,
             $market_type,
@@ -15109,6 +15854,7 @@ $spiral_guard_metric_context = [
     'forecast_observation' => $forecast_observation_state,
     'bell_eligible' => $execution_bell_curve_eligible,
     'effective_confidence' => $execution_confidence,
+    'live_guess_percent' => $accuracy_effective,
     'combined_compression' => $combined_compression_score,
     'compression_token_takeover_active' => $compression_token_takeover_active,
     'compression_token_takeover_action' => $compression_token_takeover_action,
@@ -15298,19 +16044,17 @@ $paper_break_state['active_wallet_value'] = $paper_break_active_wallet_value;
 $paper_break_state['external_kitty_total'] = $paper_break_external_kitty_total;
 $paper_break_state = finalizeCanonicalTradingState($paper_break_state, $current_price);
 $paper_break_equity = (float)$paper_break_state['equity_value'];
-// OUTPUT TOTAL excludes the starting principal. It reflects only the
-// current signed trading P&L plus SELL proceeds that remain unreinvested.
+// OUTPUT TOTAL excludes starting principal but includes every output ledger:
+// active signed P&L + unreinvested sold proceeds + completed $50+ income locks.
 $principal_initial = max(0.0, (float)($paper_break_state['principal_initial'] ?? $paper_break_state['starting_pot'] ?? 10000.0));
-$paper_total_sold_cumulative = max(0.0, $paper_break_sold_into_cash_kitty_total);
-$paper_total_sold_unreinvested = min(
-    $paper_total_sold_cumulative,
-    max(0.0, (float)($paper_break_state['pending_rebuy_total'] ?? 0.0))
-);
-$paper_total_signed_pnl = (float)($paper_break_state['net_pnl'] ?? 0.0);
-$paper_total_reconciled = $paper_total_signed_pnl + $paper_total_sold_unreinvested;
-$paper_total_breakdown = ($paper_total_signed_pnl >= 0.0 ? 'P&L +$' : 'P&L -$')
+$paper_total_sold_unreinvested = paperWalletUnreinvestedSoldTotal($paper_break_state);
+$paper_total_signed_pnl = paperWalletActiveTradingPnl($paper_break_state);
+$paper_total_income_locked = paperWalletPrincipalSelloffCashedOutTotal($paper_break_state);
+$paper_total_reconciled = $paper_total_signed_pnl + $paper_total_sold_unreinvested + $paper_total_income_locked;
+$paper_total_breakdown = ($paper_total_signed_pnl >= 0.0 ? 'ACTIVE P&L +$' : 'ACTIVE P&L -$')
     . number_format(abs($paper_total_signed_pnl), 2)
-    . ' + UNREINVESTED SOLD $' . number_format($paper_total_sold_unreinvested, 2);
+    . ' + UNREINVESTED SOLD $' . number_format($paper_total_sold_unreinvested, 2)
+    . ' + LOCKED INCOME $' . number_format($paper_total_income_locked, 2);
 $principal_active_equity = max(0.0, (float)($paper_break_state['principal_active_equity'] ?? ((float)($paper_break_state['cash_left'] ?? 0.0) + (float)($paper_break_state['holding_value'] ?? 0.0))));
 $principal_active_excess = max(0.0, (float)($paper_break_state['principal_active_excess'] ?? ($principal_active_equity - $principal_initial)));
 $principal_income_locked_total = paperWalletPrincipalSelloffCashedOutTotal($paper_break_state);
@@ -16084,6 +16828,7 @@ $tracked_portfolio_net_count = (int)$tracked_portfolio_summary['net_count'];
 $tracked_portfolio_output_total = (float)($tracked_portfolio_summary['output_total'] ?? 0.0);
 $tracked_portfolio_output_count = (int)($tracked_portfolio_summary['output_count'] ?? 0);
 $tracked_portfolio_unreinvested_sold = (float)($tracked_portfolio_summary['unreinvested_sold_total'] ?? 0.0);
+$tracked_portfolio_income_locked = (float)($tracked_portfolio_summary['income_locked_total'] ?? 0.0);
 $tracked_strategy_alpha = (float)$tracked_portfolio_summary['strategy_alpha'];
 $tracked_strategy_alpha_count = (int)$tracked_portfolio_summary['strategy_alpha_count'];
 $tracked_link_groups = reconcileTrackedLinksWithDashboardCards($tracked_link_groups, $tracked_dashboard_cards);
@@ -16148,6 +16893,8 @@ if (isset($_GET['live']) && $_GET['live'] === '1') {
         'error' => $error_message,
         'updatedAt' => $updated_at,
         'dataNote' => $data_note,
+        'spotPulseDailyRows' => $spot_pulse_daily_rows,
+        'spotPulseDailyTableHtml' => $spot_pulse_daily_table_html,
         'accuracy' => $accuracy_effective,
         'accuracyHistorical' => $accuracy_historical,
         'accuracyEffective' => $accuracy_effective,
@@ -16312,6 +17059,12 @@ if (isset($_GET['live']) && $_GET['live'] === '1') {
         'autoBreakTrader' => $paper_break_state,
         'trackedDashboardCards' => $tracked_dashboard_cards,
         'trackedPortfolio' => $tracked_portfolio_summary,
+        'currentSymbolOutput' => [
+            'pnl' => round($paper_total_signed_pnl, 8),
+            'unreinvested_sold' => round($paper_total_sold_unreinvested, 8),
+            'income_locked' => round($paper_total_income_locked, 8),
+            'output_total' => round($paper_total_reconciled, 8),
+        ],
         'globalForecastObservationState' => $tracked_forecast_observation_state,
         'globalAccuracyHistorical' => $tracked_forecast_observation_state['historical_percent'] ?? null,
         'globalAccuracyEffective' => $tracked_forecast_observation_state['effective_percent'] ?? null,
@@ -16334,7 +17087,7 @@ if (isset($_GET['live']) && $_GET['live'] === '1') {
             'sold_into_cash_already_in_active_cash' => true,
             'initial_principal' => $principal_initial,
             'active_equity_above_principal' => $principal_active_excess,
-            'income_locked_total' => $principal_income_locked_total,
+            'income_locked_total' => $paper_total_income_locked,
             'next_income_lock_needed' => $principal_next_lock_needed,
         ],
         'averageChange' => $average_change,
@@ -16882,6 +17635,53 @@ $logic_poem_cycle = $logic_poem_pending_rebuys > 0
             font-size: .82rem;
         }
 
+        .spot-pulse-daily-wrap {
+            margin-top: 14px;
+            border: 1px solid rgba(201,164,90,.28);
+            border-radius: 12px;
+            overflow: auto;
+            max-height: 430px;
+            background: rgba(7,12,18,.42);
+        }
+        .spot-pulse-daily-table {
+            width: 100%;
+            min-width: 620px;
+            border-collapse: collapse;
+            font-variant-numeric: tabular-nums;
+            font-size: .76rem;
+        }
+        .spot-pulse-daily-table th,
+        .spot-pulse-daily-table td {
+            padding: 7px 8px;
+            text-align: right;
+            border-bottom: 1px solid rgba(201,164,90,.13);
+            white-space: nowrap;
+        }
+        .spot-pulse-daily-table th:first-child,
+        .spot-pulse-daily-table td:first-child { text-align: left; }
+        .spot-pulse-daily-table thead th {
+            position: sticky;
+            top: 0;
+            z-index: 2;
+            background: #17110d;
+            color: var(--muted);
+            letter-spacing: .06em;
+            font-size: .68rem;
+        }
+        .spot-pulse-daily-table tr.is-current td {
+            background: rgba(212,168,74,.10);
+            font-weight: 800;
+        }
+        .spot-pulse-daily-table td small {
+            margin-left: 6px;
+            color: var(--accent);
+            font-size: .58rem;
+        }
+        .spot-pulse-daily-table .is-positive { color: var(--accent); }
+        .spot-pulse-daily-table .is-negative { color: var(--danger); }
+        .spot-pulse-daily-table .is-flat { color: var(--muted); }
+        .spot-pulse-empty { text-align:center !important; color:var(--muted); }
+
         .market-pulse-metrics {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
@@ -17304,10 +18104,24 @@ $logic_poem_cycle = $logic_poem_pending_rebuys > 0
         .portfolio-total-float.medium .portfolio-total-value { color: #eef5ff; }
         .portfolio-total-float .portfolio-total-note {
             display: block;
-            margin-top: 3px;
-            color: #8fa4bd;
-            font-size: .68rem;
+            margin-top: 7px;
+            color: #c5d2e2;
+            font-size: .7rem;
+            line-height: 1.35;
         }
+        .portfolio-output-components { display:grid; grid-template-columns:1fr auto; gap:3px 10px; margin-top:9px; padding-top:8px; border-top:1px solid rgba(143,164,189,.24); font-size:.7rem; }
+        .portfolio-output-components span:nth-child(odd) { color:#8fa4bd; }
+        .portfolio-output-components strong { color:#eef5ff; text-align:right; }
+        .portfolio-reconcile-alert { display:none; margin-top:8px; padding:7px 9px; border-radius:9px; background:rgba(239,68,68,.16); border:1px solid rgba(239,68,68,.45); color:#fecaca; font-size:.7rem; font-weight:800; }
+        .portfolio-reconcile-alert.is-visible { display:block; }
+        .portfolio-symbol-details { margin-top:8px; }
+        .portfolio-symbol-details summary { cursor:pointer; color:#9fb4cb; font-size:.7rem; font-weight:800; }
+        .portfolio-symbol-list { margin-top:6px; display:grid; gap:5px; max-height:210px; overflow:auto; }
+        .portfolio-symbol-row { display:grid; grid-template-columns:minmax(54px,auto) repeat(4,auto); gap:7px; align-items:center; padding:5px 0; border-top:1px solid rgba(143,164,189,.14); font-size:.66rem; white-space:nowrap; }
+        .portfolio-symbol-row strong { color:#eef5ff; }
+        .portfolio-symbol-row span { color:#9fb4cb; }
+        .portfolio-symbol-row .is-negative { color:#fca5a5; }
+        .portfolio-symbol-row .is-positive { color:#86efac; }
         @media (max-width: 720px) {
             .portfolio-total-float {
                 right: 12px;
@@ -18402,10 +19216,22 @@ $logic_poem_cycle = $logic_poem_pending_rebuys > 0
 </head>
 <body class="compact-dashboard">
 <?php $tracked_portfolio_output_class = $tracked_portfolio_output_total > 0.00000001 ? 'good' : ($tracked_portfolio_output_total < -0.00000001 ? 'low' : 'medium'); ?>
-<aside id="portfolioTotalFloat" class="portfolio-total-float <?= htmlspecialchars($tracked_portfolio_output_class) ?>" aria-label="Combined output totals across tracked symbols">
-    <span class="portfolio-total-label">Cashed out</span>
+<aside id="portfolioTotalFloat" class="portfolio-total-float <?= htmlspecialchars($tracked_portfolio_output_class) ?>" aria-label="Reconciled output total across tracked symbols">
+    <span class="portfolio-total-label">Output total — all symbols</span>
     <strong id="portfolioTotalValue" class="portfolio-total-value"><?= $tracked_portfolio_output_total >= 0.0 ? '' : '-' ?>$<?= number_format(abs($tracked_portfolio_output_total), 2) ?></strong>
-    <span id="portfolioTotalNote" class="portfolio-total-note"><?= $tracked_portfolio_output_count ?> SYMBOLS • P&amp;L <?= $tracked_portfolio_net_pnl >= 0.0 ? '+' : '-' ?>$<?= number_format(abs($tracked_portfolio_net_pnl), 2) ?> + UNREINVESTED SOLD $<?= number_format($tracked_portfolio_unreinvested_sold, 2) ?></span>
+    <div class="portfolio-output-components" aria-label="Output total components">
+        <span>Active P&amp;L</span><strong id="portfolioActivePnl"><?= $tracked_portfolio_net_pnl >= 0.0 ? '+' : '-' ?>$<?= number_format(abs($tracked_portfolio_net_pnl), 2) ?></strong>
+        <span>Unreinvested sold</span><strong id="portfolioUnreinvestedSold">+$<?= number_format($tracked_portfolio_unreinvested_sold, 2) ?></strong>
+        <span>Locked income</span><strong id="portfolioLockedIncome">+$<?= number_format($tracked_portfolio_income_locked, 2) ?></strong>
+        <span>Component sum</span><strong id="portfolioComponentSum"><?= (($tracked_portfolio_net_pnl + $tracked_portfolio_unreinvested_sold + $tracked_portfolio_income_locked) >= 0.0 ? '+' : '-') ?>$<?= number_format(abs($tracked_portfolio_net_pnl + $tracked_portfolio_unreinvested_sold + $tracked_portfolio_income_locked), 2) ?></strong>
+    </div>
+    <?php $initialReconcileDiff = $tracked_portfolio_output_total - ($tracked_portfolio_net_pnl + $tracked_portfolio_unreinvested_sold + $tracked_portfolio_income_locked); ?>
+    <div id="portfolioReconcileAlert" class="portfolio-reconcile-alert<?= abs($initialReconcileDiff) >= 0.005 ? ' is-visible' : '' ?>">UNRECONCILED DIFFERENCE: <?= ($initialReconcileDiff >= 0 ? '+' : '-') ?>$<?= number_format(abs($initialReconcileDiff), 2) ?></div>
+    <span id="portfolioTotalNote" class="portfolio-total-note"><?= $tracked_portfolio_output_count ?> unique symbols. The large total must equal the three lines above.</span>
+    <details class="portfolio-symbol-details">
+        <summary>Show per-symbol reconciliation</summary>
+        <div id="portfolioSymbolList" class="portfolio-symbol-list"></div>
+    </details>
 </aside>
 <main class="shell">
     <?php if (!empty($tracked_marquee_links)): ?>
@@ -18815,6 +19641,14 @@ spiral_sells_paused=<?= $spiral_guard_paused ? 'true' : 'false' ?></pre>
                     <strong id="marketFeedValue"><?= htmlspecialchars($market_feed_label) ?></strong>
                 </div>
             </div>
+            <div class="spot-pulse-daily-wrap" aria-label="15-day Spot Pulse OHLC">
+                <table class="spot-pulse-daily-table">
+                    <thead>
+                        <tr><th>Date</th><th>O</th><th>H</th><th>L</th><th>C / Live</th><th>O→C P&amp;L</th><th>O→C %</th></tr>
+                    </thead>
+                    <tbody id="spotPulseDailyRows"><?= $spot_pulse_daily_table_html ?></tbody>
+                </table>
+            </div>
             <div id="marketDataNote" class="card-footnote"><?= htmlspecialchars($market_update_note) ?></div>
         </article>
 
@@ -18827,7 +19661,7 @@ spiral_sells_paused=<?= $spiral_guard_paused ? 'true' : 'false' ?></pre>
                 <span id="walletSeedChip" class="card-chip is-accent"><?= htmlspecialchars($wallet_seed_label) ?></span>
             </div>
             <div class="card-main">
-                <div id="autoBreakValue" class="metric-value strategy-value <?= $paper_break_class ?>"><?= htmlspecialchars($paper_break_value_label) ?></div>
+                <div id="autoBreakValue" class="metric-value strategy-value <?= $paper_total_signed_pnl > 0.00000001 ? 'good' : ($paper_total_signed_pnl < -0.00000001 ? 'low' : 'medium') ?>">ACTIVE P&amp;L <?= $paper_total_signed_pnl >= 0.0 ? '+' : '-' ?>$<?= number_format(abs($paper_total_signed_pnl), 2) ?></div>
                 <div id="autoBreakNote" class="metric-note metric-note--strong"><?= htmlspecialchars($paper_break_note) ?></div>
             </div>
             <div class="card-grid card-grid--wallet">
@@ -18859,7 +19693,7 @@ spiral_sells_paused=<?= $spiral_guard_paused ? 'true' : 'false' ?></pre>
                 <div class="summary-stat">
                     <span>Sold into cash kitty</span>
                     <strong id="walletSoldIntoCashKittyValue">$<?= number_format($paper_break_sold_into_cash_kitty_total, 2) ?></strong>
-                    <small>Only the unreinvested reserve is added to TOTAL PAPER</small>
+                    <small>Only the remaining unreinvested reserve contributes to OUTPUT TOTAL</small>
                 </div>
                 <div class="summary-stat">
                     <span>Withdrawn sold kitty</span>
@@ -18887,7 +19721,7 @@ spiral_sells_paused=<?= $spiral_guard_paused ? 'true' : 'false' ?></pre>
                 </div>
                 <div class="summary-stat">
                     <span>Portfolio P&amp;L</span>
-                    <strong id="walletNetMoveValue"><?= ($paper_break_sim_net_move >= 0 ? '+' : '-') . '$' . number_format(abs($paper_break_sim_net_move), 2) ?></strong>
+                    <strong id="walletNetMoveValue"><?= ($paper_total_signed_pnl >= 0 ? '+' : '-') . '$' . number_format(abs($paper_total_signed_pnl), 2) ?></strong>
                 </div>
                 <div class="summary-stat">
                     <span>Passive 50/50 benchmark</span>
@@ -19545,7 +20379,7 @@ F(T),&T\in\operatorname{dom}(F).
             </div>
 
             <h3>EDUCATIONAL SIMULATION ONLY — NO LIVE TRADING</h3>
-            <p>This livestream displays the CNGN model’s hypothetical five-minute signals for stocks and cryptocurrencies. No brokerage account is connected and no live orders are sent; every labeled execution is confined to the local paper wallet.</p>
+            <p>This livestream displays the CNGN model’s hypothetical five-minute signals for stocks and cryptocurrencies. Sandbox brokerage adapters may be connected. No live-money orders are permitted. Alpaca paper fills are broker-confirmed; Coinbase Advanced Trade sandbox responses are static mocks and are labeled as such.</p>
 
             <h3>SIGNAL KEY</h3>
             <div class="signal-key" aria-label="Simulation signal key">
@@ -19766,18 +20600,47 @@ function renderTrackedPortfolio(data) {
     const outputCount = Math.max(0, Number(portfolio.output_count || 0));
     const pnl = Number(portfolio.net_pnl || 0);
     const unreinvestedSold = Math.max(0, Number(portfolio.unreinvested_sold_total || 0));
-    const valueNode = setNodeText(
-        'portfolioTotalValue',
-        (outputTotal < 0 ? '-' : '') + '$' + number2(Math.abs(outputTotal))
-    );
+    const lockedIncome = Math.max(0, Number(portfolio.income_locked_total || 0));
+    const componentSum = pnl + unreinvestedSold + lockedIncome;
+    const difference = outputTotal - componentSum;
+    const signedMoney = value => `${value >= 0 ? '+' : '-'}$${number2(Math.abs(value))}`;
 
-    const noteNode = document.getElementById('portfolioTotalNote');
-    if (noteNode) {
-        noteNode.textContent = `${outputCount} SYMBOLS • P&L ${pnl >= 0 ? '+' : '-'}$${number2(Math.abs(pnl))}`
-            + ` + UNREINVESTED SOLD $${number2(unreinvestedSold)}`;
+    const valueNode = setNodeText('portfolioTotalValue', (outputTotal < 0 ? '-' : '') + '$' + number2(Math.abs(outputTotal)));
+    setNodeText('portfolioActivePnl', signedMoney(pnl));
+    setNodeText('portfolioUnreinvestedSold', '+$' + number2(unreinvestedSold));
+    setNodeText('portfolioLockedIncome', '+$' + number2(lockedIncome));
+    setNodeText('portfolioComponentSum', signedMoney(componentSum));
+    setNodeText('portfolioTotalNote', `${outputCount} UNIQUE SYMBOLS • LARGE TOTAL MUST EQUAL COMPONENT SUM`);
+
+    const alertNode = document.getElementById('portfolioReconcileAlert');
+    if (alertNode) {
+        alertNode.textContent = `UNRECONCILED DIFFERENCE: ${signedMoney(difference)}`;
+        alertNode.classList.toggle('is-visible', Math.abs(difference) >= 0.005);
     }
 
-    const tone = outputTotal > 0.00000001 ? 'good' : (outputTotal < -0.00000001 ? 'low' : 'medium');
+    const listNode = document.getElementById('portfolioSymbolList');
+    if (listNode) {
+        const rows = Array.isArray(portfolio.symbol_breakdown) ? portfolio.symbol_breakdown : [];
+        listNode.innerHTML = rows.map(row => {
+            const symbol = escapeHtml(String(row.symbol || '—'));
+            const market = escapeHtml(String(row.market || ''));
+            const active = Number(row.active_pnl || 0);
+            const sold = Math.max(0, Number(row.unreinvested_sold || 0));
+            const locked = Math.max(0, Number(row.locked_income || 0));
+            const total = active + sold + locked;
+            const activeClass = active < 0 ? 'is-negative' : (active > 0 ? 'is-positive' : '');
+            const totalClass = total < 0 ? 'is-negative' : (total > 0 ? 'is-positive' : '');
+            return `<div class="portfolio-symbol-row">`
+                + `<strong>${symbol}<small> ${market}</small></strong>`
+                + `<span class="${activeClass}">P&L ${signedMoney(active)}</span>`
+                + `<span>SOLD +$${number2(sold)}</span>`
+                + `<span>LOCKED +$${number2(locked)}</span>`
+                + `<span class="${totalClass}">TOTAL ${signedMoney(total)}</span>`
+                + `</div>`;
+        }).join('') || '<span>No symbol output records available.</span>';
+    }
+
+    const tone = Math.abs(difference) >= 0.005 ? 'low' : (outputTotal > 0.00000001 ? 'good' : (outputTotal < -0.00000001 ? 'low' : 'medium'));
     if (floatNode) {
         floatNode.classList.remove('good', 'medium', 'low');
         floatNode.classList.add(tone);
@@ -20500,12 +21363,18 @@ function renderAutoBreakTrader(state) {
         + ' (' + (cashoutRejoinLabel || 'REJOIN FEE') + ' $' + number2(cashoutRejoinFee) + ')';
     const bootstrapEntryPrice = Number(state.bootstrap_entry_price || 0);
     const bootstrapStartedAt = String(state.bootstrap_started_at || '');
+    const currentSymbolOutput = data && typeof data.currentSymbolOutput === 'object'
+        ? data.currentSymbolOutput
+        : null;
     const valueNode = document.getElementById('autoBreakValue');
     const noteNode = document.getElementById('autoBreakNote');
     if (!valueNode || !noteNode) return;
 
-    valueNode.textContent = 'PORTFOLIO P&L ' + (simNetMove >= 0 ? '+' : '-') + '$' + number2(Math.abs(simNetMove));
-    setToneClass(valueNode, simNetMove > 0 ? 'good' : (simNetMove < 0 ? 'low' : 'medium'));
+    const canonicalActivePnl = currentSymbolOutput
+        ? Number(currentSymbolOutput.pnl || 0)
+        : simNetMove;
+    valueNode.textContent = 'ACTIVE P&L ' + (canonicalActivePnl >= 0 ? '+' : '-') + '$' + number2(Math.abs(canonicalActivePnl));
+    setToneClass(valueNode, canonicalActivePnl > 0 ? 'good' : (canonicalActivePnl < 0 ? 'low' : 'medium'));
 
     let noteText = position.toUpperCase()
         + ' • ' + action
@@ -20525,11 +21394,20 @@ function renderAutoBreakTrader(state) {
     const liveHolding = Math.max(0, Number(state.holding_value || 0));
     // Add only SELL proceeds that have not yet been reinvested. The open
     // sell-funded rebuy reserve falls as matching BUYs consume those proceeds.
-    const liveTradingPnl = Number(state.net_pnl || 0);
+    const liveTradingPnl = currentSymbolOutput
+        ? Number(currentSymbolOutput.pnl || 0)
+        : Number(state.net_pnl || 0);
     const livePrincipal = Math.max(0, Number(state.principal_initial || state.starting_pot || 10000));
     const livePendingRebuy = Math.max(0, Number(state.pending_rebuy_total || 0));
-    const liveUnreinvestedSold = Math.min(liveSoldIntoCashKitty, livePendingRebuy);
-    const liveTotalPaper = liveTradingPnl + liveUnreinvestedSold;
+    const liveUnreinvestedSold = currentSymbolOutput
+        ? Math.max(0, Number(currentSymbolOutput.unreinvested_sold || 0))
+        : Math.min(liveSoldIntoCashKitty, livePendingRebuy);
+    const liveLockedIncome = currentSymbolOutput
+        ? Math.max(0, Number(currentSymbolOutput.income_locked || 0))
+        : Math.max(0, Number(state.principal_income_locked_total || 0));
+    const liveTotalPaper = currentSymbolOutput
+        ? Number(currentSymbolOutput.output_total || 0)
+        : liveTradingPnl + liveUnreinvestedSold + liveLockedIncome;
     setNodeText(
         'walletPotValue',
         (liveTotalPaper < 0 ? '-$' : '$') + number2(Math.abs(liveTotalPaper))
@@ -20559,7 +21437,7 @@ function renderAutoBreakTrader(state) {
     setNodeText('walletAssetRefillAvailableValue', '$' + number2(cashoutAssetRefillAvailable));
     const liveReserved = Math.max(0, Number(state.reserved_cash || state.pending_rebuy_total || 0));
     setNodeText('walletReservedValue', '$' + number2(liveReserved));
-    setNodeText('walletNetMoveValue', `${simNetMove >= 0 ? '+' : '-'}$${number2(Math.abs(simNetMove))}`);
+    setNodeText('walletNetMoveValue', `${liveTradingPnl >= 0 ? '+' : '-'}$${number2(Math.abs(liveTradingPnl))}`);
     setNodeText('walletBenchmarkValue', `${benchmarkPnl >= 0 ? '+' : '-'}$${number2(Math.abs(benchmarkPnl))}`);
     setNodeText('walletStrategyAlphaValue', `${strategyAlpha >= 0 ? '+' : '-'}$${number2(Math.abs(strategyAlpha))}`);
     setNodeText('walletExecutionCostsValue', `$${number2(totalFees)} / $${number2(slippageCost)}`);
@@ -20801,6 +21679,15 @@ function renderFamilyConfidence(data) {
     setNodeText('familyConfidenceNote', `${familyKey} • ${right} RIGHT / ${Math.max(0, total - right)} WRONG / ${total} TOTAL • ${bellText}${flipNote}`);
 }
 
+
+function renderSpotPulseDaily(data) {
+    const body = document.getElementById('spotPulseDailyRows');
+    if (!body) return;
+    if (typeof data.spotPulseDailyTableHtml === 'string' && data.spotPulseDailyTableHtml !== '') {
+        body.innerHTML = data.spotPulseDailyTableHtml;
+    }
+}
+
 async function loadLiveData(options = {}) {
     const priceOnly = options && options.priceOnly === true;
     const url = new URL(window.location.href);
@@ -20815,6 +21702,7 @@ async function loadLiveData(options = {}) {
         currentMarketType = String(data.marketType || currentMarketType || '');
         liveSpotPrice = Number(data.currentPrice || liveSpotPrice || 0);
         renderCurrentPrice(data);
+        renderSpotPulseDaily(data);
         renderStatusMeta(data);
         renderTrackedPortfolio(data);
         renderTrackedDashboardCards(data);
