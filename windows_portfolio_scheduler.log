@@ -71363,3 +71363,40 @@
 }
 [2026-07-31T14:01:28-04:00] php runner end
 
+[2026-07-31T14:06:10-04:00] php runner start
+{
+    "ran_at": "2026-07-31T18:06:02Z",
+    "target_count": 2,
+    "target_batch_limit": 2,
+    "target_batch_offset": 0,
+    "target_batch_next_offset": 0,
+    "target_total_available": 2,
+    "results": [
+        {
+            "market_type": "crypto",
+            "symbol": "BTC-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=BTC-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T18:06:05Z"
+        },
+        {
+            "market_type": "crypto",
+            "symbol": "ETH-USD",
+            "requested_url": "http://localhost:8081/index.php?market_type=crypto&symbol=ETH-USD&buy_multiplier=0.50&sell_multiplier=0.40&trust_percent=50.00&break_buy=0.50&break_gain=0.50&break_loss=0.50&run_analysis=1&live=1",
+            "ok": true,
+            "status": 200,
+            "has_price_payload": true,
+            "symbol_probe": null,
+            "removed_from_list": false,
+            "remove_reason": "",
+            "checked_at": "2026-07-31T18:06:09Z"
+        }
+    ]
+}
+[2026-07-31T14:06:10-04:00] php runner end
+
