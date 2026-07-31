@@ -1,106 +1,6 @@
 {
     "schema": "broker-order-journal-v1",
     "orders": {
-        "model-buy-a869bccaa4716aa249a6b965": {
-            "attempted": true,
-            "accepted": false,
-            "filled": false,
-            "mock_fill": true,
-            "provider": "COINBASE",
-            "mode": "STATIC_SANDBOX",
-            "http_code": 0,
-            "order_id": "",
-            "client_order_id": "model-buy-a869bccaa4716aa249a6b965",
-            "status": "REJECTED",
-            "filled_qty": 7.766e-5,
-            "filled_avg_price": 64328.92,
-            "message": "Coinbase sandbox rejected the request: SSL certificate problem: unable to get local issuer certificate",
-            "symbol": "BTC-USD",
-            "side": "BUY",
-            "submitted_at": "2026-07-31T20:56:11+00:00",
-            "journal_key": "model-buy-a869bccaa4716aa249a6b965",
-            "updated_at": "2026-07-31T20:56:11+00:00"
-        },
-        "model-buy-78aa238b5e2e71f0cb59cf6b": {
-            "attempted": true,
-            "accepted": false,
-            "filled": false,
-            "mock_fill": true,
-            "provider": "COINBASE",
-            "mode": "STATIC_SANDBOX",
-            "http_code": 0,
-            "order_id": "",
-            "client_order_id": "model-buy-78aa238b5e2e71f0cb59cf6b",
-            "status": "REJECTED",
-            "filled_qty": 7.759e-5,
-            "filled_avg_price": 64385.22,
-            "message": "Coinbase sandbox rejected the request: SSL certificate problem: unable to get local issuer certificate",
-            "symbol": "BTC-USD",
-            "side": "BUY",
-            "submitted_at": "2026-07-31T20:56:11+00:00",
-            "journal_key": "model-buy-78aa238b5e2e71f0cb59cf6b",
-            "updated_at": "2026-07-31T20:56:11+00:00"
-        },
-        "model-buy-6ccfccb9e9f0587173fe53cf": {
-            "attempted": true,
-            "accepted": false,
-            "filled": false,
-            "mock_fill": true,
-            "provider": "COINBASE",
-            "mode": "STATIC_SANDBOX",
-            "http_code": 0,
-            "order_id": "",
-            "client_order_id": "model-buy-6ccfccb9e9f0587173fe53cf",
-            "status": "REJECTED",
-            "filled_qty": 7.762e-5,
-            "filled_avg_price": 64363.92,
-            "message": "Coinbase sandbox rejected the request: SSL certificate problem: unable to get local issuer certificate",
-            "symbol": "BTC-USD",
-            "side": "BUY",
-            "submitted_at": "2026-07-31T20:56:11+00:00",
-            "journal_key": "model-buy-6ccfccb9e9f0587173fe53cf",
-            "updated_at": "2026-07-31T20:56:11+00:00"
-        },
-        "model-buy-1d2e92144cf14043a0dea849": {
-            "attempted": true,
-            "accepted": false,
-            "filled": false,
-            "mock_fill": true,
-            "provider": "COINBASE",
-            "mode": "STATIC_SANDBOX",
-            "http_code": 0,
-            "order_id": "",
-            "client_order_id": "model-buy-1d2e92144cf14043a0dea849",
-            "status": "REJECTED",
-            "filled_qty": 7.766e-5,
-            "filled_avg_price": 64328.590000000004,
-            "message": "Coinbase sandbox rejected the request: SSL certificate problem: unable to get local issuer certificate",
-            "symbol": "BTC-USD",
-            "side": "BUY",
-            "submitted_at": "2026-07-31T20:56:11+00:00",
-            "journal_key": "model-buy-1d2e92144cf14043a0dea849",
-            "updated_at": "2026-07-31T20:56:11+00:00"
-        },
-        "model-buy-27ec15ba2c28308d139becec": {
-            "attempted": true,
-            "accepted": false,
-            "filled": false,
-            "mock_fill": true,
-            "provider": "COINBASE",
-            "mode": "STATIC_SANDBOX",
-            "http_code": 0,
-            "order_id": "",
-            "client_order_id": "model-buy-27ec15ba2c28308d139becec",
-            "status": "REJECTED",
-            "filled_qty": 7.773e-5,
-            "filled_avg_price": 64269.5,
-            "message": "Coinbase sandbox rejected the request: SSL certificate problem: unable to get local issuer certificate",
-            "symbol": "BTC-USD",
-            "side": "BUY",
-            "submitted_at": "2026-07-31T20:56:11+00:00",
-            "journal_key": "model-buy-27ec15ba2c28308d139becec",
-            "updated_at": "2026-07-31T20:56:11+00:00"
-        },
         "model-buy-df4f2a202cf04037a5c6d70b": {
             "attempted": true,
             "accepted": false,
@@ -5433,9 +5333,9 @@
             "message": "Alpaca paper rejected the order: SSL certificate problem: unable to get local issuer certificate",
             "symbol": "TSLA",
             "side": "BUY",
-            "submitted_at": "2026-07-31T21:27:38+00:00",
+            "submitted_at": "2026-07-31T21:32:38+00:00",
             "journal_key": "model-buy-d4d99dfa01a28445dfddeb0f",
-            "updated_at": "2026-07-31T21:27:38+00:00"
+            "updated_at": "2026-07-31T21:32:38+00:00"
         },
         "model-buy-0dfa212a5b096c657133a036": {
             "attempted": true,
@@ -5449,9 +5349,9 @@
             "message": "Alpaca paper rejected the order: SSL certificate problem: unable to get local issuer certificate",
             "symbol": "TSLA",
             "side": "BUY",
-            "submitted_at": "2026-07-31T21:27:38+00:00",
+            "submitted_at": "2026-07-31T21:32:38+00:00",
             "journal_key": "model-buy-0dfa212a5b096c657133a036",
-            "updated_at": "2026-07-31T21:27:38+00:00"
+            "updated_at": "2026-07-31T21:32:38+00:00"
         },
         "model-buy-d17ac28ba994555c6c3e5f97": {
             "attempted": true,
@@ -5465,9 +5365,9 @@
             "message": "Alpaca paper rejected the order: SSL certificate problem: unable to get local issuer certificate",
             "symbol": "TSLA",
             "side": "BUY",
-            "submitted_at": "2026-07-31T21:27:39+00:00",
+            "submitted_at": "2026-07-31T21:32:38+00:00",
             "journal_key": "model-buy-d17ac28ba994555c6c3e5f97",
-            "updated_at": "2026-07-31T21:27:39+00:00"
+            "updated_at": "2026-07-31T21:32:38+00:00"
         },
         "model-buy-3efaa3b8e66d3a2203826cdc": {
             "attempted": true,
@@ -5481,9 +5381,9 @@
             "message": "Alpaca paper rejected the order: SSL certificate problem: unable to get local issuer certificate",
             "symbol": "TSLA",
             "side": "BUY",
-            "submitted_at": "2026-07-31T21:27:40+00:00",
+            "submitted_at": "2026-07-31T21:32:39+00:00",
             "journal_key": "model-buy-3efaa3b8e66d3a2203826cdc",
-            "updated_at": "2026-07-31T21:27:40+00:00"
+            "updated_at": "2026-07-31T21:32:39+00:00"
         },
         "model-buy-a1a0849498570240d7ac400b": {
             "attempted": true,
@@ -5497,9 +5397,9 @@
             "message": "Alpaca paper rejected the order: SSL certificate problem: unable to get local issuer certificate",
             "symbol": "TSLA",
             "side": "BUY",
-            "submitted_at": "2026-07-31T21:27:41+00:00",
+            "submitted_at": "2026-07-31T21:32:39+00:00",
             "journal_key": "model-buy-a1a0849498570240d7ac400b",
-            "updated_at": "2026-07-31T21:27:41+00:00"
+            "updated_at": "2026-07-31T21:32:39+00:00"
         },
         "model-buy-ebfdd73f6e93ca3736ec6f51": {
             "attempted": true,
@@ -5513,9 +5413,9 @@
             "message": "Alpaca paper rejected the order: SSL certificate problem: unable to get local issuer certificate",
             "symbol": "TSLA",
             "side": "BUY",
-            "submitted_at": "2026-07-31T21:27:42+00:00",
+            "submitted_at": "2026-07-31T21:32:40+00:00",
             "journal_key": "model-buy-ebfdd73f6e93ca3736ec6f51",
-            "updated_at": "2026-07-31T21:27:42+00:00"
+            "updated_at": "2026-07-31T21:32:40+00:00"
         },
         "model-buy-cf331f43229f2bcca29d9d6a": {
             "attempted": true,
@@ -5529,9 +5429,9 @@
             "message": "Alpaca paper rejected the order: SSL certificate problem: unable to get local issuer certificate",
             "symbol": "TSLA",
             "side": "BUY",
-            "submitted_at": "2026-07-31T21:27:44+00:00",
+            "submitted_at": "2026-07-31T21:32:40+00:00",
             "journal_key": "model-buy-cf331f43229f2bcca29d9d6a",
-            "updated_at": "2026-07-31T21:27:44+00:00"
+            "updated_at": "2026-07-31T21:32:40+00:00"
         },
         "model-buy-d50b6b6185578996b988e3e1": {
             "attempted": true,
@@ -5545,9 +5445,9 @@
             "message": "Alpaca paper rejected the order: SSL certificate problem: unable to get local issuer certificate",
             "symbol": "TSLA",
             "side": "BUY",
-            "submitted_at": "2026-07-31T21:27:45+00:00",
+            "submitted_at": "2026-07-31T21:32:40+00:00",
             "journal_key": "model-buy-d50b6b6185578996b988e3e1",
-            "updated_at": "2026-07-31T21:27:45+00:00"
+            "updated_at": "2026-07-31T21:32:40+00:00"
         },
         "model-buy-30288c023a979555669ea8d0": {
             "attempted": true,
@@ -5561,9 +5461,9 @@
             "message": "Alpaca paper rejected the order: SSL certificate problem: unable to get local issuer certificate",
             "symbol": "TSLA",
             "side": "BUY",
-            "submitted_at": "2026-07-31T21:27:46+00:00",
+            "submitted_at": "2026-07-31T21:32:41+00:00",
             "journal_key": "model-buy-30288c023a979555669ea8d0",
-            "updated_at": "2026-07-31T21:27:46+00:00"
+            "updated_at": "2026-07-31T21:32:41+00:00"
         },
         "model-buy-19dc2de37cbb608681f02bb0": {
             "attempted": true,
@@ -5577,9 +5477,9 @@
             "message": "Alpaca paper rejected the order: SSL certificate problem: unable to get local issuer certificate",
             "symbol": "TSLA",
             "side": "BUY",
-            "submitted_at": "2026-07-31T21:27:48+00:00",
+            "submitted_at": "2026-07-31T21:32:42+00:00",
             "journal_key": "model-buy-19dc2de37cbb608681f02bb0",
-            "updated_at": "2026-07-31T21:27:48+00:00"
+            "updated_at": "2026-07-31T21:32:42+00:00"
         },
         "model-buy-3d9f852001d298478ea7e244": {
             "attempted": true,
@@ -5593,9 +5493,9 @@
             "message": "Alpaca paper rejected the order: SSL certificate problem: unable to get local issuer certificate",
             "symbol": "TSLA",
             "side": "BUY",
-            "submitted_at": "2026-07-31T21:27:49+00:00",
+            "submitted_at": "2026-07-31T21:32:42+00:00",
             "journal_key": "model-buy-3d9f852001d298478ea7e244",
-            "updated_at": "2026-07-31T21:27:49+00:00"
+            "updated_at": "2026-07-31T21:32:42+00:00"
         },
         "model-buy-8788b54a04ed5d2917340e29": {
             "attempted": true,
@@ -5609,9 +5509,9 @@
             "message": "Alpaca paper rejected the order: SSL certificate problem: unable to get local issuer certificate",
             "symbol": "TSLA",
             "side": "BUY",
-            "submitted_at": "2026-07-31T21:27:50+00:00",
+            "submitted_at": "2026-07-31T21:32:42+00:00",
             "journal_key": "model-buy-8788b54a04ed5d2917340e29",
-            "updated_at": "2026-07-31T21:27:50+00:00"
+            "updated_at": "2026-07-31T21:32:42+00:00"
         },
         "model-buy-eb70356f2116ac8b43edb668": {
             "attempted": true,
@@ -5625,9 +5525,9 @@
             "message": "Alpaca paper rejected the order: SSL certificate problem: unable to get local issuer certificate",
             "symbol": "TSLA",
             "side": "BUY",
-            "submitted_at": "2026-07-31T21:22:35+00:00",
+            "submitted_at": "2026-07-31T21:32:42+00:00",
             "journal_key": "model-buy-eb70356f2116ac8b43edb668",
-            "updated_at": "2026-07-31T21:22:35+00:00"
+            "updated_at": "2026-07-31T21:32:42+00:00"
         },
         "model-buy-258d75dc898524f73dc8c689": {
             "attempted": true,
@@ -5641,9 +5541,9 @@
             "message": "Alpaca paper rejected the order: SSL certificate problem: unable to get local issuer certificate",
             "symbol": "TSLA",
             "side": "BUY",
-            "submitted_at": "2026-07-31T21:22:35+00:00",
+            "submitted_at": "2026-07-31T21:32:43+00:00",
             "journal_key": "model-buy-258d75dc898524f73dc8c689",
-            "updated_at": "2026-07-31T21:22:35+00:00"
+            "updated_at": "2026-07-31T21:32:43+00:00"
         },
         "model-buy-589ff7d2e3f73cb82f34a63f": {
             "attempted": true,
@@ -5657,9 +5557,9 @@
             "message": "Alpaca paper rejected the order: SSL certificate problem: unable to get local issuer certificate",
             "symbol": "TSLA",
             "side": "BUY",
-            "submitted_at": "2026-07-31T21:22:36+00:00",
+            "submitted_at": "2026-07-31T21:32:43+00:00",
             "journal_key": "model-buy-589ff7d2e3f73cb82f34a63f",
-            "updated_at": "2026-07-31T21:22:36+00:00"
+            "updated_at": "2026-07-31T21:32:43+00:00"
         },
         "model-buy-34fe5f58a4ac187df7b58b49": {
             "attempted": true,
@@ -5673,9 +5573,9 @@
             "message": "Alpaca paper rejected the order: SSL certificate problem: unable to get local issuer certificate",
             "symbol": "TSLA",
             "side": "BUY",
-            "submitted_at": "2026-07-31T21:22:36+00:00",
+            "submitted_at": "2026-07-31T21:32:43+00:00",
             "journal_key": "model-buy-34fe5f58a4ac187df7b58b49",
-            "updated_at": "2026-07-31T21:22:36+00:00"
+            "updated_at": "2026-07-31T21:32:43+00:00"
         },
         "model-buy-04af78bdc250327c56c02e1a": {
             "attempted": true,
@@ -5689,9 +5589,9 @@
             "message": "Alpaca paper rejected the order: SSL certificate problem: unable to get local issuer certificate",
             "symbol": "TSLA",
             "side": "BUY",
-            "submitted_at": "2026-07-31T21:22:36+00:00",
+            "submitted_at": "2026-07-31T21:32:44+00:00",
             "journal_key": "model-buy-04af78bdc250327c56c02e1a",
-            "updated_at": "2026-07-31T21:22:36+00:00"
+            "updated_at": "2026-07-31T21:32:44+00:00"
         },
         "model-buy-90b7ba9d514713e642f938c1": {
             "attempted": true,
@@ -5705,9 +5605,9 @@
             "message": "Alpaca paper rejected the order: SSL certificate problem: unable to get local issuer certificate",
             "symbol": "TSLA",
             "side": "BUY",
-            "submitted_at": "2026-07-31T21:22:38+00:00",
+            "submitted_at": "2026-07-31T21:32:46+00:00",
             "journal_key": "model-buy-90b7ba9d514713e642f938c1",
-            "updated_at": "2026-07-31T21:22:38+00:00"
+            "updated_at": "2026-07-31T21:32:46+00:00"
         },
         "model-buy-6b0e0bc573ee4f6800e9c628": {
             "attempted": true,
@@ -5721,9 +5621,9 @@
             "message": "Alpaca paper rejected the order: SSL certificate problem: unable to get local issuer certificate",
             "symbol": "TSLA",
             "side": "BUY",
-            "submitted_at": "2026-07-31T21:22:38+00:00",
+            "submitted_at": "2026-07-31T21:32:46+00:00",
             "journal_key": "model-buy-6b0e0bc573ee4f6800e9c628",
-            "updated_at": "2026-07-31T21:22:38+00:00"
+            "updated_at": "2026-07-31T21:32:46+00:00"
         },
         "model-buy-ffa848f03ff579a00068bec8": {
             "attempted": true,
@@ -5737,9 +5637,9 @@
             "message": "Alpaca paper rejected the order: SSL certificate problem: unable to get local issuer certificate",
             "symbol": "TSLA",
             "side": "BUY",
-            "submitted_at": "2026-07-31T21:22:39+00:00",
+            "submitted_at": "2026-07-31T21:32:46+00:00",
             "journal_key": "model-buy-ffa848f03ff579a00068bec8",
-            "updated_at": "2026-07-31T21:22:39+00:00"
+            "updated_at": "2026-07-31T21:32:46+00:00"
         },
         "model-buy-ffc8a0c1c84a347f0072ec97": {
             "attempted": true,
@@ -5753,9 +5653,9 @@
             "message": "Alpaca paper rejected the order: SSL certificate problem: unable to get local issuer certificate",
             "symbol": "TSLA",
             "side": "BUY",
-            "submitted_at": "2026-07-31T21:22:39+00:00",
+            "submitted_at": "2026-07-31T21:32:47+00:00",
             "journal_key": "model-buy-ffc8a0c1c84a347f0072ec97",
-            "updated_at": "2026-07-31T21:22:39+00:00"
+            "updated_at": "2026-07-31T21:32:47+00:00"
         },
         "model-buy-9dc59c29ab362710b758cef7": {
             "attempted": true,
@@ -5769,9 +5669,9 @@
             "message": "Alpaca paper rejected the order: SSL certificate problem: unable to get local issuer certificate",
             "symbol": "TSLA",
             "side": "BUY",
-            "submitted_at": "2026-07-31T21:22:40+00:00",
+            "submitted_at": "2026-07-31T21:32:52+00:00",
             "journal_key": "model-buy-9dc59c29ab362710b758cef7",
-            "updated_at": "2026-07-31T21:22:40+00:00"
+            "updated_at": "2026-07-31T21:32:52+00:00"
         },
         "model-buy-719063350515b1b5886a4e40": {
             "attempted": true,
@@ -5785,9 +5685,9 @@
             "message": "Alpaca paper rejected the order: SSL certificate problem: unable to get local issuer certificate",
             "symbol": "TSLA",
             "side": "BUY",
-            "submitted_at": "2026-07-31T21:22:40+00:00",
+            "submitted_at": "2026-07-31T21:32:53+00:00",
             "journal_key": "model-buy-719063350515b1b5886a4e40",
-            "updated_at": "2026-07-31T21:22:40+00:00"
+            "updated_at": "2026-07-31T21:32:53+00:00"
         },
         "model-buy-a24d0c570554903f6b0f86db": {
             "attempted": true,
@@ -13793,9 +13693,9 @@
             "message": "Alpaca paper rejected the order: SSL certificate problem: unable to get local issuer certificate",
             "symbol": "MSFT",
             "side": "BUY",
-            "submitted_at": "2026-07-31T21:27:23+00:00",
+            "submitted_at": "2026-07-31T21:32:29+00:00",
             "journal_key": "model-buy-aa2999f8c51af719c6c1a021",
-            "updated_at": "2026-07-31T21:27:23+00:00"
+            "updated_at": "2026-07-31T21:32:29+00:00"
         },
         "model-sell-786faa06660ef451a43dd767": {
             "attempted": true,
@@ -13809,9 +13709,9 @@
             "message": "Alpaca paper rejected the order: SSL certificate problem: unable to get local issuer certificate",
             "symbol": "MSFT",
             "side": "SELL",
-            "submitted_at": "2026-07-31T21:27:24+00:00",
+            "submitted_at": "2026-07-31T21:32:30+00:00",
             "journal_key": "model-sell-786faa06660ef451a43dd767",
-            "updated_at": "2026-07-31T21:27:24+00:00"
+            "updated_at": "2026-07-31T21:32:30+00:00"
         },
         "model-buy-25b525b331a1fcdb8f854967": {
             "attempted": true,
@@ -19748,7 +19648,87 @@
             "submitted_at": "2026-07-31T21:32:25+00:00",
             "journal_key": "model-sell-bc57484c8be44db383d6f910",
             "updated_at": "2026-07-31T21:32:25+00:00"
+        },
+        "model-sell-f4bd5abc6ee7f5b4e182d197": {
+            "attempted": true,
+            "accepted": false,
+            "filled": false,
+            "provider": "ALPACA",
+            "mode": "PAPER",
+            "http_code": 0,
+            "client_order_id": "model-sell-f4bd5abc6ee7f5b4e182d197",
+            "status": "REJECTED",
+            "message": "Alpaca paper rejected the order: SSL certificate problem: unable to get local issuer certificate",
+            "symbol": "TSLA",
+            "side": "SELL",
+            "submitted_at": "2026-07-31T21:32:44+00:00",
+            "journal_key": "model-sell-f4bd5abc6ee7f5b4e182d197",
+            "updated_at": "2026-07-31T21:32:44+00:00"
+        },
+        "model-sell-036572bbfa1772fb33f7eac7": {
+            "attempted": true,
+            "accepted": false,
+            "filled": false,
+            "provider": "ALPACA",
+            "mode": "PAPER",
+            "http_code": 0,
+            "client_order_id": "model-sell-036572bbfa1772fb33f7eac7",
+            "status": "REJECTED",
+            "message": "Alpaca paper rejected the order: SSL certificate problem: unable to get local issuer certificate",
+            "symbol": "TSLA",
+            "side": "SELL",
+            "submitted_at": "2026-07-31T21:32:45+00:00",
+            "journal_key": "model-sell-036572bbfa1772fb33f7eac7",
+            "updated_at": "2026-07-31T21:32:45+00:00"
+        },
+        "model-sell-6e7b53096608ce81426afee8": {
+            "attempted": true,
+            "accepted": false,
+            "filled": false,
+            "provider": "ALPACA",
+            "mode": "PAPER",
+            "http_code": 0,
+            "client_order_id": "model-sell-6e7b53096608ce81426afee8",
+            "status": "REJECTED",
+            "message": "Alpaca paper rejected the order: SSL certificate problem: unable to get local issuer certificate",
+            "symbol": "TSLA",
+            "side": "SELL",
+            "submitted_at": "2026-07-31T21:32:45+00:00",
+            "journal_key": "model-sell-6e7b53096608ce81426afee8",
+            "updated_at": "2026-07-31T21:32:45+00:00"
+        },
+        "model-sell-3cc0fbbb4e728bce4f592574": {
+            "attempted": true,
+            "accepted": false,
+            "filled": false,
+            "provider": "ALPACA",
+            "mode": "PAPER",
+            "http_code": 0,
+            "client_order_id": "model-sell-3cc0fbbb4e728bce4f592574",
+            "status": "REJECTED",
+            "message": "Alpaca paper rejected the order: SSL certificate problem: unable to get local issuer certificate",
+            "symbol": "TSLA",
+            "side": "SELL",
+            "submitted_at": "2026-07-31T21:32:45+00:00",
+            "journal_key": "model-sell-3cc0fbbb4e728bce4f592574",
+            "updated_at": "2026-07-31T21:32:45+00:00"
+        },
+        "model-sell-bca1249186907ec96f9938be": {
+            "attempted": true,
+            "accepted": false,
+            "filled": false,
+            "provider": "ALPACA",
+            "mode": "PAPER",
+            "http_code": 0,
+            "client_order_id": "model-sell-bca1249186907ec96f9938be",
+            "status": "REJECTED",
+            "message": "Alpaca paper rejected the order: SSL certificate problem: unable to get local issuer certificate",
+            "symbol": "TSLA",
+            "side": "SELL",
+            "submitted_at": "2026-07-31T21:32:47+00:00",
+            "journal_key": "model-sell-bca1249186907ec96f9938be",
+            "updated_at": "2026-07-31T21:32:47+00:00"
         }
     },
-    "updated_at": "2026-07-31T21:32:27+00:00"
+    "updated_at": "2026-07-31T21:32:53+00:00"
 }
